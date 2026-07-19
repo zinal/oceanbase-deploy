@@ -120,6 +120,8 @@ ${DEPLOY_USER} soft nofile 655350
 ${DEPLOY_USER} hard nofile 655350
 ${DEPLOY_USER} soft nproc 655350
 ${DEPLOY_USER} hard nproc 655350
+${DEPLOY_USER} soft stack unlimited
+${DEPLOY_USER} hard stack unlimited
 ${DEPLOY_USER} soft core unlimited
 ${DEPLOY_USER} hard core unlimited
 LIMITS
