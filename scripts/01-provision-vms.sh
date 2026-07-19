@@ -61,18 +61,6 @@ build_inventory_from_queue() {
   info "Инвентарь сохранён: ${inventory}"
 }
 
-collect_disk_names_for_vm() {
-  local name="$1" role="$2"
-  local -n _out=$3
-  load_vm_params "${role}"
-  if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
-    _out+=("${name}-data")
-  fi
-  if [[ "${VM_LOG_ENABLED}" == "true" ]]; then
-    _out+=("${name}-log")
-  fi
-}
-
 provision_async() {
   local entry role prefix idx name
   local -a new_vms=()
