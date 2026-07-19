@@ -51,6 +51,7 @@ case "${STEP}" in
     run_python_step 03-generate-obd-config.py
     ;;
   deploy)
+    run_step 02-prepare-servers.sh
     run_step 04-deploy-cluster.sh
     ;;
   all)
@@ -72,7 +73,7 @@ case "${STEP}" in
   provision  — создание ВМ в Yandex Cloud
   prepare    — подготовка серверов (диски, sysctl)
   config     — генерация obd-cluster.yaml
-  deploy     — развёртывание через OBD
+  deploy     — подготовка серверов + развёртывание через OBD
   all        — полный цикл (по умолчанию)
   destroy    — удаление ВМ [--destroy-obd]
 

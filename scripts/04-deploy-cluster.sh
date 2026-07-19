@@ -43,6 +43,8 @@ install_obd_if_needed() {
 
 install_obd_if_needed
 
+verify_all_observer_storage
+
 ob_version="$(yaml_get oceanbase.version)"
 
 if obd_cluster_registered "${CLUSTER_NAME}"; then

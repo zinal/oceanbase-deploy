@@ -196,6 +196,40 @@ run_remote() {
     "${user}@${host}" "$@"
 }
 
+verify_observer_storage() {
+  local host="$1"
+  local deploy_user data_dir redo_dir
+  deploy_user="$(yaml_get oceanbase.deploy_user)"
+  [[ -z "${deploy_user}" || "${deploy_user}" == "null" ]] && deploy_user="$(ssh_connect_user)"
+  data_dir="$(yaml_get oceanbase.data_dir)"
+  redo_dir="$(yaml_get oceanbase.redo_dir)"
+
+  run_remote "${host}" "bash -s" <<REMOTE
+set -euo pipefail
+DEPLOY_USER="${deploy_user}"
+DATA_DIR="${data_dir}"
+REDO_DIR="${redo_dir}"
+for dir in "\${DATA_DIR}" "\${REDO_DIR}"; do
+  [[ -n "\${dir}" ]] || continue
+  if ! sudo -u "\${DEPLOY_USER}" test -w "\${dir}"; then
+    echo "ERROR: \${DEPLOY_USER} не может писать в \${dir}" >&2
+    exit 1
+  fi
+done
+REMOTE
+}
+
+verify_all_observer_storage() {
+  local i host
+  for (( i=1; i<=OBSERVER_COUNT; i++ )); do
+    host="$(inventory_host OBSERVER "${i}")"
+    info "Проверка data/log путей на ${host}..."
+    if ! verify_observer_storage "${host}"; then
+      die "На ${host} не подготовлены каталоги data/redo. Выполните: ./scripts/deploy.sh prepare"
+    fi
+  done
+}
+
 wait_for_ssh() {
   local host="$1"
   local user key port
