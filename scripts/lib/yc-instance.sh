@@ -127,15 +127,22 @@ create_instance_async() {
   local name="$1" role="$2"
   load_vm_params "${role}"
 
-  local zone subnet ssh_user ssh_key_file deploy_name net_accel
-  local folder_args
+  local zone subnet ssh_user ssh_key_file deploy_name net_accel nat_enabled
+  local folder_args network_iface
   zone="$(yaml_get yandex_cloud.zone)"
   subnet="$(yaml_get yandex_cloud.subnet_name)"
   ssh_user="$(yaml_get yandex_cloud.ssh_user)"
   ssh_key_file="$(expand_path "$(yaml_get yandex_cloud.ssh_public_key_file)")"
   deploy_name="$(yaml_get deployment.name)"
   net_accel="$(yaml_get yandex_cloud.network_acceleration)"
+  nat_enabled="$(yaml_get yandex_cloud.nat_enabled)"
   mapfile -t folder_args < <(yc_folder_args)
+
+  if [[ "${nat_enabled}" == "true" ]]; then
+    network_iface="subnet-name=${subnet},nat-ip-version=ipv4"
+  else
+    network_iface="subnet-name=${subnet}"
+  fi
 
   require_file "$ssh_key_file"
 
@@ -156,7 +163,7 @@ create_instance_async() {
     --memory "${VM_MEMORY_GB}"
     --core-fraction "${VM_CORE_FRACTION}"
     --create-boot-disk "${boot_disk_spec}"
-    --network-interface "subnet-name=${subnet},nat-ip-version=ipv4"
+    --network-interface "${network_iface}"
     --metadata-from-file "user-data=${cloud_init}"
     --labels "deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"
   )
@@ -187,7 +194,16 @@ get_instance_ip() {
   local folder_args
   mapfile -t folder_args < <(yc_folder_args)
   yc compute instance get "${folder_args[@]}" --name "$name" --format json \
-    | python3 -c "import json,sys; d=json.load(sys.stdin); print(next((a.get('address') for ni in d.get('network_interfaces',[]) for a in [ni.get('primary_v4_address',{}).get('one_to_one_nat',{}).get('address') or ni.get('primary_v4_address',{}).get('address')] if a), ''))"
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for ni in d.get('network_interfaces', []):
+    addr = ni.get('primary_v4_address', {})
+    ip = addr.get('address') or (addr.get('one_to_one_nat') or {}).get('address')
+    if ip:
+        print(ip)
+        break
+"
 }
 
 delete_instance() {
