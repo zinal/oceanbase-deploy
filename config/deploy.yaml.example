@@ -52,13 +52,13 @@ vm_profiles:
     memory_gb: 32                  # мин. 16 (OceanBase production)
     boot_disk:
       # home_path, бинарники observer — потеря недопустима
-      type: network-ssd-io-m3
+      type: network-ssd
       size_gb: 50
     data_disk:
       enabled: true
       # SSTable реплицируется между observer (Paxos) — можно non-replicated
       type: network-ssd-nonreplicated
-      size_gb: 558                 # ~500 GB, кратно 93 (требование YC)
+      size_gb: 930                 # ~900 GB, кратно 93 (требование YC)
       mount_point: /data
     log_disk:
       enabled: true
@@ -89,7 +89,7 @@ vm_profiles:
     cores: 2
     memory_gb: 4
     boot_disk:
-      type: network-ssd-io-m3
+      type: network-ssd
       size_gb: 20
     data_disk:
       enabled: false
