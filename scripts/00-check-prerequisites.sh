@@ -25,6 +25,13 @@ require_file "$ssh_key"
 require_file "$ssh_priv"
 validate_ssh_key_pair
 
+deploy_user="$(yaml_get oceanbase.deploy_user)"
+ssh_user="$(ssh_connect_user)"
+[[ -z "${deploy_user}" || "${deploy_user}" == "null" ]] && deploy_user="${ssh_user}"
+if [[ -n "${ssh_user}" && "${ssh_user}" != "null" && -n "${deploy_user}" && "${deploy_user}" != "${ssh_user}" ]]; then
+  die "oceanbase.deploy_user (${deploy_user}) должен совпадать с yandex_cloud.ssh_user (${ssh_user})"
+fi
+
 info "Проверка профилей ВМ (OceanBase recommendations)..."
 python3 "${LIB_DIR}/lib/vm_profiles.py" validate --config "${CONFIG_FILE}"
 
