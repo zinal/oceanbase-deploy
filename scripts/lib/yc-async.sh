@@ -15,7 +15,8 @@ yc_folder_args() {
   local folder_id
   folder_id="$(yaml_get yandex_cloud.folder_id)"
   if [[ -n "${folder_id}" && "${folder_id}" != "null" ]]; then
-    echo "--folder-id" "${folder_id}"
+    # Отдельные строки — иначе mapfile склеивает в один аргумент
+    printf '%s\n' "--folder-id" "${folder_id}"
   fi
 }
 
