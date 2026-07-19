@@ -13,7 +13,7 @@ DESTROY_OBD="${1:-false}"
 if [[ "${DESTROY_OBD}" == "--destroy-obd" ]]; then
   if [[ -f "${GENERATED_DIR}/inventory.env" ]]; then
     load_inventory
-    if command -v obd >/dev/null 2>&1 && obd cluster list 2>/dev/null | grep -q "${DEPLOY_NAME}"; then
+    if obd_cluster_registered "${DEPLOY_NAME}"; then
       warn "Уничтожение кластера OBD ${DEPLOY_NAME} (данные будут удалены)..."
       obd cluster destroy "${DEPLOY_NAME}" -f || true
     fi

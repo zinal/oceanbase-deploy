@@ -73,6 +73,28 @@ load_inventory() {
   source "$inv"
 }
 
+# OBD хранит метаданные развёртывания в ~/.obd/cluster/<deploy_name>.
+# `obd cluster list` иногда не показывает кластер (формат вывода, ANSI), хотя deploy уже выполнен.
+obd_cluster_registered() {
+  local name="$1"
+
+  [[ -n "${name}" ]] || return 1
+
+  if [[ -d "${HOME}/.obd/cluster/${name}" ]]; then
+    return 0
+  fi
+
+  command -v obd >/dev/null 2>&1 || return 1
+
+  if obd cluster display "${name}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  obd cluster list 2>/dev/null \
+    | sed -E 's/\x1b\[[0-9;]*[[:alpha:]?]m//g' \
+    | grep -qE "(^|[[:space:]])${name}([[:space:]]|$)"
+}
+
 ensure_generated_dir() {
   mkdir -p "${GENERATED_DIR}"
 }

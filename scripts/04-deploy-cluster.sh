@@ -45,8 +45,9 @@ install_obd_if_needed
 
 ob_version="$(yaml_get oceanbase.version)"
 
-if run_obd cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
-  warn "Кластер ${CLUSTER_NAME} уже зарегистрирован в OBD"
+if obd_cluster_registered "${CLUSTER_NAME}"; then
+  warn "Кластер ${CLUSTER_NAME} уже развёрнут в OBD — пропуск obd cluster deploy"
+  warn "Для пересоздания: obd cluster destroy ${CLUSTER_NAME} -f (удалит данные) или obd cluster redeploy ${CLUSTER_NAME}"
 else
   info "Развёртывание кластера ${CLUSTER_NAME}..."
   if [[ -n "${ob_version}" && "${ob_version}" != "null" ]]; then
