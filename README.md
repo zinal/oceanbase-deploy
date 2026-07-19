@@ -147,6 +147,24 @@ vm_profiles:
     memory_gb: 16
 ```
 
+При `vm_profiles.monitoring.enabled: true` автоматически включаются Prometheus и Grafana (OBD). На **всех** узлах кластера устанавливается **node_exporter** (порт 9100 по умолчанию); Prometheus на monitoring-ВМ собирает OS-метрики (`job: node_exporter`) и метрики OceanBase через OBAgent (`node`, `ob_basic`, `ob_extra`, `agent`).
+
+Секция `monitoring:` в config:
+
+```yaml
+monitoring:
+  node_exporter:
+    enabled: true
+    port: 9100
+    version: "1.8.2"
+  prometheus:
+    port: 9090
+  obagent:
+    http_port: 8088
+    basic_auth_user: admin
+    basic_auth_password: oceanbase
+```
+
 Проверка соответствия рекомендациям OceanBase:
 
 ```bash

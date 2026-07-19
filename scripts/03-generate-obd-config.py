@@ -32,12 +32,6 @@ def load_inventory(path: Path) -> dict[str, str]:
     return data
 
 
-def gb_suffix(value_gb: int | float) -> str:
-    if isinstance(value_gb, float) and value_gb.is_integer():
-        value_gb = int(value_gb)
-    return f"{value_gb}G"
-
-
 def auto_tune(cfg: dict, observer_count: int) -> dict:
     """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
     import importlib.util
@@ -50,6 +44,83 @@ def auto_tune(cfg: dict, observer_count: int) -> dict:
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.observer_auto_tune(cfg)
+
+
+def monitoring_cfg(cfg: dict) -> dict:
+    return cfg.get("monitoring", {}) or {}
+
+
+def collect_cluster_ips(inv: dict[str, str]) -> list[str]:
+    ips: list[str] = []
+    obs_count = int(inv.get("OBSERVER_COUNT", 0))
+    obproxy_count = int(inv.get("OBPROXY_COUNT", 0))
+    configserver_count = int(inv.get("CONFIGSERVER_COUNT", 0))
+    monitor_count = int(inv.get("MONITOR_COUNT", 0))
+
+    for i in range(1, obs_count + 1):
+        ips.append(inv[f"OBSERVER_{i}_IP"])
+    for i in range(1, obproxy_count + 1):
+        ips.append(inv[f"OBPROXY_{i}_IP"])
+    for i in range(1, configserver_count + 1):
+        key = f"CONFIGSERVER_{i}_IP"
+        if inv.get(key):
+            ips.append(inv[key])
+    for i in range(1, monitor_count + 1):
+        ips.append(inv[f"MONITOR_{i}_IP"])
+    return ips
+
+
+def build_prometheus_scrape_configs(
+    cfg: dict,
+    inv: dict[str, str],
+    observer_ips: list[str],
+) -> list[dict]:
+    mon = monitoring_cfg(cfg)
+    node_cfg = mon.get("node_exporter", {})
+    obagent_cfg = mon.get("obagent", {})
+    components = cfg.get("oceanbase", {}).get("components", {})
+
+    node_port = int(node_cfg.get("port", 9100))
+    obagent_port = int(obagent_cfg.get("http_port", 8088))
+    auth_user = obagent_cfg.get("basic_auth_user", "admin")
+    auth_pass = obagent_cfg.get("basic_auth_password", "oceanbase")
+
+    scrape_configs: list[dict] = [
+        {
+            "job_name": "prometheus",
+            "metrics_path": "/metrics",
+            "static_configs": [{"targets": ["localhost:9090"]}],
+        },
+    ]
+
+    if node_cfg.get("enabled", True):
+        node_targets = [f"{ip}:{node_port}" for ip in collect_cluster_ips(inv)]
+        scrape_configs.append(
+            {
+                "job_name": "node_exporter",
+                "metrics_path": "/metrics",
+                "static_configs": [{"targets": node_targets}],
+            }
+        )
+
+    if components.get("obagent", True):
+        obagent_targets = [f"{ip}:{obagent_port}" for ip in observer_ips]
+        for job_name, path in (
+            ("node", "/metrics/node/host"),
+            ("ob_basic", "/metrics/ob/basic"),
+            ("ob_extra", "/metrics/ob/extra"),
+            ("agent", "/metrics/stat"),
+        ):
+            scrape_configs.append(
+                {
+                    "job_name": job_name,
+                    "metrics_path": path,
+                    "basic_auth": {"username": auth_user, "password": auth_pass},
+                    "static_configs": [{"targets": obagent_targets}],
+                }
+            )
+
+    return scrape_configs
 
 
 def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
@@ -102,6 +173,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         }
 
     components = ob_cfg.get("components", {})
+    mon = monitoring_cfg(cfg)
+    monitor_vm_enabled = profiles.get("monitoring", {}).get("enabled", False)
+    prometheus_enabled = components.get("prometheus", False) or monitor_vm_enabled
+    grafana_enabled = components.get("grafana", False) or monitor_vm_enabled
+    obagent_cfg = mon.get("obagent", {})
+    prom_cfg = mon.get("prometheus", {})
     result: dict = {"user": user_block}
 
     if components.get("ob_configserver", True):
@@ -156,32 +233,51 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         }
 
     if components.get("obagent", True):
+        obagent_global = {
+            "home_path": f"/home/{deploy_user}/obagent",
+            "monagent_http_port": int(obagent_cfg.get("http_port", 8088)),
+            "http_basic_auth_user": obagent_cfg.get("basic_auth_user", "admin"),
+            "http_basic_auth_password": obagent_cfg.get("basic_auth_password", "oceanbase"),
+            "ob_monitor_status": "active",
+        }
         result["obagent"] = {
             "depends": ["oceanbase-ce"],
             "servers": [{"name": s["name"], "ip": s["ip"]} for s in servers],
-            "global": {"home_path": f"/home/{deploy_user}/obagent"},
+            "global": obagent_global,
         }
 
-    monitor_enabled = profiles.get("monitoring", {}).get("enabled", False)
     mon_count = int(inv.get("MONITOR_COUNT", "0"))
-    if components.get("prometheus", False):
-        prom_ip = inv.get("MONITOR_1_IP", observer_ips[0])
-        if monitor_enabled and mon_count > 0:
+    if prometheus_enabled:
+        prom_ip = observer_ips[0]
+        if monitor_vm_enabled and mon_count > 0:
             prom_ip = inv["MONITOR_1_IP"]
+        prom_port = int(prom_cfg.get("port", 9090))
         result["prometheus"] = {
-            "depends": ["obagent"],
+            "depends": ["obagent"] if components.get("obagent", True) else [],
             "servers": [prom_ip],
-            "global": {"home_path": f"/home/{deploy_user}/prometheus"},
+            "global": {
+                "home_path": f"/home/{deploy_user}/prometheus",
+                "port": prom_port,
+                "config": {
+                    "global": {
+                        "scrape_interval": "15s",
+                        "evaluation_interval": "15s",
+                    },
+                    "scrape_configs": build_prometheus_scrape_configs(cfg, inv, observer_ips),
+                },
+            },
         }
 
-    if components.get("grafana", False):
+    if grafana_enabled:
         graf_ip = inv.get("MONITOR_1_IP", observer_ips[0])
+        if monitor_vm_enabled and mon_count > 0:
+            graf_ip = inv["MONITOR_1_IP"]
         result["grafana"] = {
             "depends": ["prometheus"],
             "servers": [graf_ip],
             "global": {
                 "home_path": f"/home/{deploy_user}/grafana",
-                "login_password": "oceanbase",
+                "login_password": mon.get("grafana_password", "oceanbase"),
             },
         }
 
