@@ -115,6 +115,19 @@ vm_profiles:
     log_disk:
       enabled: false
 
+# Настройки мониторинга (Prometheus/Grafana через OBD на monitoring-ВМ)
+monitoring:
+  node_exporter:
+    enabled: true
+    port: 9100
+    version: "1.8.2"
+  prometheus:
+    port: 9090
+  obagent:
+    http_port: 8088
+    basic_auth_user: admin
+    basic_auth_password: oceanbase
+
 oceanbase:
   cluster_name: obcluster
   version: ""
@@ -135,6 +148,7 @@ oceanbase:
     obproxy_ce: true
     obagent: true
     ob_configserver: true
+    # При vm_profiles.monitoring.enabled=true prometheus/grafana включаются автоматически
     prometheus: false
     grafana: false
 

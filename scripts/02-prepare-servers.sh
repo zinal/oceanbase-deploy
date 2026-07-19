@@ -23,6 +23,24 @@ read -r OBS_DATA_MOUNT OBS_LOG_ENABLED OBS_LOG_MOUNT < <(
 
 MON_DATA_MOUNT="$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m['data_disk'].get('mount_point','/data') if m['data_disk'].get('enabled') else '')" "${MON_JSON}")"
 
+MONITORING_VM_ENABLED="$(yaml_get vm_profiles.monitoring.enabled)"
+PROMETHEUS_COMPONENT="$(yaml_get oceanbase.components.prometheus)"
+NODE_EXPORTER_ENABLED="$(yaml_get monitoring.node_exporter.enabled)"
+NODE_EXPORTER_PORT="$(yaml_get monitoring.node_exporter.port)"
+NODE_EXPORTER_VERSION="$(yaml_get monitoring.node_exporter.version)"
+INSTALL_NODE_EXPORTER=false
+
+[[ -z "${NODE_EXPORTER_ENABLED}" || "${NODE_EXPORTER_ENABLED}" == "null" ]] && NODE_EXPORTER_ENABLED=true
+[[ -z "${NODE_EXPORTER_PORT}" || "${NODE_EXPORTER_PORT}" == "null" ]] && NODE_EXPORTER_PORT=9100
+[[ -z "${NODE_EXPORTER_VERSION}" || "${NODE_EXPORTER_VERSION}" == "null" ]] && NODE_EXPORTER_VERSION=1.8.2
+
+if [[ "${NODE_EXPORTER_ENABLED}" == "true" ]]; then
+  if [[ "${MONITORING_VM_ENABLED}" == "true" || "${PROMETHEUS_COMPONENT}" == "true" ]]; then
+    INSTALL_NODE_EXPORTER=true
+    info "node_exporter: будет установлен на всех узлах (port ${NODE_EXPORTER_PORT})"
+  fi
+fi
+
 TARGET_HOSTS=("$@")
 
 prepare_host() {
@@ -128,6 +146,54 @@ LIMITS
 
 swapoff -a 2>/dev/null || true
 sed -i.bak '/ swap / s/^/#/' /etc/fstab 2>/dev/null || true
+
+if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
+  NODE_EXPORTER_PORT="${NODE_EXPORTER_PORT}"
+  NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION}"
+  if systemctl is-active --quiet node_exporter 2>/dev/null; then
+    echo "node_exporter уже запущен"
+  else
+    apt-get update -qq
+    apt-get install -y wget ca-certificates
+    ARCH="$(uname -m)"
+    case "${ARCH}" in
+      x86_64) NE_ARCH=amd64 ;;
+      aarch64) NE_ARCH=arm64 ;;
+      *) echo "node_exporter: неподдерживаемая архитектура ${ARCH}" >&2; exit 1 ;;
+    esac
+    id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter
+    TMPDIR="$(mktemp -d)"
+    wget -q "https://github.com/prometheus/node_exporter/releases/download/v\${NODE_EXPORTER_VERSION}/node_exporter-\${NODE_EXPORTER_VERSION}.linux-\${NE_ARCH}.tar.gz" -O "\${TMPDIR}/node_exporter.tgz"
+    tar xzf "\${TMPDIR}/node_exporter.tgz" -C "\${TMPDIR}"
+    install -o node_exporter -g node_exporter -m 0755 "\${TMPDIR}/node_exporter-\${NODE_EXPORTER_VERSION}.linux-\${NE_ARCH}/node_exporter" /usr/local/bin/node_exporter
+    rm -rf "\${TMPDIR}"
+    cat >/etc/systemd/system/node_exporter.service <<NEUNIT
+[Unit]
+Description=Prometheus Node Exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter \\
+  --web.listen-address=0.0.0.0:\${NODE_EXPORTER_PORT} \\
+  --collector.systemd \\
+  --collector.processes \\
+  --collector.filesystem.mount-points-exclude='^/(dev|proc|sys|var/lib/docker/.+)($|/)'
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+NEUNIT
+    systemctl daemon-reload
+    systemctl enable --now node_exporter
+    echo "node_exporter запущен на порту \${NODE_EXPORTER_PORT}"
+  fi
+fi
+
 echo "Подготовка завершена на \$(hostname)"
 REMOTE
 }
