@@ -13,8 +13,15 @@ yandex_cloud:
   zone: ru-central1-a
   network_name: default
   subnet_name: default-ru-central1-a
+  # Ускорение сети (как в ydb-snippets/admin/vms): software-accelerated | standard
+  network_acceleration: software-accelerated
   ssh_public_key_file: ~/.ssh/id_ed25519.pub
   ssh_user: obadmin
+  # Образ ОС из каталога standard-images (см. ydb-snippets/admin/vms/options.sh-static)
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  # Альтернатива image_family — указать image_name:
+  # image_name: redsoft-red-os-standart-server-7-3-v20240402
 
 deployment:
   name: ob-yc-prod
@@ -22,6 +29,7 @@ deployment:
 
 # Общие значения по умолчанию для всех профилей (переопределяются в vm_profiles)
 vm_defaults:
+  image_folder_id: standard-images
   image_family: ubuntu-2204-lts
   platform: standard-v3
   core_fraction: 100

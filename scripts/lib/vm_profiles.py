@@ -61,17 +61,37 @@ def _merge_disk(base: dict | None, override: dict | None) -> dict:
     return result
 
 
+def build_image_spec(defaults: dict[str, Any], profile: dict[str, Any], yc: dict[str, Any]) -> str:
+    """Сформировать спецификацию образа как в ydb-snippets admin/vms."""
+    folder = (
+        profile.get("image_folder_id")
+        or defaults.get("image_folder_id")
+        or yc.get("image_folder_id")
+        or "standard-images"
+    )
+    image_name = profile.get("image_name") or defaults.get("image_name") or yc.get("image_name")
+    if image_name:
+        return f"image-folder-id={folder},image-name={image_name}"
+    image_family = (
+        profile.get("image_family")
+        or defaults.get("image_family")
+        or yc.get("image_family")
+        or "ubuntu-2204-lts"
+    )
+    return f"image-folder-id={folder},image-family={image_family}"
+
+
 def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
     """Собрать итоговый профиль ВМ для роли."""
     role = ROLE_ALIASES.get(role, role)
     defaults = cfg.get("vm_defaults", {})
     profiles = cfg.get("vm_profiles", {})
+    yc = cfg.get("yandex_cloud", {})
 
     if role not in profiles:
         raise KeyError(f"Unknown vm profile role: {role}")
 
     profile = deepcopy(profiles[role])
-    image_family = profile.pop("image_family", defaults.get("image_family", "ubuntu-2204-lts"))
     core_fraction = profile.pop("core_fraction", defaults.get("core_fraction", 100))
 
     boot = _merge_disk(defaults.get("boot_disk"), profile.get("boot_disk"))
@@ -82,12 +102,14 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
         if disk.get("type") and disk.get("size_gb"):
             disk["size_gb"] = round_disk_size_gb(int(disk["size_gb"]), disk["type"])
 
+    image_spec = build_image_spec(defaults, {**defaults, **profile}, yc)
+
     return {
         "role": role,
         "platform": profile.get("platform", defaults.get("platform", "standard-v3")),
         "cores": int(profile.get("cores", defaults.get("cores", 4))),
         "memory_gb": int(profile.get("memory_gb", defaults.get("memory_gb", 16))),
-        "image_family": image_family,
+        "image_spec": image_spec,
         "core_fraction": int(core_fraction),
         "boot_disk": boot,
         "data_disk": data,
@@ -185,7 +207,6 @@ def cmd_resolve(args: argparse.Namespace) -> None:
     if args.format == "json":
         print(json.dumps(profile, indent=2))
     else:
-        # Строки для bash mapfile (совместимость с yc-instance.sh)
         boot = profile["boot_disk"]
         data = profile["data_disk"]
         log = profile["log_disk"]
@@ -193,7 +214,7 @@ def cmd_resolve(args: argparse.Namespace) -> None:
             profile["platform"],
             profile["cores"],
             profile["memory_gb"],
-            profile["image_family"],
+            profile["image_spec"],
             profile["core_fraction"],
             boot.get("type", "network-ssd"),
             boot.get("size_gb", 50),
@@ -207,6 +228,12 @@ def cmd_resolve(args: argparse.Namespace) -> None:
             log.get("mount_point", "/data/log1"),
         ]
         print("\n".join(str(x) for x in lines))
+
+
+def cmd_image_spec(args: argparse.Namespace) -> None:
+    cfg = load_config(Path(args.config))
+    obs = resolve_profile(cfg, "observer")
+    print(obs["image_spec"])
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
@@ -228,6 +255,10 @@ def main() -> None:
     p_resolve.add_argument("--format", choices=("lines", "json"), default="lines")
     p_resolve.add_argument("--config", default="config/deploy.yaml")
     p_resolve.set_defaults(func=cmd_resolve)
+
+    p_image = sub.add_parser("image-spec", help="Print boot image spec for observer")
+    p_image.add_argument("--config", default="config/deploy.yaml")
+    p_image.set_defaults(func=cmd_image_spec)
 
     p_validate = sub.add_parser("validate", help="Validate profiles vs OceanBase recommendations")
     p_validate.add_argument("--config", default="config/deploy.yaml")

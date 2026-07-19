@@ -91,6 +91,12 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 Каждый компонент OceanBase имеет **отдельный профиль** в `vm_profiles`. Подробный анализ: [docs/component-vm-sizing.md](docs/component-vm-sizing.md).
 
 ```yaml
+yandex_cloud:
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  # или image_name: redsoft-red-os-standart-server-7-3-v20240402
+  network_acceleration: software-accelerated
+
 vm_profiles:
   observer:                    # oceanbase-ce + obagent
     count: 3
@@ -125,6 +131,8 @@ vm_profiles:
 ```bash
 python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ```
+
+Формат образа ОС — как в [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms): `image-folder-id=standard-images,image-family=...`. Без `image-folder-id` Yandex Cloud не находит публичные образы.
 
 ### Типы дисков по умолчанию
 

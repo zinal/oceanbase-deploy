@@ -19,7 +19,8 @@ locals {
 }
 
 data "yandex_compute_image" "os" {
-  family = var.image_family
+  family    = var.image_family
+  folder_id = var.image_folder_id
 }
 
 resource "yandex_compute_disk" "observer_data" {

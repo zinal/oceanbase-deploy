@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Создание и удаление ВМ в Yandex Cloud с профилями по ролям.
+# Формат образа и параметры создания — по образцу ydb-snippets/admin/vms.
 
 set -euo pipefail
 
@@ -16,7 +17,7 @@ resolve_vm_params() {
 
 create_instance() {
   local name="$1" role="$2"
-  local platform cores memory_gb image_family core_fraction
+  local platform cores memory_gb image_spec core_fraction
   local boot_type boot_size
   local data_enabled data_type data_size data_mount
   local log_enabled log_type log_size log_mount
@@ -25,7 +26,7 @@ create_instance() {
   platform="${params[0]}"
   cores="${params[1]}"
   memory_gb="${params[2]}"
-  image_family="${params[3]}"
+  image_spec="${params[3]}"
   core_fraction="${params[4]}"
   boot_type="${params[5]}"
   boot_size="${params[6]}"
@@ -38,12 +39,13 @@ create_instance() {
   log_size="${params[13]}"
   log_mount="${params[14]}"
 
-  local zone network subnet ssh_user ssh_key_file deploy_name
+  local zone subnet ssh_user ssh_key_file deploy_name net_accel
   zone="$(yaml_get yandex_cloud.zone)"
   subnet="$(yaml_get yandex_cloud.subnet_name)"
   ssh_user="$(yaml_get yandex_cloud.ssh_user)"
   ssh_key_file="$(expand_path "$(yaml_get yandex_cloud.ssh_public_key_file)")"
   deploy_name="$(yaml_get deployment.name)"
+  net_accel="$(yaml_get yandex_cloud.network_acceleration)"
 
   require_file "$ssh_key_file"
 
@@ -83,7 +85,10 @@ write_files:
 pathlib.Path(out).write_text(content)
 PY
 
-  info "Создание ВМ ${name} (${role}): ${cores} vCPU, ${memory_gb} GB, boot=${boot_type}/${boot_size}GB"
+  info "Создание ВМ ${name} (${role}): ${cores} vCPU, ${memory_gb} GB, image=${image_spec}"
+
+  # ydb-snippets: --create-boot-disk image-folder-id=standard-images,image-family=...,name=...,type=...,size=...,auto-delete=true
+  local boot_disk_spec="${image_spec},name=${name}-boot,type=${boot_type},size=${boot_size}G,auto-delete=true"
 
   local create_args=(
     yc compute instance create
@@ -92,21 +97,26 @@ PY
     --zone "${zone}"
     --platform "${platform}"
     --cores "${cores}"
-    --memory "${memory_gb}GB"
+    --memory "${memory_gb}"
     --core-fraction "${core_fraction}"
-    --create-boot-disk "image-family=${image_family},size=${boot_size},type=${boot_type}"
+    --create-boot-disk "${boot_disk_spec}"
+    --ssh-key "${ssh_key_file}"
     --network-interface "subnet-name=${subnet},nat-ip-version=ipv4"
     --metadata-from-file "user-data=${cloud_init}"
     --labels "deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"
     --format json
   )
 
+  if [[ -n "${net_accel}" && "${net_accel}" != "null" ]]; then
+    create_args+=(--network-settings "type=${net_accel}")
+  fi
+
   if [[ "${data_enabled}" == "true" ]]; then
-    create_args+=(--create-disk "name=${name}-data,auto-delete=true,size=${data_size},type=${data_type},device-name=data")
+    create_args+=(--create-disk "name=${name}-data,auto-delete=true,size=${data_size}G,type=${data_type},device-name=data")
   fi
 
   if [[ "${log_enabled}" == "true" ]]; then
-    create_args+=(--create-disk "name=${name}-log,auto-delete=true,size=${log_size},type=${log_type},device-name=log")
+    create_args+=(--create-disk "name=${name}-log,auto-delete=true,size=${log_size}G,type=${log_type},device-name=log")
   fi
 
   local folder_id
