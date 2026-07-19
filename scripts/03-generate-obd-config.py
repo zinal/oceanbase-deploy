@@ -50,30 +50,61 @@ def monitoring_cfg(cfg: dict) -> dict:
     return cfg.get("monitoring", {}) or {}
 
 
-def collect_cluster_ips(inv: dict[str, str]) -> list[str]:
-    ips: list[str] = []
+def yc_region_from_zone(zone: str) -> str:
+    """Регион из идентификатора зоны YC: ru-central1-a -> ru-central1."""
+    if not zone:
+        return ""
+    if "-" in zone:
+        return zone.rsplit("-", 1)[0]
+    return zone
+
+
+def yc_internal_fqdn(hostname: str, zone: str) -> str:
+    """Внутренний DNS Yandex Cloud: <hostname>.<region>.internal."""
+    region = yc_region_from_zone(zone)
+    if region:
+        return f"{hostname}.{region}.internal"
+    return hostname
+
+
+def inv_host(inv: dict[str, str], prefix: str, idx: int, zone: str = "") -> str:
+    """Имя хоста из инвентаря (предпочтительно) или IP (fallback)."""
+    name = inv.get(f"{prefix}_{idx}_NAME")
+    if name:
+        return yc_internal_fqdn(name, zone)
+    ip_key = f"{prefix}_{idx}_IP"
+    if inv.get(ip_key):
+        return inv[ip_key]
+    raise KeyError(f"Missing host for {prefix}_{idx}")
+
+
+def collect_cluster_hosts(inv: dict[str, str], zone: str) -> list[str]:
+    hosts: list[str] = []
     obs_count = int(inv.get("OBSERVER_COUNT", 0))
     obproxy_count = int(inv.get("OBPROXY_COUNT", 0))
     configserver_count = int(inv.get("CONFIGSERVER_COUNT", 0))
     monitor_count = int(inv.get("MONITOR_COUNT", 0))
 
     for i in range(1, obs_count + 1):
-        ips.append(inv[f"OBSERVER_{i}_IP"])
+        hosts.append(inv_host(inv, "OBSERVER", i, zone))
     for i in range(1, obproxy_count + 1):
-        ips.append(inv[f"OBPROXY_{i}_IP"])
+        hosts.append(inv_host(inv, "OBPROXY", i, zone))
     for i in range(1, configserver_count + 1):
-        key = f"CONFIGSERVER_{i}_IP"
+        key = f"CONFIGSERVER_{i}_NAME"
         if inv.get(key):
-            ips.append(inv[key])
+            hosts.append(yc_internal_fqdn(inv[key], zone))
+        elif inv.get(f"CONFIGSERVER_{i}_IP"):
+            hosts.append(inv[f"CONFIGSERVER_{i}_IP"])
     for i in range(1, monitor_count + 1):
-        ips.append(inv[f"MONITOR_{i}_IP"])
-    return ips
+        hosts.append(inv_host(inv, "MONITOR", i, zone))
+    return hosts
 
 
 def build_prometheus_scrape_configs(
     cfg: dict,
     inv: dict[str, str],
-    observer_ips: list[str],
+    observer_hosts: list[str],
+    zone: str,
 ) -> list[dict]:
     mon = monitoring_cfg(cfg)
     node_cfg = mon.get("node_exporter", {})
@@ -94,7 +125,7 @@ def build_prometheus_scrape_configs(
     ]
 
     if node_cfg.get("enabled", True):
-        node_targets = [f"{ip}:{node_port}" for ip in collect_cluster_ips(inv)]
+        node_targets = [f"{host}:{node_port}" for host in collect_cluster_hosts(inv, zone)]
         scrape_configs.append(
             {
                 "job_name": "node_exporter",
@@ -104,7 +135,7 @@ def build_prometheus_scrape_configs(
         )
 
     if components.get("obagent", True):
-        obagent_targets = [f"{ip}:{obagent_port}" for ip in observer_ips]
+        obagent_targets = [f"{host}:{obagent_port}" for host in observer_hosts]
         for job_name, path in (
             ("node", "/metrics/node/host"),
             ("ob_basic", "/metrics/ob/basic"),
@@ -129,10 +160,11 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     obproxy_count = int(inv.get("OBPROXY_COUNT", profiles.get("obproxy", {}).get("count", 0)))
     configserver_dedicated = inv.get("CONFIGSERVER_DEDICATED", "false").lower() == "true"
 
-    observer_ips = [inv[f"OBSERVER_{i}_IP"] for i in range(1, obs_count + 1)]
+    yc = cfg["yandex_cloud"]
+    zone = yc.get("zone", "")
+    observer_hosts = [inv_host(inv, "OBSERVER", i, zone) for i in range(1, obs_count + 1)]
     ob_cfg = cfg["oceanbase"]
     ssh_cfg = cfg["ssh"]
-    yc = cfg["yandex_cloud"]
 
     tune = ob_cfg
     if ob_cfg.get("auto_tune", True):
@@ -159,9 +191,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     servers = []
     server_overrides: dict = {}
-    for idx, ip in enumerate(observer_ips, start=1):
+    for idx, host in enumerate(observer_hosts, start=1):
         sname = f"server{idx}"
-        servers.append({"name": sname, "ip": ip})
+        servers.append({"name": sname, "ip": host})
         server_overrides[sname] = {
             "mysql_port": int(ports.get("mysql", 2881)),
             "rpc_port": int(ports.get("rpc", 2882)),
@@ -182,10 +214,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     result: dict = {"user": user_block}
 
     if components.get("ob_configserver", True):
-        if configserver_dedicated and inv.get("CONFIGSERVER_1_IP"):
+        if configserver_dedicated and inv.get("CONFIGSERVER_1_NAME"):
+            cs_servers = [yc_internal_fqdn(inv["CONFIGSERVER_1_NAME"], zone)]
+        elif configserver_dedicated and inv.get("CONFIGSERVER_1_IP"):
             cs_servers = [inv["CONFIGSERVER_1_IP"]]
         else:
-            cs_servers = [observer_ips[0]]
+            cs_servers = [observer_hosts[0]]
         result["ob-configserver"] = {
             "servers": cs_servers,
             "global": {
@@ -216,12 +250,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     if components.get("obproxy_ce", True):
         if obproxy_count > 0:
-            proxy_ips = [inv[f"OBPROXY_{i}_IP"] for i in range(1, obproxy_count + 1)]
+            proxy_hosts = [inv_host(inv, "OBPROXY", i, zone) for i in range(1, obproxy_count + 1)]
         else:
-            proxy_ips = observer_ips[:1]
+            proxy_hosts = observer_hosts[:1]
         result["obproxy-ce"] = {
             "depends": ["oceanbase-ce"],
-            "servers": proxy_ips,
+            "servers": proxy_hosts,
             "global": {
                 "listen_port": int(ports.get("obproxy", 2883)),
                 "prometheus_listen_port": 2884,
@@ -248,13 +282,13 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     mon_count = int(inv.get("MONITOR_COUNT", "0"))
     if prometheus_enabled:
-        prom_ip = observer_ips[0]
+        prom_host = observer_hosts[0]
         if monitor_vm_enabled and mon_count > 0:
-            prom_ip = inv["MONITOR_1_IP"]
+            prom_host = inv_host(inv, "MONITOR", 1, zone)
         prom_port = int(prom_cfg.get("port", 9090))
         result["prometheus"] = {
             "depends": ["obagent"] if components.get("obagent", True) else [],
-            "servers": [prom_ip],
+            "servers": [prom_host],
             "global": {
                 "home_path": f"/home/{deploy_user}/prometheus",
                 "port": prom_port,
@@ -263,18 +297,18 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                         "scrape_interval": "15s",
                         "evaluation_interval": "15s",
                     },
-                    "scrape_configs": build_prometheus_scrape_configs(cfg, inv, observer_ips),
+                    "scrape_configs": build_prometheus_scrape_configs(cfg, inv, observer_hosts, zone),
                 },
             },
         }
 
     if grafana_enabled:
-        graf_ip = inv.get("MONITOR_1_IP", observer_ips[0])
+        graf_host = inv_host(inv, "MONITOR", 1, zone) if inv.get("MONITOR_1_NAME") else observer_hosts[0]
         if monitor_vm_enabled and mon_count > 0:
-            graf_ip = inv["MONITOR_1_IP"]
+            graf_host = inv_host(inv, "MONITOR", 1, zone)
         result["grafana"] = {
             "depends": ["prometheus"],
-            "servers": [graf_ip],
+            "servers": [graf_host],
             "global": {
                 "home_path": f"/home/{deploy_user}/grafana",
                 "login_password": mon.get("grafana_password", "oceanbase"),

@@ -23,7 +23,7 @@ command -v obd >/dev/null 2>&1 || die "OBD не установлен"
 current="${OBSERVER_COUNT}"
 deploy_name="${DEPLOY_NAME}"
 declare -a new_names=()
-declare -a new_ips=()
+declare -a new_hosts=()
 declare -a disks_created=()
 declare -a existing_names=()
 
@@ -59,14 +59,14 @@ for name in "${new_names[@]}"; do
   idx="${name##*-}"
   echo "OBSERVER_${idx}_NAME=${name}" >> "${GENERATED_DIR}/inventory.env"
   echo "OBSERVER_${idx}_IP=${ip}" >> "${GENERATED_DIR}/inventory.env"
-  new_ips+=("${ip}")
+  new_hosts+=("$(yc_internal_fqdn "${name}" "$(yaml_get yandex_cloud.zone)")")
 done
 
 new_total=$((current + ADD_COUNT))
 sed -i "s/^OBSERVER_COUNT=.*/OBSERVER_COUNT=${new_total}/" "${GENERATED_DIR}/inventory.env"
 
-wait_for_instances_ssh "${new_ips[@]}"
-bash "${LIB_DIR}/02-prepare-servers.sh" "${new_ips[@]}"
+wait_for_instances_ssh "${new_hosts[@]}"
+bash "${LIB_DIR}/02-prepare-servers.sh" "${new_hosts[@]}"
 
 python3 "${LIB_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/scale-out.yaml"
 
