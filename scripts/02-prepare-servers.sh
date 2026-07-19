@@ -63,6 +63,20 @@ prepare_host() {
 
   info "Подготовка ${host} (${role})..."
 
+  if ! run_remote "${host}" "sudo env \
+ROLE='${role}' \
+DEPLOY_USER='${DEPLOY_USER}' \
+DATA_DISK_ENABLED='${need_data}' \
+DATA_MOUNT='${data_mount}' \
+LOG_DISK_ENABLED='${need_log}' \
+LOG_MOUNT='${log_mount}' \
+DATA_DIR='${DATA_DIR}' \
+REDO_DIR='${REDO_DIR}' \
+bash -s" < "${LIB_DIR}/lib/mount-role-disks.sh"
+  then
+    die "Ошибка монтирования дисков на ${host} (${role})"
+  fi
+
   if ! run_remote "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 
@@ -70,115 +84,6 @@ command -v mkfs.ext4 >/dev/null 2>&1 || {
   apt-get update -qq
   apt-get install -y -qq e2fsprogs
 }
-
-DEPLOY_USER="${DEPLOY_USER}"
-DATA_DIR="${DATA_DIR}"
-REDO_DIR="${REDO_DIR}"
-NEED_DATA="${need_data}"
-NEED_LOG="${need_log}"
-DATA_MOUNT="${data_mount}"
-LOG_MOUNT="${log_mount}"
-
-find_yc_disk() {
-  local device_name="\$1"
-  local candidate resolved
-  for candidate in \
-    "/dev/disk/by-id/virtio-\${device_name}" \
-    /dev/disk/by-id/*-"\${device_name}" \
-    /dev/disk/by-path/*-"\${device_name}"; do
-    [[ -e "\${candidate}" ]] || continue
-    resolved="\$(readlink -f "\${candidate}")"
-    [[ -b "\${resolved}" ]] || continue
-    printf '%s\n' "\${resolved}"
-    return 0
-  done
-  return 1
-}
-
-mount_device() {
-  local device="\$1" mount_point="\$2"
-  [[ -b "\${device}" ]] || return 1
-  if mountpoint -q "\${mount_point}"; then
-    return 0
-  fi
-  if ! blkid "\${device}" >/dev/null 2>&1; then
-    mkfs.ext4 -F "\${device}" >/dev/null 2>&1
-  fi
-  mkdir -p "\${mount_point}"
-  if ! grep -q "[[:space:]]\${mount_point}[[:space:]]" /etc/fstab; then
-    uuid=\$(blkid -s UUID -o value "\${device}")
-    echo "UUID=\${uuid} \${mount_point} ext4 defaults,noatime,nodiratime,nodelalloc 0 2" >> /etc/fstab
-  fi
-  mount "\${mount_point}" 2>/dev/null || mount -a
-  mountpoint -q "\${mount_point}"
-}
-
-mount_role_disk() {
-  local device_name="\$1" mount_point="\$2"
-  local device mounted=false
-  if mountpoint -q "\${mount_point}"; then
-    return 0
-  fi
-  if device="\$(find_yc_disk "\${device_name}")"; then
-    mount_device "\${device}" "\${mount_point}" && mounted=true
-  fi
-  if [[ "\${mounted}" != "true" ]]; then
-    for d in "/dev/disk/by-id/virtio-\${device_name}" /dev/vd? /dev/sd? /dev/nvme*n*; do
-      [[ -b "\${d}" ]] || continue
-      [[ "\${d}" == /dev/vda || "\${d}" == /dev/sda ]] && continue
-      findmnt -rn -S "\${d}" >/dev/null 2>&1 && continue
-      if mount_device "\${d}" "\${mount_point}"; then
-        mounted=true
-        break
-      fi
-    done
-  fi
-  [[ "\${mounted}" == "true" ]]
-}
-
-ensure_deploy_user() {
-  id -u "\${DEPLOY_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "\${DEPLOY_USER}"
-  usermod -aG sudo "\${DEPLOY_USER}" 2>/dev/null || usermod -aG wheel "\${DEPLOY_USER}" 2>/dev/null || true
-}
-
-prepare_data_paths() {
-  local mount_point="\$1" target_dir="\$2" label="\$3"
-  mountpoint -q "\${mount_point}" || {
-    echo "ERROR: \${label} не смонтирован в \${mount_point}" >&2
-    return 1
-  }
-  mkdir -p "\${target_dir}"
-  chown -R "\${DEPLOY_USER}:\${DEPLOY_USER}" "\${mount_point}"
-  install -d -o "\${DEPLOY_USER}" -g "\${DEPLOY_USER}" -m 0755 "\${target_dir}"
-  sudo -u "\${DEPLOY_USER}" test -w "\${target_dir}" || {
-    echo "ERROR: пользователь \${DEPLOY_USER} не может писать в \${target_dir}" >&2
-    return 1
-  }
-}
-
-ensure_deploy_user
-
-DATA_MOUNTED=false
-LOG_MOUNTED=false
-if [[ "\${NEED_DATA}" == "true" ]]; then
-  mount_role_disk data "\${DATA_MOUNT}" && DATA_MOUNTED=true
-  [[ "\${DATA_MOUNTED}" == "true" ]] || {
-    echo "ERROR: не удалось смонтировать data-диск в \${DATA_MOUNT}" >&2
-    exit 1
-  }
-fi
-if [[ "\${NEED_LOG}" == "true" ]]; then
-  mount_role_disk log "\${LOG_MOUNT}" && LOG_MOUNTED=true
-  [[ "\${LOG_MOUNTED}" == "true" ]] || {
-    echo "ERROR: не удалось смонтировать log-диск в \${LOG_MOUNT}" >&2
-    exit 1
-  }
-fi
-
-if [[ "${role}" == "observer" || "${role}" == "monitor" ]]; then
-  [[ "\${NEED_DATA}" != "true" ]] || prepare_data_paths "\${DATA_MOUNT}" "\${DATA_DIR}" "data-диск"
-  [[ "\${NEED_LOG}" != "true" ]] || prepare_data_paths "\${LOG_MOUNT}" "\${REDO_DIR}" "log-диск"
-fi
 
 cat >/etc/sysctl.d/99-oceanbase.conf <<'SYSCTL'
 fs.aio-max-nr = 1048576

@@ -40,11 +40,27 @@ load_vm_params() {
 write_cloud_init() {
   local cloud_init="$1" ssh_user="$2" ssh_key_file="$3" role="$4"
   local data_en="$5" data_mp="$6" log_en="$7" log_mp="$8"
+  local data_dir="$9" redo_dir="${10}"
+  local mount_script="${LIB_DIR}/mount-role-disks.sh"
+  require_file "${mount_script}"
   python3 - "$cloud_init" "$ssh_user" "$ssh_key_file" "$role" \
-    "$data_en" "$data_mp" "$log_en" "$log_mp" <<'PY'
+    "$data_en" "$data_mp" "$log_en" "$log_mp" "$data_dir" "$redo_dir" "$mount_script" <<'PY'
 import sys, pathlib
-out, user, key_file, role, data_en, data_mp, log_en, log_mp = sys.argv[1:9]
+(
+    out,
+    user,
+    key_file,
+    role,
+    data_en,
+    data_mp,
+    log_en,
+    log_mp,
+    data_dir,
+    redo_dir,
+    mount_script,
+) = sys.argv[1:12]
 pub = pathlib.Path(key_file).read_text().strip()
+mount_body = pathlib.Path(mount_script).read_text()
 content = f"""#cloud-config
 users:
   - name: {user}
@@ -58,11 +74,20 @@ write_files:
   - path: /etc/oceanbase-deploy-role-marker
     content: |
       role={role}
+      deploy_user={user}
       data_disk_enabled={data_en}
       data_mount={data_mp}
       log_disk_enabled={log_en}
       log_mount={log_mp}
+      data_dir={data_dir}
+      redo_dir={redo_dir}
     permissions: '0644'
+  - path: /usr/local/sbin/ob-deploy-mount-disks.sh
+    content: |
+{chr(10).join('      ' + line for line in mount_body.splitlines())}
+    permissions: '0755'
+runcmd:
+  - [/usr/local/sbin/ob-deploy-mount-disks.sh]
 """
 pathlib.Path(out).write_text(content)
 PY
@@ -139,8 +164,12 @@ create_instance_async() {
   require_file "$ssh_key_file"
 
   local cloud_init="${GENERATED_DIR}/cloud-init-${name}.yaml"
+  local data_dir redo_dir
+  data_dir="$(yaml_get oceanbase.data_dir)"
+  redo_dir="$(yaml_get oceanbase.redo_dir)"
   write_cloud_init "${cloud_init}" "${ssh_user}" "${ssh_key_file}" "${role}" \
-    "${VM_DATA_ENABLED}" "${VM_DATA_MOUNT}" "${VM_LOG_ENABLED}" "${VM_LOG_MOUNT}"
+    "${VM_DATA_ENABLED}" "${VM_DATA_MOUNT}" "${VM_LOG_ENABLED}" "${VM_LOG_MOUNT}" \
+    "${data_dir}" "${redo_dir}"
 
   info "Создание ВМ ${name} (${role}): ${VM_CORES} vCPU, ${VM_MEMORY_GB} GB, image=${VM_IMAGE_SPEC}"
 
