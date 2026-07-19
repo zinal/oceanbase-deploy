@@ -73,12 +73,22 @@ load_inventory() {
   source "$inv"
 }
 
-# Внутренний DNS Yandex Cloud: <hostname>.<zone>.internal
+# Внутренний DNS Yandex Cloud: <hostname>.<region>.internal (ru-central1-a -> ru-central1)
+yc_region_from_zone() {
+  local zone="$1"
+  if [[ -z "${zone}" ]]; then
+    return 0
+  fi
+  printf '%s' "${zone%-*}"
+}
+
 yc_internal_fqdn() {
   local hostname="$1"
   local zone="$2"
-  if [[ -n "${zone}" ]]; then
-    printf '%s' "${hostname}.${zone}.internal"
+  local region
+  region="$(yc_region_from_zone "${zone}")"
+  if [[ -n "${region}" ]]; then
+    printf '%s' "${hostname}.${region}.internal"
   else
     printf '%s' "${hostname}"
   fi

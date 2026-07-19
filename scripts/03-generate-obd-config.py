@@ -50,10 +50,20 @@ def monitoring_cfg(cfg: dict) -> dict:
     return cfg.get("monitoring", {}) or {}
 
 
+def yc_region_from_zone(zone: str) -> str:
+    """Регион из идентификатора зоны YC: ru-central1-a -> ru-central1."""
+    if not zone:
+        return ""
+    if "-" in zone:
+        return zone.rsplit("-", 1)[0]
+    return zone
+
+
 def yc_internal_fqdn(hostname: str, zone: str) -> str:
-    """Внутренний DNS Yandex Cloud: <hostname>.<zone>.internal."""
-    if zone:
-        return f"{hostname}.{zone}.internal"
+    """Внутренний DNS Yandex Cloud: <hostname>.<region>.internal."""
+    region = yc_region_from_zone(zone)
+    if region:
+        return f"{hostname}.{region}.internal"
     return hostname
 
 

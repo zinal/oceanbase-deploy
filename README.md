@@ -203,7 +203,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 └── skills/README.md             # интеграция oceanbase-skills
 ```
 
-Конфигурация OBD (`generated/obd-cluster.yaml`) использует **имена ВМ** во внутреннем DNS Yandex Cloud (`<имя-вм>.<зона>.internal`), а не IP-адреса — IP в YC не сохраняются при остановке/перезапуске ВМ.
+Конфигурация OBD (`generated/obd-cluster.yaml`) использует **имена ВМ** во внутреннем DNS Yandex Cloud (`<имя-вм>.ru-central1.internal`), а не IP-адреса — IP в YC не сохраняются при остановке/перезапуске ВМ.
 
 ## Масштабирование
 
