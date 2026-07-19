@@ -177,9 +177,8 @@ case "${ACTION}" in
       for var in $(compgen -v | grep -E '_NAME$'); do
         name="${!var}"
         delete_instance "${name}"
-        delete_instance_disk "${name}-data"
-        delete_instance_disk "${name}-log"
       done
+      delete_deployment_disks "${deploy_name}"
       rm -f "${inventory}"
     else
       warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
