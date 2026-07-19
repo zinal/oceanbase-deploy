@@ -86,9 +86,16 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh deploy      # obd cluster deploy + start
 ```
 
-## Настройка ВМ (`config/deploy.yaml`)
+## Настройка (`config/deploy.yaml`)
 
-Каждый компонент OceanBase имеет **отдельный профиль** в `vm_profiles`. Подробный анализ: [docs/component-vm-sizing.md](docs/component-vm-sizing.md).
+Секции не дублируют друг друга:
+
+| Секция | Назначение |
+|--------|------------|
+| `yandex_cloud` | Инфраструктура YC: zone, subnet, SSH, **образ ОС**, network_acceleration |
+| `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
+| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring |
+| `oceanbase` | Параметры кластера, OBD, auto-tune |
 
 ```yaml
 yandex_cloud:
@@ -96,6 +103,10 @@ yandex_cloud:
   image_family: ubuntu-2204-lts
   # или image_name: redsoft-red-os-standart-server-7-3-v20240402
   network_acceleration: software-accelerated
+
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
 
 vm_profiles:
   observer:                    # oceanbase-ce + obagent

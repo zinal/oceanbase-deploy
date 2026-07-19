@@ -61,23 +61,13 @@ def _merge_disk(base: dict | None, override: dict | None) -> dict:
     return result
 
 
-def build_image_spec(defaults: dict[str, Any], profile: dict[str, Any], yc: dict[str, Any]) -> str:
-    """Сформировать спецификацию образа как в ydb-snippets admin/vms."""
-    folder = (
-        profile.get("image_folder_id")
-        or defaults.get("image_folder_id")
-        or yc.get("image_folder_id")
-        or "standard-images"
-    )
-    image_name = profile.get("image_name") or defaults.get("image_name") or yc.get("image_name")
+def build_image_spec(profile: dict[str, Any], yc: dict[str, Any]) -> str:
+    """Сформировать спецификацию образа (yandex_cloud + опциональный override в vm_profiles)."""
+    folder = profile.get("image_folder_id") or yc.get("image_folder_id") or "standard-images"
+    image_name = profile.get("image_name") or yc.get("image_name")
     if image_name:
         return f"image-folder-id={folder},image-name={image_name}"
-    image_family = (
-        profile.get("image_family")
-        or defaults.get("image_family")
-        or yc.get("image_family")
-        or "ubuntu-2204-lts"
-    )
+    image_family = profile.get("image_family") or yc.get("image_family") or "ubuntu-2204-lts"
     return f"image-folder-id={folder},image-family={image_family}"
 
 
@@ -102,7 +92,7 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
         if disk.get("type") and disk.get("size_gb"):
             disk["size_gb"] = round_disk_size_gb(int(disk["size_gb"]), disk["type"])
 
-    image_spec = build_image_spec(defaults, {**defaults, **profile}, yc)
+    image_spec = build_image_spec(profile, yc)
 
     return {
         "role": role,
