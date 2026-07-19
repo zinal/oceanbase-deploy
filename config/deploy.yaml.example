@@ -59,13 +59,13 @@ vm_profiles:
       # SSTable реплицируется между observer (Paxos) — можно non-replicated
       type: network-ssd-nonreplicated
       size_gb: 930                 # ~900 GB, кратно 93 (требование YC)
-      mount_point: /data
+      mount_point: /ob-data
     log_disk:
       enabled: true
       # clog/redo — потеря недопустима; рекомендуется 3–4× memory_limit
       type: network-ssd-io-m3
       size_gb: 279                 # ~3× memory_limit (28G), кратно 93
-      mount_point: /data/log1
+      mount_point: /ob-log
 
   # OBProxy — stateless прокси, масштабируется отдельно
   obproxy:
@@ -134,8 +134,8 @@ oceanbase:
   version: ""
   deploy_user: obadmin
   home_path: /home/obadmin/observer
-  data_dir: /data/1
-  redo_dir: /data/log1
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
 
   auto_tune: true
   memory_limit: 28G
