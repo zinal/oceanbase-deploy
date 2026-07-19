@@ -37,7 +37,6 @@ INSTALL_NODE_EXPORTER=false
 if [[ "${NODE_EXPORTER_ENABLED}" == "true" ]]; then
   if [[ "${MONITORING_VM_ENABLED}" == "true" || "${PROMETHEUS_COMPONENT}" == "true" ]]; then
     INSTALL_NODE_EXPORTER=true
-    info "node_exporter: будет установлен на всех узлах (port ${NODE_EXPORTER_PORT})"
   fi
 fi
 
@@ -59,10 +58,13 @@ prepare_host() {
 
   info "Подготовка ${host} (${role})..."
 
-  run_remote "${host}" "sudo bash -s" <<REMOTE
+  if ! run_remote "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 
-command -v mkfs.ext4 >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y e2fsprogs; }
+command -v mkfs.ext4 >/dev/null 2>&1 || {
+  apt-get update -qq
+  apt-get install -y -qq e2fsprogs
+}
 
 DEPLOY_USER="${DEPLOY_USER}"
 DATA_DIR="${DATA_DIR}"
@@ -76,17 +78,16 @@ mount_device() {
   local device="\$1" mount_point="\$2"
   [[ -b "\${device}" ]] || return 1
   if ! blkid "\${device}" >/dev/null 2>&1; then
-    mkfs.ext4 -F "\${device}"
+    mkfs.ext4 -F "\${device}" >/dev/null 2>&1
   fi
   mkdir -p "\${mount_point}"
   if ! grep -q "\${mount_point}" /etc/fstab; then
     uuid=\$(blkid -s UUID -o value "\${device}")
     echo "UUID=\${uuid} \${mount_point} ext4 defaults,noatime,nodiratime,nodelalloc 0 2" >> /etc/fstab
   fi
-  mount -a 2>/dev/null || mount "\${mount_point}" || true
+  mount -a >/dev/null 2>&1 || mount "\${mount_point}" >/dev/null 2>&1 || true
 }
 
-# vdb=data, vdc=log (device-name из yc create-disk)
 if [[ "\${NEED_DATA}" == "true" ]]; then
   for d in /dev/disk/by-id/virtio-data /dev/vdb /dev/sdb; do
     if mount_device "\${d}" "\${DATA_MOUNT}"; then break; fi
@@ -131,7 +132,7 @@ fs.file-max = 6573688
 fs.pipe-user-pages-soft = 0
 vm.max_map_count = 655360
 SYSCTL
-sysctl -p /etc/sysctl.d/99-oceanbase.conf || sysctl --system
+sysctl -p /etc/sysctl.d/99-oceanbase.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
 
 cat >/etc/security/limits.d/oceanbase.conf <<LIMITS
 ${DEPLOY_USER} soft nofile 655350
@@ -150,11 +151,9 @@ sed -i.bak '/ swap / s/^/#/' /etc/fstab 2>/dev/null || true
 if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
   NODE_EXPORTER_PORT="${NODE_EXPORTER_PORT}"
   NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION}"
-  if systemctl is-active --quiet node_exporter 2>/dev/null; then
-    echo "node_exporter уже запущен"
-  else
+  if ! systemctl is-active --quiet node_exporter 2>/dev/null; then
     apt-get update -qq
-    apt-get install -y wget ca-certificates
+    apt-get install -y -qq wget ca-certificates
     ARCH="$(uname -m)"
     case "${ARCH}" in
       x86_64) NE_ARCH=amd64 ;;
@@ -189,13 +188,15 @@ RestartSec=5s
 WantedBy=multi-user.target
 NEUNIT
     systemctl daemon-reload
-    systemctl enable --now node_exporter
-    echo "node_exporter запущен на порту \${NODE_EXPORTER_PORT}"
+    systemctl enable --now node_exporter >/dev/null 2>&1
   fi
 fi
-
-echo "Подготовка завершена на \$(hostname)"
 REMOTE
+  then
+    die "Ошибка подготовки ${host} (${role})"
+  fi
+
+  info "Готово: ${host} (${role})"
 }
 
 prepare_all_observers() {
@@ -223,7 +224,7 @@ if ((${#TARGET_HOSTS[@]} == 0)); then
   if [[ "${CONFIGSERVER_DEDICATED:-false}" == "true" && "${CONFIGSERVER_COUNT:-0}" -gt 0 ]]; then
     prepare_host "${CONFIGSERVER_1_IP}" "configserver"
   fi
-  if [[ "${MONITOR_COUNT:-0}" -gt 0 ]]; then
+  if [[ "${MONITOR_COUNT:-0}" > 0 ]]; then
     for i in $(seq 1 "${MONITOR_COUNT}"); do
       var="MONITOR_${i}_IP"
       prepare_host "${!var}" "monitor"
@@ -231,4 +232,7 @@ if ((${#TARGET_HOSTS[@]} == 0)); then
   fi
 fi
 
+if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
+  info "node_exporter установлен на всех узлах (port ${NODE_EXPORTER_PORT})"
+fi
 info "Подготовка всех серверов завершена"
