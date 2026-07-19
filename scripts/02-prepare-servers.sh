@@ -154,14 +154,14 @@ if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
   if ! systemctl is-active --quiet node_exporter 2>/dev/null; then
     apt-get update -qq
     apt-get install -y -qq wget ca-certificates
-    ARCH="$(uname -m)"
-    case "${ARCH}" in
+    ARCH="\$(uname -m)"
+    case "\${ARCH}" in
       x86_64) NE_ARCH=amd64 ;;
       aarch64) NE_ARCH=arm64 ;;
-      *) echo "node_exporter: неподдерживаемая архитектура ${ARCH}" >&2; exit 1 ;;
+      *) echo "node_exporter: неподдерживаемая архитектура \${ARCH}" >&2; exit 1 ;;
     esac
     id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter
-    TMPDIR="$(mktemp -d)"
+    TMPDIR="\$(mktemp -d)"
     wget -q "https://github.com/prometheus/node_exporter/releases/download/v\${NODE_EXPORTER_VERSION}/node_exporter-\${NODE_EXPORTER_VERSION}.linux-\${NE_ARCH}.tar.gz" -O "\${TMPDIR}/node_exporter.tgz"
     tar xzf "\${TMPDIR}/node_exporter.tgz" -C "\${TMPDIR}"
     install -o node_exporter -g node_exporter -m 0755 "\${TMPDIR}/node_exporter-\${NODE_EXPORTER_VERSION}.linux-\${NE_ARCH}/node_exporter" /usr/local/bin/node_exporter
