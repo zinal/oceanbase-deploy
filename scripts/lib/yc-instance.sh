@@ -89,7 +89,6 @@ create_instance_disks_async() {
   yc_folder_cache_init
 
   local labels="deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"
-  local created=false
 
   ensure_disk() {
     local disk_name="$1" disk_type="$2" disk_size="$3"
@@ -106,7 +105,6 @@ create_instance_disks_async() {
         --type "${disk_type}" --size "${disk_size}G" \
         --labels "${labels}"
     _created_disks+=("${disk_name}")
-    created=true
   }
 
   if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
@@ -119,7 +117,9 @@ create_instance_disks_async() {
     ensure_disk "${disk_name}" "${VM_LOG_TYPE}" "${VM_LOG_SIZE}"
   fi
 
-  [[ "${created}" == "true" ]]
+  if [[ "${VM_DATA_ENABLED}" != "true" && "${VM_LOG_ENABLED}" != "true" ]]; then
+    info "ВМ ${name} (${role}): secondary-диски не требуются"
+  fi
 }
 
 # Создание ВМ асинхронно с attach существующих дисков.
