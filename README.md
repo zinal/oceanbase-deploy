@@ -1,1 +1,204 @@
-# oceanbase-deploy
+# Развёртывание OceanBase в Yandex Cloud
+
+Автоматизация развёртывания масштабируемого кластера **OceanBase Community Edition** на виртуальных машинах [Yandex Cloud](https://cloud.yandex.ru/) с использованием [OBD](https://www.oceanbase.com/docs/common-obd-cn-1000000005246289) и рекомендаций [oceanbase-skills](https://github.com/oceanbase/oceanbase-skills).
+
+## Возможности
+
+- Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring)
+- Оптимальные типы дисков YC: non-replicated для реплицируемых data, io-m3 для log/boot
+- Подготовка серверов по best practices (sysctl, limits, монтирование дисков)
+- Генерация конфигурации OBD и развёртывание кластера
+- Горизонтальное масштабирование (`scale_out`)
+- Альтернатива: Terraform-модуль для создания ВМ
+
+## Архитектура
+
+```mermaid
+flowchart TB
+  subgraph control [Управляющая машина]
+    OBD[OBD CLI]
+    Scripts[deploy.sh]
+  end
+
+  subgraph yc [Yandex Cloud]
+    O1[observer-1 zone1]
+    O2[observer-2 zone2]
+    O3[observer-3 zone3]
+    P[obproxy]
+    M[monitoring optional]
+  end
+
+  Scripts --> OBD
+  OBD -->|SSH| O1
+  OBD -->|SSH| O2
+  OBD -->|SSH| O3
+  OBD -->|SSH| P
+  OBD -->|SSH| M
+  Client[Клиенты] -->|2883| P
+  P --> O1 & O2 & O3
+```
+
+## Требования
+
+| Компонент | Назначение |
+|-----------|------------|
+| [Yandex Cloud CLI (`yc`)](https://cloud.yandex.ru/docs/cli/quickstart) | Создание ВМ |
+| SSH-ключи | Доступ к ВМ и OBD |
+| Python 3 + PyYAML | Генерация конфигурации |
+| OBD | Развёртывание OceanBase (устанавливается на шаге deploy) |
+
+Рекомендуемые ресурсы **на каждый observer-узел** (production, [oceanbase-skills/cluster-management](https://github.com/oceanbase/oceanbase-skills)):
+
+- минимум **3 узла** для HA
+- **4+ vCPU**, **16+ GB RAM**, **100+ GB SSD** (data disk)
+
+## Быстрый старт
+
+```bash
+# 1. Зависимости
+pip install -r requirements.txt
+yc init   # настройка Yandex Cloud
+
+# 2. Конфигурация
+cp config/deploy.yaml.example config/deploy.yaml
+# Отредактируйте: folder_id, ssh-ключи, ресурсы ВМ, количество узлов
+
+# 3. Полное развёртывание
+chmod +x scripts/*.sh scripts/lib/*.sh
+./scripts/deploy.sh all
+```
+
+Пошаговый режим:
+
+```bash
+./scripts/deploy.sh check       # проверка
+./scripts/deploy.sh provision   # создание ВМ
+./scripts/deploy.sh prepare     # подготовка серверов
+./scripts/deploy.sh config      # obd-cluster.yaml
+./scripts/deploy.sh deploy      # obd cluster deploy + start
+```
+
+## Настройка ВМ (`config/deploy.yaml`)
+
+Каждый компонент OceanBase имеет **отдельный профиль** в `vm_profiles`. Подробный анализ: [docs/component-vm-sizing.md](docs/component-vm-sizing.md).
+
+```yaml
+vm_profiles:
+  observer:                    # oceanbase-ce + obagent
+    count: 3
+    cores: 8                   # мин. 4
+    memory_gb: 32              # мин. 16
+    boot_disk:
+      type: network-ssd-io-m3   # home_path — потеря недопустима
+    data_disk:
+      type: network-ssd-nonreplicated  # SSTable, реплицируется Paxos
+      size_gb: 558             # кратно 93 GB
+    log_disk:
+      enabled: true
+      type: network-ssd-io-m3  # clog — потеря недопустима
+      size_gb: 279
+
+  obproxy:                     # лёгкий stateless прокси
+    count: 2
+    cores: 2
+    memory_gb: 4
+
+  configserver:
+    dedicated: false           # true — отдельная ВМ
+
+  monitoring:
+    enabled: false
+    cores: 4
+    memory_gb: 16
+```
+
+Проверка соответствия рекомендациям OceanBase:
+
+```bash
+python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
+```
+
+### Типы дисков по умолчанию
+
+| Диск | Тип | Обоснование |
+|------|-----|-------------|
+| Observer data | `network-ssd-nonreplicated` | Данные реплицируются между узлами |
+| Observer log | `network-ssd-io-m3` | Журнал транзакций, потеря недопустима |
+| Observer boot | `network-ssd-io-m3` | Бинарники и home_path |
+| Monitoring data | `network-ssd-io-m3` | Метрики, потеря нежелательна |
+
+## Структура репозитория
+
+```
+├── docs/component-vm-sizing.md  # анализ профилей ВМ по компонентам
+├── config/deploy.yaml.example   # шаблон конфигурации
+├── scripts/
+│   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
+│   ├── deploy.sh                # главный сценарий
+│   ├── 00-check-prerequisites.sh
+│   ├── 01-provision-vms.sh      # yc compute instance create
+│   ├── 02-prepare-servers.sh    # sysctl, диски, пользователь
+│   ├── 03-generate-obd-config.py
+│   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
+│   ├── 05-scale-out.sh          # добавление observer-узлов
+│   └── 99-destroy.sh
+├── terraform/                   # опциональный IaC
+├── generated/                   # inventory.env, obd-cluster.yaml
+└── skills/README.md             # интеграция oceanbase-skills
+```
+
+## Масштабирование
+
+Добавить 2 observer-узла:
+
+```bash
+./scripts/05-scale-out.sh 2
+```
+
+Скрипт создаёт ВМ, подготавливает серверы и выполняет `obd cluster scale_out`.
+
+## Terraform (альтернатива)
+
+```bash
+cd terraform
+export TF_VAR_deployment_name=ob-yc-prod
+export TF_VAR_subnet_id=<subnet-id>
+export TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)"
+terraform init && terraform apply
+```
+
+После `terraform apply` используйте IP из output для `generated/inventory.env` и продолжите с `./scripts/deploy.sh prepare`.
+
+## OceanBase Skills
+
+Установите skills для AI-ассистента (Cursor/Claude Code):
+
+```bash
+npx skills add oceanbase/oceanbase-skills --skill oceanbase-deploy
+```
+
+Подробнее: [skills/README.md](skills/README.md)
+
+## Удаление
+
+```bash
+# Только ВМ Yandex Cloud
+./scripts/deploy.sh destroy
+
+# ВМ + кластер OBD (удаление данных!)
+./scripts/99-destroy.sh --destroy-obd
+```
+
+## Подключение к кластеру
+
+После развёртывания:
+
+```bash
+obd cluster display <deployment_name>
+mysql -h<obproxy_ip> -P2883 -uroot -p
+# Obshell dashboard: http://<observer_ip>:2886
+```
+
+## Лицензия
+
+MIT. OceanBase — отдельная лицензия OceanBase Community Edition.
