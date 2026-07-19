@@ -127,6 +127,7 @@ monitoring:
     http_port: 8088
     basic_auth_user: admin
     basic_auth_password: oceanbase
+  grafana_password: oceanbase
 
 oceanbase:
   cluster_name: obcluster
