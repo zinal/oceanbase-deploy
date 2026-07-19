@@ -73,6 +73,38 @@ load_inventory() {
   source "$inv"
 }
 
+# Внутренний DNS Yandex Cloud: <hostname>.<zone>.internal
+yc_internal_fqdn() {
+  local hostname="$1"
+  local zone="$2"
+  if [[ -n "${zone}" ]]; then
+    printf '%s' "${hostname}.${zone}.internal"
+  else
+    printf '%s' "${hostname}"
+  fi
+}
+
+# Имя хоста из инвентаря (предпочтительно) или IP (fallback).
+inventory_host() {
+  local prefix="$1" idx="$2"
+  local name_var="${prefix}_${idx}_NAME"
+  local ip_var="${prefix}_${idx}_IP"
+  local zone host
+
+  zone="$(yaml_get yandex_cloud.zone)"
+  host="${!name_var:-}"
+  if [[ -n "${host}" ]]; then
+    yc_internal_fqdn "${host}" "${zone}"
+    return 0
+  fi
+  host="${!ip_var:-}"
+  if [[ -n "${host}" ]]; then
+    printf '%s' "${host}"
+    return 0
+  fi
+  die "Не задан хост для ${prefix}_${idx} (ожидается ${name_var} или ${ip_var})"
+}
+
 # OBD хранит метаданные развёртывания в ~/.obd/cluster/<deploy_name>.
 # `obd cluster list` иногда не показывает кластер (формат вывода, ANSI), хотя deploy уже выполнен.
 obd_cluster_registered() {

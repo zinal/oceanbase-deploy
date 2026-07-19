@@ -203,6 +203,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 └── skills/README.md             # интеграция oceanbase-skills
 ```
 
+Конфигурация OBD (`generated/obd-cluster.yaml`) использует **имена ВМ** во внутреннем DNS Yandex Cloud (`<имя-вм>.<зона>.internal`), а не IP-адреса — IP в YC не сохраняются при остановке/перезапуске ВМ.
+
 ## Масштабирование
 
 Добавить 2 observer-узла:
@@ -223,7 +225,7 @@ export TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)"
 terraform init && terraform apply
 ```
 
-После `terraform apply` используйте IP из output для `generated/inventory.env` и продолжите с `./scripts/deploy.sh prepare`.
+После `terraform apply` заполните `generated/inventory.env` (поля `*_NAME` и `*_IP` для каждой ВМ) и продолжите с `./scripts/deploy.sh prepare`. В OBD-конфиге будут использованы имена ВМ, а не IP.
 
 ## OceanBase Skills
 
