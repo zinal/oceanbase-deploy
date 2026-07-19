@@ -47,17 +47,16 @@ frontend obproxy_mysql
     default_backend obproxy_servers
 
 backend obproxy_servers
-    # Привязка клиента к backend по IP источника (sticky на уровне соединений)
-    balance source
+    balance roundrobin
 
     # Пассивная TCP-проверка доступности порта obproxy
     option tcp-check
     default-server inter 5s fall 3 rise 2
 
     # Замените на реальные IP или FQDN obproxy из inventory.env
-    server obproxy1 10.128.0.11:2883 check
-    server obproxy2 10.128.0.12:2883 check
-    # server obproxy3 ob-yc-prod-obproxy-3.ru-central1.internal:2883 check
+    server obproxy1 ob-yc-prod-obproxy-1:2883 check
+    server obproxy2 ob-yc-prod-obproxy-2:2883 check
+    # server obproxy3 ob-yc-prod-obproxy-3:2883 check
 
 # --- Опционально: метрики OBProxy для Prometheus (порт 2884) ---
 #
