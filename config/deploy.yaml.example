@@ -1,6 +1,12 @@
 # Пример конфигурации развёртывания OceanBase в Yandex Cloud.
 # Скопируйте в config/deploy.yaml и отредактируйте под своё окружение.
 #
+# Структура конфигурации (без дублирования):
+#   yandex_cloud  — инфраструктура YC: зона, сеть, SSH, образ ОС
+#   vm_defaults   — общие defaults ресурсов ВМ: platform, core_fraction
+#   vm_profiles   — профили по ролям OceanBase: cores, memory, диски, count
+#   oceanbase     — параметры кластера и OBD
+#
 # Анализ профилей ВМ: docs/component-vm-sizing.md
 # Рекомендации oceanbase-skills (cluster-management):
 # - минимум 3 observer для HA
@@ -13,16 +19,22 @@ yandex_cloud:
   zone: ru-central1-a
   network_name: default
   subnet_name: default-ru-central1-a
+  # Ускорение сети (как в ydb-snippets/admin/vms): software-accelerated | standard
+  network_acceleration: software-accelerated
   ssh_public_key_file: ~/.ssh/id_ed25519.pub
   ssh_user: obadmin
+  # Образ ОС из каталога standard-images (см. ydb-snippets/admin/vms/options.sh-static)
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  # Альтернатива image_family — указать image_name:
+  # image_name: redsoft-red-os-standart-server-7-3-v20240402
 
 deployment:
   name: ob-yc-prod
   control_mode: local
 
-# Общие значения по умолчанию для всех профилей (переопределяются в vm_profiles)
+# Общие параметры вычислительных ресурсов ВМ (переопределяются в vm_profiles.<role>)
 vm_defaults:
-  image_family: ubuntu-2204-lts
   platform: standard-v3
   core_fraction: 100
 

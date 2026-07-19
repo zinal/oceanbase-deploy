@@ -23,6 +23,11 @@ variable "ssh_public_key" {
   description = "Содержимое публичного SSH-ключа"
 }
 
+variable "image_folder_id" {
+  type    = string
+  default = "standard-images"
+}
+
 variable "image_family" {
   type    = string
   default = "ubuntu-2204-lts"

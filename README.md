@@ -86,11 +86,28 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh deploy      # obd cluster deploy + start
 ```
 
-## Настройка ВМ (`config/deploy.yaml`)
+## Настройка (`config/deploy.yaml`)
 
-Каждый компонент OceanBase имеет **отдельный профиль** в `vm_profiles`. Подробный анализ: [docs/component-vm-sizing.md](docs/component-vm-sizing.md).
+Секции не дублируют друг друга:
+
+| Секция | Назначение |
+|--------|------------|
+| `yandex_cloud` | Инфраструктура YC: zone, subnet, SSH, **образ ОС**, network_acceleration |
+| `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
+| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring |
+| `oceanbase` | Параметры кластера, OBD, auto-tune |
 
 ```yaml
+yandex_cloud:
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  # или image_name: redsoft-red-os-standart-server-7-3-v20240402
+  network_acceleration: software-accelerated
+
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
+
 vm_profiles:
   observer:                    # oceanbase-ce + obagent
     count: 3
@@ -125,6 +142,8 @@ vm_profiles:
 ```bash
 python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ```
+
+Формат образа ОС — как в [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms): `image-folder-id=standard-images,image-family=...`. Без `image-folder-id` Yandex Cloud не находит публичные образы.
 
 ### Типы дисков по умолчанию
 
