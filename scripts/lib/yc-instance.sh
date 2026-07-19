@@ -53,15 +53,7 @@ users:
     sudo: ['ALL=(ALL) NOPASSWD:ALL']
     ssh_authorized_keys:
       - {pub}
-package_update: true
-packages:
-  - python3
-  - curl
-  - wget
-  - jq
-  - lvm2
-  - xfsprogs
-  - e2fsprogs
+ssh_pwauth: false
 write_files:
   - path: /etc/oceanbase-deploy-role-marker
     content: |

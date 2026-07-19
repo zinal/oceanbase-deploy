@@ -95,22 +95,46 @@ run_remote() {
 
 wait_for_ssh() {
   local host="$1"
-  local user key port retries=60
+  local user key port
+  local poll="${SSH_WAIT_POLL:-10}"
+  local timeout="${SSH_WAIT_TIMEOUT:-900}"
+  local elapsed=0
+  local err=""
+
   user="$(yaml_get yandex_cloud.ssh_user)"
   key="$(expand_path "$(yaml_get ssh.private_key_file)")"
   port="$(yaml_get ssh.port)"
 
-  info "Ожидание SSH на ${host}..."
-  while (( retries > 0 )); do
+  info "Ожидание SSH: ${user}@${host}:${port} (после RUNNING cloud-init обычно 1–3 мин)..."
+
+  while (( elapsed < timeout )); do
     if ssh -p "${port}" -i "${key}" \
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o ConnectTimeout=5 -o BatchMode=yes \
+      -o ConnectTimeout=5 -o ConnectionAttempts=1 -o BatchMode=yes \
       "${user}@${host}" "echo ok" >/dev/null 2>&1; then
-      info "SSH доступен: ${host}"
+      info "SSH доступен: ${user}@${host} (через ${elapsed}с)"
       return 0
     fi
-    sleep 10
-    ((retries--))
+
+    if (( elapsed == 0 || elapsed % 30 == 0 )); then
+      err="$(ssh -p "${port}" -i "${key}" \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 -o ConnectionAttempts=1 -o BatchMode=yes \
+        "${user}@${host}" "echo ok" 2>&1 | tail -1 || true)"
+      if [[ -n "${err}" ]]; then
+        info "SSH ${host}: ${elapsed}/${timeout}с — ${err}"
+      else
+        info "SSH ${host}: ${elapsed}/${timeout}с..."
+      fi
+    fi
+
+    sleep "${poll}"
+    elapsed=$((elapsed + poll))
   done
-  die "SSH недоступен на ${host} после ожидания"
+
+  err="$(ssh -p "${port}" -i "${key}" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=5 -o ConnectionAttempts=1 -o BatchMode=yes \
+    "${user}@${host}" "echo ok" 2>&1 | tail -1 || true)"
+  die "SSH недоступен на ${user}@${host}:${port} после ${timeout}с. Проверьте security group (tcp/${port}), пару ssh.private_key_file / ssh_public_key_file и маршрут до приватной подсети.${err:+ Последняя ошибка: ${err}}"
 }
