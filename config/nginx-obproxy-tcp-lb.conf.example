@@ -1,0 +1,69 @@
+# Пример: nginx как TCP-балансировщик перед несколькими OBProxy.
+#
+# Назначение:
+#   - единая точка входа для клиентов (порт 2883, MySQL-протокол OceanBase);
+#   - распределение новых TCP-соединений между ВМ obproxy;
+#   - привязка на уровне соединений: один клиентский IP всегда попадает
+#     на один и тот же obproxy (hash $remote_addr consistent).
+#
+# Требования:
+#   - пакет nginx с модулем stream (стандартный nginx в Ubuntu 22.04);
+#   - отдельная ВМ или существующий jump host в той же подсети, что и obproxy;
+#   - security group: входящий tcp/2883 на балансировщик, tcp/2883 с балансировщика
+#     на obproxy-ВМ.
+#
+# Установка (Ubuntu):
+#   sudo apt install nginx
+#   sudo cp config/nginx-obproxy-tcp-lb.conf.example /etc/nginx/stream.d/obproxy.conf
+#   # отредактируйте адреса obproxy ниже
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# В /etc/nginx/nginx.conf внутри блока top-level добавьте:
+#   stream {
+#       include /etc/nginx/stream.d/*.conf;
+#   }
+#
+# Имена и IP возьмите из generated/inventory.env после provision
+# (OBPROXY_1_IP, OBPROXY_2_IP, …) или внутренний DNS YC:
+#   <deployment_name>-obproxy-1.ru-central1.internal
+
+upstream obproxy_tcp {
+    # Привязка клиента к backend по IP источника (sticky на уровне соединений).
+    # consistent — минимальное перераспределение при добавлении/удалении узла.
+    hash $remote_addr consistent;
+
+    # Замените на реальные IP или FQDN obproxy из inventory.env
+    server 10.128.0.11:2883 max_fails=3 fail_timeout=30s;
+    server 10.128.0.12:2883 max_fails=3 fail_timeout=30s;
+    # server ob-yc-prod-obproxy-3.ru-central1.internal:2883 max_fails=3 fail_timeout=30s;
+}
+
+server {
+    listen 2883;
+    listen [::]:2883;
+
+    proxy_pass obproxy_tcp;
+
+    # Таймауты для долгоживущих MySQL-соединений OceanBase
+    proxy_connect_timeout 10s;
+    proxy_timeout 24h;
+
+    proxy_socket_keepalive on;
+    # Корректное закрытие полудуплексных TCP-соединений
+    proxy_half_close on;
+}
+
+# Опционально: балансировка метрик OBProxy (Prometheus scrape, порт 2884)
+# upstream obproxy_metrics_tcp {
+#     hash $remote_addr consistent;
+#     server 10.128.0.11:2884 max_fails=3 fail_timeout=30s;
+#     server 10.128.0.12:2884 max_fails=3 fail_timeout=30s;
+# }
+#
+# server {
+#     listen 2884;
+#     listen [::]:2884;
+#     proxy_pass obproxy_metrics_tcp;
+#     proxy_connect_timeout 5s;
+#     proxy_timeout 60s;
+# }

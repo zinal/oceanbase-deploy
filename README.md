@@ -185,8 +185,12 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ## Структура репозитория
 
 ```
-├── docs/component-vm-sizing.md  # анализ профилей ВМ по компонентам
-├── config/deploy.yaml.example   # шаблон конфигурации
+├── docs/
+│   ├── component-vm-sizing.md       # анализ профилей ВМ по компонентам
+│   └── nginx-obproxy-tcp-lb.md      # nginx stream LB перед obproxy
+├── config/
+│   ├── deploy.yaml.example          # шаблон конфигурации
+│   └── nginx-obproxy-tcp-lb.conf.example
 ├── scripts/
 │   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
 │   ├── lib/yc-async.sh          # async + retry + wait (ydb-snippets pattern)
@@ -256,6 +260,8 @@ obd cluster display <deployment_name>
 mysql -h<obproxy_ip> -P2883 -uroot -p
 # Obshell dashboard: http://<observer_ip>:2886
 ```
+
+При нескольких ВМ obproxy (`vm_profiles.obproxy.count > 1`) можно поставить **nginx** как TCP-балансировщик с привязкой соединений по IP клиента — см. [docs/nginx-obproxy-tcp-lb.md](docs/nginx-obproxy-tcp-lb.md) и [config/nginx-obproxy-tcp-lb.conf.example](config/nginx-obproxy-tcp-lb.conf.example).
 
 ## Лицензия
 
