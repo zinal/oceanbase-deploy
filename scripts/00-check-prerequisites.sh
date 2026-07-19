@@ -19,10 +19,11 @@ if ! yc config list >/dev/null 2>&1; then
   die "Yandex Cloud CLI не настроен. Выполните: yc init"
 fi
 
-ssh_key="$(expand_path "$(yaml_get yandex_cloud.ssh_public_key_file)")"
-ssh_priv="$(expand_path "$(yaml_get ssh.private_key_file)")"
+ssh_key="$(ssh_public_key_path)"
+ssh_priv="$(ssh_private_key_path)"
 require_file "$ssh_key"
 require_file "$ssh_priv"
+validate_ssh_key_pair
 
 info "Проверка профилей ВМ (OceanBase recommendations)..."
 python3 "${LIB_DIR}/lib/vm_profiles.py" validate --config "${CONFIG_FILE}"

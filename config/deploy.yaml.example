@@ -25,6 +25,8 @@ yandex_cloud:
   network_acceleration: software-accelerated
   ssh_public_key_file: ~/.ssh/id_ed25519.pub
   ssh_user: obadmin
+  # ssh_user и ssh_public_key_file — пользователь/ключ в cloud-init на ВМ.
+  # ssh.private_key_file (ниже) — тот же ключ для подключения с jump host.
   # Образ ОС из каталога standard-images (см. ydb-snippets/admin/vms/options.sh-static)
   image_folder_id: standard-images
   image_family: ubuntu-2204-lts
@@ -144,5 +146,5 @@ oceanbase:
 
 ssh:
   port: 22
-  private_key_file: ~/.ssh/id_ed25519
+  private_key_file: ~/.ssh/id_ed25519  # пара к yandex_cloud.ssh_public_key_file
   password: ""
