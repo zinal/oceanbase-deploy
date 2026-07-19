@@ -13,6 +13,14 @@ load_inventory
 OBD_CONFIG="${GENERATED_DIR}/obd-cluster.yaml"
 CLUSTER_NAME="${DEPLOY_NAME}"
 
+run_obd() {
+  if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL obd "$@"
+  else
+    obd "$@"
+  fi
+}
+
 install_obd_if_needed() {
   if command -v obd >/dev/null 2>&1; then
     return 0
@@ -36,23 +44,23 @@ install_obd_if_needed() {
 install_obd_if_needed
 
 ob_version="$(yaml_get oceanbase.version)"
-deploy_args=(obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_CONFIG}")
-if [[ -n "${ob_version}" ]]; then
-  deploy_args+=(-V "${ob_version}")
-fi
 
-if obd cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
+if run_obd cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
   warn "Кластер ${CLUSTER_NAME} уже зарегистрирован в OBD"
 else
   info "Развёртывание кластера ${CLUSTER_NAME}..."
-  "${deploy_args[@]}"
+  if [[ -n "${ob_version}" && "${ob_version}" != "null" ]]; then
+    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_CONFIG}" -V "${ob_version}"
+  else
+    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_CONFIG}"
+  fi
 fi
 
 info "Запуск кластера..."
-obd cluster start "${CLUSTER_NAME}"
+run_obd cluster start "${CLUSTER_NAME}"
 
 info "Статус кластера:"
-obd cluster display "${CLUSTER_NAME}"
+run_obd cluster display "${CLUSTER_NAME}"
 
 cat <<EOF
 
