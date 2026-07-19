@@ -123,10 +123,14 @@ ssh_opts() {
 run_remote() {
   local host="$1"; shift
   local user key port
+  local -a ssh_extra=()
   user="$(ssh_connect_user)"
   key="$(ssh_private_key_path)"
   port="$(ssh_connect_port)"
-  ssh -p "${port}" -i "${key}" \
+  if [[ -t 1 ]]; then
+    ssh_extra=(-tt)
+  fi
+  ssh "${ssh_extra[@]}" -p "${port}" -i "${key}" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     "${user}@${host}" "$@"
 }
