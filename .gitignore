@@ -1,0 +1,20 @@
+# Generated deployment artifacts
+generated/
+*.env.local
+config/deploy.yaml
+
+# SSH keys and secrets
+*.pem
+*.key
+id_rsa*
+secrets/
+
+# Terraform state (optional module)
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# OS / editor
+.DS_Store
+*.swp
+*~
