@@ -90,6 +90,7 @@ PY
   # ydb-snippets: --create-boot-disk image-folder-id=standard-images,image-family=...,name=...,type=...,size=...,auto-delete=true
   local boot_disk_spec="${image_spec},name=${name}-boot,type=${boot_type},size=${boot_size}G,auto-delete=true"
 
+  # SSH-ключ задаётся в cloud-init (user-data); --ssh-key конфликтует с user-data в YC CLI
   local create_args=(
     yc compute instance create
     --name "${name}"
@@ -100,7 +101,6 @@ PY
     --memory "${memory_gb}"
     --core-fraction "${core_fraction}"
     --create-boot-disk "${boot_disk_spec}"
-    --ssh-key "${ssh_key_file}"
     --network-interface "subnet-name=${subnet},nat-ip-version=ipv4"
     --metadata-from-file "user-data=${cloud_init}"
     --labels "deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"

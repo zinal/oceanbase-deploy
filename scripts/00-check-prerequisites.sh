@@ -35,11 +35,15 @@ if command -v yc >/dev/null 2>&1; then
   image_name="$(yaml_get yandex_cloud.image_name)"
   image_family="$(yaml_get yandex_cloud.image_family)"
   if [[ -n "${image_name}" && "${image_name}" != "null" ]]; then
-    if ! yc compute image get --folder-id "${folder_id}" --name "${image_name}" >/dev/null 2>&1; then
+    found="$(yc compute image list --folder-id "${folder_id}" --format json 2>/dev/null \
+      | python3 -c "import json,sys; n=sys.argv[1]; print(sum(1 for i in json.load(sys.stdin) if i.get('name')==n))" "${image_name}" 2>/dev/null || echo 0)"
+    if [[ "${found}" == "0" ]]; then
       warn "Образ ${image_name} не найден в folder ${folder_id}. Проверьте: yc compute image list --folder-id ${folder_id}"
     fi
   elif [[ -n "${image_family}" && "${image_family}" != "null" ]]; then
-    if ! yc compute image get --folder-id "${folder_id}" --family "${image_family}" >/dev/null 2>&1; then
+    found="$(yc compute image list --folder-id "${folder_id}" --family-id "${image_family}" --format json 2>/dev/null \
+      | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
+    if [[ "${found}" == "0" ]]; then
       warn "Семейство образов ${image_family} не найдено в folder ${folder_id}. Проверьте: yc compute image list --folder-id ${folder_id} --family-id ${image_family}"
     fi
   fi
