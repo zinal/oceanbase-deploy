@@ -55,8 +55,16 @@ flowchart TB
 ## Быстрый старт
 
 ```bash
+# 0. Подготовка окружения Python
+sudo apt install python3-venv
+python3 -m venv venv
+. ./venv/bin/activate
+pip3 install -U pip
+
 # 1. Зависимости
 pip install -r requirements.txt
+# установка YC CLI
+curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
 yc init   # настройка Yandex Cloud
 
 # 2. Конфигурация
