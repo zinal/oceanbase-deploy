@@ -41,10 +41,24 @@ write_inventory() {
 
 build_inventory_from_queue() {
   local entry role prefix idx name ip
+  local -a names=()
+  declare -A ip_map=()
+
+  for entry in "${VM_QUEUE[@]}"; do
+    IFS=: read -r _ _ _ name <<< "${entry}"
+    names+=("${name}")
+  done
+
+  info "Получение IP для ${#names[@]} ВМ (один запрос к Yandex Cloud)..."
+  while IFS=$'\t' read -r name ip; do
+    [[ -n "${name}" ]] || continue
+    ip_map["${name}"]="${ip}"
+  done < <(resolve_instance_ips "${names[@]}")
+
   : > "${inventory}"
   for entry in "${VM_QUEUE[@]}"; do
     IFS=: read -r role prefix idx name <<< "${entry}"
-    ip="$(get_instance_ip "${name}")"
+    ip="${ip_map[$name]:-}"
     [[ -n "${ip}" ]] || die "Не удалось получить IP для ${name}"
     write_inventory "${prefix^^}_${idx}_NAME" "${name}"
     write_inventory "${prefix^^}_${idx}_IP" "${ip}"
@@ -93,6 +107,7 @@ provision_async() {
   if ((${#new_vms[@]} == 0)); then
     info "Новых ВМ для создания нет"
     build_inventory_from_queue
+    verify_inventory_ssh
     return 0
   fi
 
@@ -131,9 +146,14 @@ provision_async() {
   wait_for_instances_ready "${deploy_name}" "${new_vm_names[@]}"
 
   build_inventory_from_queue
+  verify_inventory_ssh
+  info "Provision завершён успешно"
+}
 
+verify_inventory_ssh() {
   info "=== Фаза 4: проверка SSH ==="
   local -a ips=()
+  local entry prefix idx var
   # shellcheck disable=SC1090
   source "${inventory}"
   for entry in "${VM_QUEUE[@]}"; do
@@ -142,7 +162,6 @@ provision_async() {
     ips+=("${!var}")
   done
   wait_for_instances_ssh "${ips[@]}"
-  info "Provision завершён успешно"
 }
 
 case "${ACTION}" in

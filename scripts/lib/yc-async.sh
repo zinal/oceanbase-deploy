@@ -30,6 +30,16 @@ yc_folder_args() {
   printf '%s\n' "${YC_FOLDER_ARGS[@]}"
 }
 
+# Обёртка для yc CLI: таймаут защищает от зависания на медленном/зависшем API.
+yc_run() {
+  local api_timeout="${YC_API_TIMEOUT:-120}"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${api_timeout}" "$@"
+  else
+    "$@"
+  fi
+}
+
 yc_op_has_rate_limit() {
   grep -q "The limit on maximum number of active operations has exceeded" "${1}" 2>/dev/null
 }

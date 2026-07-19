@@ -193,11 +193,17 @@ collect_disk_names_for_vm() {
   fi
 }
 
-get_instance_ip() {
-  local name="$1"
+# Один запрос instance list вместо N× instance get (последний может подвисать на каждой ВМ).
+# stdout: строки «имя<TAB>ip» для каждой найденной ВМ из списка имён.
+resolve_instance_ips() {
+  local -a names=("$@")
+
+  if ((${#names[@]} == 0)); then
+    return 0
+  fi
+
   yc_folder_cache_init
-  yc compute instance get "${YC_FOLDER_ARGS[@]}" --name "$name" --format json \
-    | python3 -c "
+  yc_run yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
 import json, sys
 
 def pick_ip(instance):
@@ -217,9 +223,20 @@ def pick_ip(instance):
                 return ip
     return ''
 
-d = json.load(sys.stdin)
-print(pick_ip(d))
-"
+want = set(sys.argv[1:])
+for inst in json.load(sys.stdin):
+    name = inst.get('name')
+    if name in want:
+        print(f\"{name}\t{pick_ip(inst)}\")
+" "${names[@]}"
+}
+
+get_instance_ip() {
+  local name="$1"
+  local ip
+
+  ip="$(resolve_instance_ips "${name}" | awk -F'\t' -v n="${name}" '$1 == n { print $2; exit }')"
+  printf '%s' "${ip}"
 }
 
 delete_instance() {
