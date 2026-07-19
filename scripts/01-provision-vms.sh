@@ -13,6 +13,7 @@ ACTION="${1:-create}"
 
 require_file "${CONFIG_FILE}"
 ensure_generated_dir
+yc_folder_cache_init
 
 deploy_name="$(yaml_get deployment.name)"
 observer_count="$(yaml_get vm_profiles.observer.count)"
@@ -22,7 +23,6 @@ configserver_dedicated="$(yaml_get vm_profiles.configserver.dedicated)"
 
 inventory="${GENERATED_DIR}/inventory.env"
 
-# Список ВМ для создания: "role prefix index name"
 declare -a VM_QUEUE=()
 
 queue_vms() {
@@ -61,19 +61,44 @@ build_inventory_from_queue() {
   info "Инвентарь сохранён: ${inventory}"
 }
 
+collect_disk_names_for_vm() {
+  local name="$1" role="$2"
+  local -n _out=$3
+  load_vm_params "${role}"
+  if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
+    _out+=("${name}-data")
+  fi
+  if [[ "${VM_LOG_ENABLED}" == "true" ]]; then
+    _out+=("${name}-log")
+  fi
+}
+
 provision_async() {
   local entry role prefix idx name
   local -a new_vms=()
+  local -a all_names=()
+  local -a existing_names=()
+  local -a disks_to_create=()
+  local -a disks_to_wait=()
   local disks_needed=false
 
   for entry in "${VM_QUEUE[@]}"; do
+    IFS=: read -r _ _ _ name <<< "${entry}"
+    all_names+=("${name}")
+  done
+
+  info "Проверка существующих ВМ (${#all_names[@]})..."
+  yc_list_existing_instances existing_names "${all_names[@]}"
+
+  for entry in "${VM_QUEUE[@]}"; do
     IFS=: read -r role prefix idx name <<< "${entry}"
-    if instance_exists "${name}"; then
+    if printf '%s\n' "${existing_names[@]:-}" | grep -qx "${name}"; then
       warn "ВМ ${name} уже существует, пропуск создания"
     else
       new_vms+=("${entry}")
       if needs_secondary_disks "${role}"; then
         disks_needed=true
+        collect_disk_names_for_vm "${name}" "${role}" disks_to_create
       fi
     fi
   done
@@ -84,29 +109,42 @@ provision_async() {
     return 0
   fi
 
-  # Фаза 1: secondary-диски (--async + retry)
+  info "Будет создано ВМ: ${#new_vms[@]}"
+
   if [[ "${disks_needed}" == "true" ]]; then
     info "=== Фаза 1: создание дисков ==="
+    local -a existing_disks=()
+    yc_list_existing_disks existing_disks "${disks_to_create[@]}"
+
     for entry in "${new_vms[@]}"; do
       IFS=: read -r role prefix idx name <<< "${entry}"
-      create_instance_disks_async "${name}" "${role}" || true
+      create_instance_disks_async "${name}" "${role}" "${existing_disks[@]}"
     done
-    wait_for_disks_ready "${deploy_name}-"
+
+    for d in "${disks_to_create[@]}"; do
+      if ! printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${d}"; then
+        disks_to_wait+=("${d}")
+      fi
+    done
+
+    if ((${#disks_to_wait[@]} > 0)); then
+      wait_for_disks_ready "${disks_to_wait[@]}"
+    fi
     yc_assert_last_op_ok "создание дисков"
   fi
 
-  # Фаза 2: виртуальные машины (--async + retry)
   info "=== Фаза 2: создание ВМ ==="
+  local -a new_vm_names=()
   for entry in "${new_vms[@]}"; do
     IFS=: read -r role prefix idx name <<< "${entry}"
+    new_vm_names+=("${name}")
     create_instance_async "${name}" "${role}"
   done
   yc_assert_last_op_ok "создание ВМ"
 
-  # Фаза 3: ожидание RUNNING/STOPPED
-  wait_for_instances_ready "${deploy_name}"
+  info "=== Фаза 3: ожидание готовности ВМ ==="
+  wait_for_instances_ready "${deploy_name}" "${new_vm_names[@]}"
 
-  # Фаза 4: inventory + SSH
   build_inventory_from_queue
 
   info "=== Фаза 4: проверка SSH ==="
@@ -131,8 +169,6 @@ case "${ACTION}" in
     if [[ "${obproxy_count}" -gt 0 ]]; then
       info "Планирование obproxy-ВМ: ${obproxy_count}"
       queue_vms "obproxy" "${obproxy_count}" "obproxy"
-    else
-      write_inventory "OBPROXY_COUNT" "0"
     fi
 
     if [[ "${configserver_dedicated}" == "true" ]]; then
@@ -162,7 +198,8 @@ case "${ACTION}" in
       rm -f "${inventory}"
     else
       warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
-      mapfile -t names < <(yc compute instance list --format json | python3 -c "
+      yc_folder_cache_init
+      mapfile -t names < <(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json | python3 -c "
 import json,sys
 name='${deploy_name}'
 for i in json.load(sys.stdin):

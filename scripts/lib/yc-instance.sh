@@ -79,25 +79,32 @@ PY
 # Создание secondary-дисков асинхронно (отдельно от ВМ, как в ydb-snippets).
 create_instance_disks_async() {
   local name="$1" role="$2"
+  shift 2
+  local -a existing_disks=("$@")
   load_vm_params "${role}"
 
-  local zone deploy_name folder_args
+  local zone deploy_name
   zone="$(yaml_get yandex_cloud.zone)"
   deploy_name="$(yaml_get deployment.name)"
-  mapfile -t folder_args < <(yc_folder_args)
+  yc_folder_cache_init
 
   local labels="deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"
   local created=false
 
+  disk_already_exists() {
+    local disk_name="$1"
+    printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${disk_name}"
+  }
+
   if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
     local disk_name="${name}-data"
-    if disk_exists "${disk_name}"; then
+    if disk_already_exists "${disk_name}" || disk_exists "${disk_name}"; then
       info "Диск ${disk_name} уже существует, пропуск"
     else
       info "Создание диска ${disk_name} (${VM_DATA_TYPE}, ${VM_DATA_SIZE}G)..."
       yc_async_retry "создание диска ${disk_name}" \
         yc compute disk create --name "${disk_name}" --zone "${zone}" \
-          "${folder_args[@]}" \
+          "${YC_FOLDER_ARGS[@]}" \
           --type "${VM_DATA_TYPE}" --size "${VM_DATA_SIZE}G" \
           --labels "${labels}"
       created=true
@@ -106,13 +113,13 @@ create_instance_disks_async() {
 
   if [[ "${VM_LOG_ENABLED}" == "true" ]]; then
     local disk_name="${name}-log"
-    if disk_exists "${disk_name}"; then
+    if disk_already_exists "${disk_name}" || disk_exists "${disk_name}"; then
       info "Диск ${disk_name} уже существует, пропуск"
     else
       info "Создание диска ${disk_name} (${VM_LOG_TYPE}, ${VM_LOG_SIZE}G)..."
       yc_async_retry "создание диска ${disk_name}" \
         yc compute disk create --name "${disk_name}" --zone "${zone}" \
-          "${folder_args[@]}" \
+          "${YC_FOLDER_ARGS[@]}" \
           --type "${VM_LOG_TYPE}" --size "${VM_LOG_SIZE}G" \
           --labels "${labels}"
       created=true
@@ -128,7 +135,7 @@ create_instance_async() {
   load_vm_params "${role}"
 
   local zone subnet ssh_user ssh_key_file deploy_name net_accel nat_enabled
-  local folder_args network_iface
+  local network_iface
   zone="$(yaml_get yandex_cloud.zone)"
   subnet="$(yaml_get yandex_cloud.subnet_name)"
   ssh_user="$(yaml_get yandex_cloud.ssh_user)"
@@ -136,7 +143,7 @@ create_instance_async() {
   deploy_name="$(yaml_get deployment.name)"
   net_accel="$(yaml_get yandex_cloud.network_acceleration)"
   nat_enabled="$(yaml_get yandex_cloud.nat_enabled)"
-  mapfile -t folder_args < <(yc_folder_args)
+  yc_folder_cache_init
 
   if [[ "${nat_enabled}" == "true" ]]; then
     network_iface="subnet-name=${subnet},nat-ip-version=ipv4"
@@ -179,7 +186,7 @@ create_instance_async() {
     create_args+=(--attach-disk "disk-name=${name}-log,auto-delete=true,device-name=log")
   fi
 
-  create_args+=("${folder_args[@]}")
+  create_args+=("${YC_FOLDER_ARGS[@]}")
   yc_async_retry "создание ВМ ${name}" "${create_args[@]}"
 }
 
@@ -191,36 +198,46 @@ needs_secondary_disks() {
 
 get_instance_ip() {
   local name="$1"
-  local folder_args
-  mapfile -t folder_args < <(yc_folder_args)
-  yc compute instance get "${folder_args[@]}" --name "$name" --format json \
+  yc_folder_cache_init
+  yc compute instance get "${YC_FOLDER_ARGS[@]}" --name "$name" --format json \
     | python3 -c "
 import json, sys
+
+def pick_ip(instance):
+    for ni in instance.get('network_interfaces') or []:
+        if not isinstance(ni, dict):
+            continue
+        addr = ni.get('primary_v4_address')
+        if not isinstance(addr, dict):
+            continue
+        ip = addr.get('address')
+        if ip:
+            return ip
+        nat = addr.get('one_to_one_nat')
+        if isinstance(nat, dict):
+            ip = nat.get('address')
+            if ip:
+                return ip
+    return ''
+
 d = json.load(sys.stdin)
-for ni in d.get('network_interfaces', []):
-    addr = ni.get('primary_v4_address', {})
-    ip = addr.get('address') or (addr.get('one_to_one_nat') or {}).get('address')
-    if ip:
-        print(ip)
-        break
+print(pick_ip(d))
 "
 }
 
 delete_instance() {
   local name="$1"
-  local folder_args
-  mapfile -t folder_args < <(yc_folder_args)
+  yc_folder_cache_init
   info "Удаление ВМ ${name}..."
-  yc compute instance delete "${folder_args[@]}" --name "$name" --async \
+  yc compute instance delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
     || warn "Не удалось удалить ${name}"
 }
 
 delete_instance_disk() {
   local name="$1"
-  local folder_args
-  mapfile -t folder_args < <(yc_folder_args)
+  yc_folder_cache_init
   if disk_exists "${name}"; then
-    yc compute disk delete "${folder_args[@]}" --name "$name" --async \
+    yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
       || warn "Не удалось удалить диск ${name}"
   fi
 }
