@@ -6,7 +6,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
-source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/lib/common.sh"
 
 DESTROY_OBD="${1:-false}"
 

@@ -5,9 +5,9 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
-source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/lib/common.sh"
 # shellcheck source=yc-instance.sh
-source "${LIB_DIR}/yc-instance.sh"
+source "${LIB_DIR}/lib/yc-instance.sh"
 
 require_file "${CONFIG_FILE}"
 load_inventory
