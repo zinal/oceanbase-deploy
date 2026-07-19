@@ -5,7 +5,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
-source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/lib/common.sh"
 
 require_file "${CONFIG_FILE}" 2>/dev/null || die "Создайте config/deploy.yaml на основе config/deploy.yaml.example"
 
