@@ -21,24 +21,45 @@ command -v obd >/dev/null 2>&1 || die "OBD не установлен"
 
 current="${OBSERVER_COUNT}"
 deploy_name="${DEPLOY_NAME}"
-new_ips=()
+declare -a new_names=()
+declare -a new_ips=()
 
 for (( n=1; n<=ADD_COUNT; n++ )); do
   idx=$((current + n))
   name="${deploy_name}-observer-${idx}"
-    create_instance "${name}" "observer"
+  new_names+=("${name}")
+done
+
+info "=== Создание дисков для ${ADD_COUNT} observer-узлов ==="
+for name in "${new_names[@]}"; do
+  create_instance_disks_async "${name}" "observer" || true
+done
+wait_for_disks_ready "${deploy_name}-"
+
+info "=== Создание ВМ ==="
+for name in "${new_names[@]}"; do
+  if instance_exists "${name}"; then
+    warn "ВМ ${name} уже существует, пропуск"
+  else
+    create_instance_async "${name}" "observer"
+  fi
+done
+yc_assert_last_op_ok "создание observer-ВМ"
+wait_for_instances_ready "${deploy_name}"
+
+for name in "${new_names[@]}"; do
   ip="$(get_instance_ip "${name}")"
   [[ -n "${ip}" ]] || die "Не удалось получить IP для ${name}"
-
+  idx="${name##*-}"
   echo "OBSERVER_${idx}_NAME=${name}" >> "${GENERATED_DIR}/inventory.env"
   echo "OBSERVER_${idx}_IP=${ip}" >> "${GENERATED_DIR}/inventory.env"
   new_ips+=("${ip}")
-  wait_for_ssh "${ip}"
 done
 
 new_total=$((current + ADD_COUNT))
 sed -i "s/^OBSERVER_COUNT=.*/OBSERVER_COUNT=${new_total}/" "${GENERATED_DIR}/inventory.env"
 
+wait_for_instances_ssh "${new_ips[@]}"
 bash "${LIB_DIR}/02-prepare-servers.sh" "${new_ips[@]}"
 
 python3 "${LIB_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/scale-out.yaml"

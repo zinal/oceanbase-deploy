@@ -80,11 +80,18 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 
 ```bash
 ./scripts/deploy.sh check       # проверка
-./scripts/deploy.sh provision   # создание ВМ
+./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
 ./scripts/deploy.sh deploy      # obd cluster deploy + start
 ```
+
+`provision` создаёт ресурсы асинхронно (как [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms)):
+1. Secondary-диски (`--async`, retry при rate limit)
+2. Ожидание `READY` дисков
+3. ВМ с `--attach-disk` (`--async`)
+4. Ожидание `RUNNING`/`STOPPED`
+5. Проверка SSH-доступа
 
 ## Настройка (`config/deploy.yaml`)
 
@@ -161,6 +168,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ├── config/deploy.yaml.example   # шаблон конфигурации
 ├── scripts/
 │   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
+│   ├── lib/yc-async.sh          # async + retry + wait (ydb-snippets pattern)
 │   ├── deploy.sh                # главный сценарий
 │   ├── 00-check-prerequisites.sh
 │   ├── 01-provision-vms.sh      # yc compute instance create
