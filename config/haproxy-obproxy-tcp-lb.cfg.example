@@ -1,0 +1,74 @@
+# Пример: HAProxy как TCP-балансировщик перед несколькими OBProxy.
+#
+# Назначение:
+#   - единая точка входа для клиентов (порт 2883, MySQL-протокол OceanBase);
+#   - распределение новых TCP-соединений между ВМ obproxy;
+#   - привязка на уровне соединений: один клиентский IP всегда попадает
+#     на один и тот же obproxy (balance source).
+#
+# Требования:
+#   - пакет haproxy (Ubuntu 22.04: sudo apt install haproxy);
+#   - отдельная ВМ или jump host в той же подсети, что и obproxy;
+#   - security group: входящий tcp/2883 на балансировщик, tcp/2883 с балансировщика
+#     на obproxy-ВМ.
+#
+# Установка (Ubuntu):
+#   sudo apt install haproxy
+#   sudo cp config/haproxy-obproxy-tcp-lb.cfg.example /etc/haproxy/haproxy.cfg
+#   # отредактируйте адреса obproxy ниже
+#   sudo haproxy -c -f /etc/haproxy/haproxy.cfg
+#   sudo systemctl enable --now haproxy
+#
+# Имена и IP возьмите из generated/inventory.env после provision
+# (OBPROXY_1_IP, OBPROXY_2_IP, …) или внутренний DNS YC:
+#   <deployment_name>-obproxy-1.ru-central1.internal
+
+global
+    log /dev/log local0
+    maxconn 4096
+    # Уберите daemon, если запускаете через systemd (рекомендуется)
+    # daemon
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    option  dontlognull
+    timeout connect 10s
+    timeout client  24h
+    timeout server  24h
+    timeout tunnel  24h
+
+# --- MySQL/OceanBase через OBProxy (порт 2883) ---
+
+frontend obproxy_mysql
+    bind *:2883
+    bind [::]:2883
+    default_backend obproxy_servers
+
+backend obproxy_servers
+    # Привязка клиента к backend по IP источника (sticky на уровне соединений)
+    balance source
+
+    # Пассивная TCP-проверка доступности порта obproxy
+    option tcp-check
+    default-server inter 5s fall 3 rise 2
+
+    # Замените на реальные IP или FQDN obproxy из inventory.env
+    server obproxy1 10.128.0.11:2883 check
+    server obproxy2 10.128.0.12:2883 check
+    # server obproxy3 ob-yc-prod-obproxy-3.ru-central1.internal:2883 check
+
+# --- Опционально: метрики OBProxy для Prometheus (порт 2884) ---
+#
+# frontend obproxy_metrics
+#     bind *:2884
+#     bind [::]:2884
+#     default_backend obproxy_metrics_servers
+#
+# backend obproxy_metrics_servers
+#     balance source
+#     option tcp-check
+#     default-server inter 5s fall 3 rise 2
+#     server obproxy1 10.128.0.11:2884 check
+#     server obproxy2 10.128.0.12:2884 check

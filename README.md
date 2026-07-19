@@ -185,8 +185,12 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ## Структура репозитория
 
 ```
-├── docs/component-vm-sizing.md  # анализ профилей ВМ по компонентам
-├── config/deploy.yaml.example   # шаблон конфигурации
+├── docs/
+│   ├── component-vm-sizing.md         # анализ профилей ВМ по компонентам
+│   └── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
+├── config/
+│   ├── deploy.yaml.example            # шаблон конфигурации
+│   └── haproxy-obproxy-tcp-lb.cfg.example
 ├── scripts/
 │   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
 │   ├── lib/yc-async.sh          # async + retry + wait (ydb-snippets pattern)
@@ -256,6 +260,8 @@ obd cluster display <deployment_name>
 mysql -h<obproxy_ip> -P2883 -uroot -p
 # Obshell dashboard: http://<observer_ip>:2886
 ```
+
+При нескольких ВМ obproxy (`vm_profiles.obproxy.count > 1`) можно поставить **HAProxy** как TCP-балансировщик с привязкой соединений по IP клиента — см. [docs/haproxy-obproxy-tcp-lb.md](docs/haproxy-obproxy-tcp-lb.md) и [config/haproxy-obproxy-tcp-lb.cfg.example](config/haproxy-obproxy-tcp-lb.cfg.example).
 
 ## Лицензия
 
