@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Создание виртуальных машин в Yandex Cloud по config/deploy.yaml.
+# Создание виртуальных машин в Yandex Cloud по профилям vm_profiles.
 
 set -euo pipefail
 
@@ -15,9 +15,10 @@ require_file "${CONFIG_FILE}"
 ensure_generated_dir
 
 deploy_name="$(yaml_get deployment.name)"
-observer_count="$(yaml_get nodes.observers.count)"
-obproxy_count="$(yaml_get nodes.obproxy.count)"
-monitoring_enabled="$(yaml_get nodes.monitoring.enabled)"
+observer_count="$(yaml_get vm_profiles.observer.count)"
+obproxy_count="$(yaml_get vm_profiles.obproxy.count)"
+monitoring_enabled="$(yaml_get vm_profiles.monitoring.enabled)"
+configserver_dedicated="$(yaml_get vm_profiles.configserver.dedicated)"
 
 inventory="${GENERATED_DIR}/inventory.env"
 : > "${inventory}"
@@ -51,19 +52,27 @@ provision_role() {
 
 case "${ACTION}" in
   create)
-    info "Создание observer-узлов: ${observer_count}"
-    provision_role "observers" "${observer_count}" "observer"
+    info "Создание observer-ВМ: ${observer_count}"
+    provision_role "observer" "${observer_count}" "observer"
 
     if [[ "${obproxy_count}" -gt 0 ]]; then
-      info "Создание obproxy-узлов: ${obproxy_count}"
+      info "Создание obproxy-ВМ: ${obproxy_count}"
       provision_role "obproxy" "${obproxy_count}" "obproxy"
     else
       write_inventory "OBPROXY_COUNT" "0"
     fi
 
+    if [[ "${configserver_dedicated}" == "true" ]]; then
+      cs_count="$(yaml_get vm_profiles.configserver.count)"
+      info "Создание configserver-ВМ: ${cs_count}"
+      provision_role "configserver" "${cs_count}" "configserver"
+    else
+      write_inventory "CONFIGSERVER_COUNT" "0"
+    fi
+
     if [[ "${monitoring_enabled}" == "true" ]]; then
-      mon_count="$(yaml_get nodes.monitoring.count)"
-      info "Создание monitoring-узлов: ${mon_count}"
+      mon_count="$(yaml_get vm_profiles.monitoring.count)"
+      info "Создание monitoring-ВМ: ${mon_count}"
       provision_role "monitoring" "${mon_count}" "monitor"
     else
       write_inventory "MONITOR_COUNT" "0"
@@ -71,13 +80,14 @@ case "${ACTION}" in
 
     write_inventory "DEPLOY_NAME" "${deploy_name}"
     write_inventory "SSH_USER" "$(yaml_get yandex_cloud.ssh_user)"
+    write_inventory "CONFIGSERVER_DEDICATED" "${configserver_dedicated}"
     info "Инвентарь сохранён: ${inventory}"
     ;;
   delete)
     if [[ -f "${inventory}" ]]; then
       # shellcheck disable=SC1090
       source "${inventory}"
-      for var in $(compgen -v | grep -E '_(NAME)$'); do
+      for var in $(compgen -v | grep -E '_NAME$'); do
         delete_instance "${!var}"
       done
       rm -f "${inventory}"

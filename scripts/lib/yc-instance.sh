@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Создание и удаление ВМ в Yandex Cloud.
+# Создание и удаление ВМ в Yandex Cloud с профилями по ролям.
 
 set -euo pipefail
 
@@ -7,53 +7,19 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${LIB_DIR}/common.sh"
 
+VM_PROFILES="${LIB_DIR}/vm_profiles.py"
+
 resolve_vm_params() {
-  # resolve_vm_params <role> -> exports PLATFORM CORES MEMORY_GB IMAGE FAMILY BOOT_*
   local role="$1"
-  python3 - "${CONFIG_FILE}" "${role}" <<'PY'
-import sys
-import yaml
-
-cfg_path, role = sys.argv[1], sys.argv[2]
-
-with open(cfg_path, encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)
-
-vm = cfg.get("vm", {})
-role_cfg = cfg.get("nodes", {}).get(role, {}) or {}
-
-def pick(key, default=None):
-    val = role_cfg.get(key)
-    if val is None:
-        val = vm.get(key, default)
-    return val
-
-boot = pick("boot_disk") or vm.get("boot_disk", {})
-if isinstance(boot, dict) and role_cfg.get("boot_disk"):
-    boot = {**boot, **{k: v for k, v in role_cfg["boot_disk"].items() if v is not None}}
-
-data = pick("data_disk") or vm.get("data_disk", {})
-if isinstance(data, dict) and role_cfg.get("data_disk"):
-    data = {**data, **{k: v for k, v in role_cfg["data_disk"].items() if v is not None}}
-
-print(pick("platform", "standard-v3"))
-print(pick("cores", 4))
-print(pick("memory_gb", 16))
-print(cfg["vm"].get("image_family", "ubuntu-2204-lts"))
-print(cfg["vm"].get("core_fraction", 100))
-print(boot.get("type", "network-ssd"))
-print(boot.get("size_gb", 50))
-print(str(data.get("enabled", True)).lower())
-print(data.get("type", "network-ssd"))
-print(data.get("size_gb", 500))
-print(data.get("mount_point", "/data"))
-PY
+  python3 "${VM_PROFILES}" resolve "${role}" --config "${CONFIG_FILE}"
 }
 
 create_instance() {
   local name="$1" role="$2"
   local platform cores memory_gb image_family core_fraction
-  local boot_type boot_size data_enabled data_type data_size data_mount
+  local boot_type boot_size
+  local data_enabled data_type data_size data_mount
+  local log_enabled log_type log_size log_mount
 
   mapfile -t params < <(resolve_vm_params "$role")
   platform="${params[0]}"
@@ -67,10 +33,13 @@ create_instance() {
   data_type="${params[8]}"
   data_size="${params[9]}"
   data_mount="${params[10]}"
+  log_enabled="${params[11]}"
+  log_type="${params[12]}"
+  log_size="${params[13]}"
+  log_mount="${params[14]}"
 
   local zone network subnet ssh_user ssh_key_file deploy_name
   zone="$(yaml_get yandex_cloud.zone)"
-  network="$(yaml_get yandex_cloud.network_name)"
   subnet="$(yaml_get yandex_cloud.subnet_name)"
   ssh_user="$(yaml_get yandex_cloud.ssh_user)"
   ssh_key_file="$(expand_path "$(yaml_get yandex_cloud.ssh_public_key_file)")"
@@ -79,9 +48,10 @@ create_instance() {
   require_file "$ssh_key_file"
 
   local cloud_init="${GENERATED_DIR}/cloud-init-${name}.yaml"
-  python3 - "$cloud_init" "$ssh_user" "$ssh_key_file" "$role" "$data_enabled" "$data_mount" <<'PY'
+  python3 - "$cloud_init" "$ssh_user" "$ssh_key_file" "$role" \
+    "$data_enabled" "$data_mount" "$log_enabled" "$log_mount" <<'PY'
 import sys, pathlib
-out, user, key_file, role, data_enabled, mount = sys.argv[1:7]
+out, user, key_file, role, data_en, data_mp, log_en, log_mp = sys.argv[1:9]
 pub = pathlib.Path(key_file).read_text().strip()
 content = f"""#cloud-config
 users:
@@ -104,14 +74,16 @@ write_files:
   - path: /etc/oceanbase-deploy-role-marker
     content: |
       role={role}
-      data_disk_enabled={data_enabled}
-      data_mount={mount}
+      data_disk_enabled={data_en}
+      data_mount={data_mp}
+      log_disk_enabled={log_en}
+      log_mount={log_mp}
     permissions: '0644'
 """
 pathlib.Path(out).write_text(content)
 PY
 
-  info "Создание ВМ ${name} (${role}): ${cores} vCPU, ${memory_gb} GB RAM, platform=${platform}"
+  info "Создание ВМ ${name} (${role}): ${cores} vCPU, ${memory_gb} GB, boot=${boot_type}/${boot_size}GB"
 
   local create_args=(
     yc compute instance create
@@ -130,7 +102,11 @@ PY
   )
 
   if [[ "${data_enabled}" == "true" ]]; then
-    create_args+=(--create-disk "name=${name}-data,auto-delete=true,size=${data_size},type=${data_type}")
+    create_args+=(--create-disk "name=${name}-data,auto-delete=true,size=${data_size},type=${data_type},device-name=data")
+  fi
+
+  if [[ "${log_enabled}" == "true" ]]; then
+    create_args+=(--create-disk "name=${name}-log,auto-delete=true,size=${log_size},type=${log_type},device-name=log")
   fi
 
   local folder_id

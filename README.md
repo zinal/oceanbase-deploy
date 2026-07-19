@@ -4,8 +4,8 @@
 
 ## Возможности
 
-- Настраиваемое количество и конфигурация ВМ (platform, vCPU, RAM, boot/data/log disks)
-- Роли: observer, obproxy, monitoring (Prometheus/Grafana)
+- Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring)
+- Оптимальные типы дисков YC: non-replicated для реплицируемых data, io-m3 для log/boot
 - Подготовка серверов по best practices (sysctl, limits, монтирование дисков)
 - Генерация конфигурации OBD и развёртывание кластера
 - Горизонтальное масштабирование (`scale_out`)
@@ -80,45 +80,60 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 
 ## Настройка ВМ (`config/deploy.yaml`)
 
-Все параметры виртуальных машин задаются в одном файле:
+Каждый компонент OceanBase имеет **отдельный профиль** в `vm_profiles`. Подробный анализ: [docs/component-vm-sizing.md](docs/component-vm-sizing.md).
 
 ```yaml
-vm:
-  platform: standard-v3      # тип платформы Yandex Cloud
-  cores: 8                   # количество vCPU
-  memory_gb: 32              # RAM
-  core_fraction: 100         # доля vCPU (%)
+vm_profiles:
+  observer:                    # oceanbase-ce + obagent
+    count: 3
+    cores: 8                   # мин. 4
+    memory_gb: 32              # мин. 16
+    boot_disk:
+      type: network-ssd-io-m3   # home_path — потеря недопустима
+    data_disk:
+      type: network-ssd-nonreplicated  # SSTable, реплицируется Paxos
+      size_gb: 558             # кратно 93 GB
+    log_disk:
+      enabled: true
+      type: network-ssd-io-m3  # clog — потеря недопустима
+      size_gb: 279
 
-  boot_disk:
-    type: network-ssd        # network-hdd | network-ssd | network-ssd-nonreplicated
-    size_gb: 50
-
-  data_disk:
-    enabled: true
-    type: network-ssd
-    size_gb: 500
-    mount_point: /data
-
-nodes:
-  observers:
-    count: 3                 # масштабируемое количество observer
-    # Переопределение ресурсов для роли (null = vm.*)
-    cores: null
-    memory_gb: null
-
-  obproxy:
-    count: 1
+  obproxy:                     # лёгкий stateless прокси
+    count: 2
     cores: 2
-    memory_gb: 8
+    memory_gb: 4
+
+  configserver:
+    dedicated: false           # true — отдельная ВМ
+
+  monitoring:
+    enabled: false
+    cores: 4
+    memory_gb: 16
 ```
 
-Доступные типы дисков Yandex Cloud: `network-hdd`, `network-ssd`, `network-ssd-nonreplicated`, `network-ssd-io-m3`.
+Проверка соответствия рекомендациям OceanBase:
+
+```bash
+python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
+```
+
+### Типы дисков по умолчанию
+
+| Диск | Тип | Обоснование |
+|------|-----|-------------|
+| Observer data | `network-ssd-nonreplicated` | Данные реплицируются между узлами |
+| Observer log | `network-ssd-io-m3` | Журнал транзакций, потеря недопустима |
+| Observer boot | `network-ssd-io-m3` | Бинарники и home_path |
+| Monitoring data | `network-ssd-io-m3` | Метрики, потеря нежелательна |
 
 ## Структура репозитория
 
 ```
+├── docs/component-vm-sizing.md  # анализ профилей ВМ по компонентам
 ├── config/deploy.yaml.example   # шаблон конфигурации
 ├── scripts/
+│   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
 │   ├── deploy.sh                # главный сценарий
 │   ├── 00-check-prerequisites.sh
 │   ├── 01-provision-vms.sh      # yc compute instance create

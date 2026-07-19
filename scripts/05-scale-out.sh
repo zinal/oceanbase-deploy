@@ -26,7 +26,7 @@ new_ips=()
 for (( n=1; n<=ADD_COUNT; n++ )); do
   idx=$((current + n))
   name="${deploy_name}-observer-${idx}"
-  create_instance "${name}" "observers"
+    create_instance "${name}" "observer"
   ip="$(get_instance_ip "${name}")"
   [[ -n "${ip}" ]] || die "Не удалось получить IP для ${name}"
 

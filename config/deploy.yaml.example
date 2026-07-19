@@ -1,109 +1,117 @@
 # Пример конфигурации развёртывания OceanBase в Yandex Cloud.
 # Скопируйте в config/deploy.yaml и отредактируйте под своё окружение.
 #
+# Анализ профилей ВМ: docs/component-vm-sizing.md
 # Рекомендации oceanbase-skills (cluster-management):
-# - минимум 3 узла observer для HA (по одному на зону)
-# - минимум 4 vCPU, 16 GB RAM, 100 GB SSD на узел для production
-# - OBD запускается на управляющей машине и подключается по SSH
+# - минимум 3 observer для HA
+# - observer: минимум 4 vCPU, 16 GB RAM, 100 GB data SSD
+# - obproxy: лёгкий stateless-компонент — отдельные маленькие ВМ
+# - monitoring: отдельная ВМ, чтобы не конкурировать с observer за ресурсы
 
 yandex_cloud:
-  folder_id: ""                    # ID каталога Yandex Cloud (или через yc config)
+  folder_id: ""
   zone: ru-central1-a
   network_name: default
   subnet_name: default-ru-central1-a
-  # Публичный SSH-ключ для cloud-init (путь к файлу)
   ssh_public_key_file: ~/.ssh/id_ed25519.pub
-  # Пользователь на ВМ
   ssh_user: obadmin
 
-# Префикс имён создаваемых ресурсов
 deployment:
   name: ob-yc-prod
-  # Управляющая машина: local — скрипты/OBD на вашем ПК; vm — отдельная ВМ
   control_mode: local
 
-# Конфигурация виртуальных машин (настраивается для каждой роли)
-vm:
-  # Образ ОС: ubuntu-2204-lts | centos-stream-8 | centos-7
+# Общие значения по умолчанию для всех профилей (переопределяются в vm_profiles)
+vm_defaults:
   image_family: ubuntu-2204-lts
   platform: standard-v3
-  cores: 8
-  memory_gb: 32
   core_fraction: 100
 
-  boot_disk:
-    type: network-ssd
-    size_gb: 50
-
-  data_disk:
-    enabled: true
-    type: network-ssd
-    size_gb: 500
-    mount_point: /data
-    filesystem: ext4
-
-  # Дополнительный диск под логи (рекомендация oceanbase-skills: отдельный диск)
-  log_disk:
-    enabled: false
-    type: network-ssd
-    size_gb: 200
-    mount_point: /data/log1
-    filesystem: ext4
-
-# Роли и количество ВМ (масштабируемая конфигурация)
-nodes:
-  observers:
+# Профили ВМ по типу компонента OceanBase — раздельные ресурсы
+vm_profiles:
+  # OceanBase observer + obagent (основная нагрузка)
+  observer:
     count: 3
-    # Переопределение ресурсов для observer (null = использовать vm.*)
-    platform: null
-    cores: null
-    memory_gb: null
-    boot_disk: null
-    data_disk: null
-    log_disk: null
+    platform: standard-v3
+    cores: 8                       # мин. 4 (OceanBase production)
+    memory_gb: 32                  # мин. 16 (OceanBase production)
+    boot_disk:
+      # home_path, бинарники observer — потеря недопустима
+      type: network-ssd-io-m3
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # SSTable реплицируется между observer (Paxos) — можно non-replicated
+      type: network-ssd-nonreplicated
+      size_gb: 558                 # ~500 GB, кратно 93 (требование YC)
+      mount_point: /data
+    log_disk:
+      enabled: true
+      # clog/redo — потеря недопустима; рекомендуется 3–4× memory_limit
+      type: network-ssd-io-m3
+      size_gb: 279                 # ~3× memory_limit (28G), кратно 93
+      mount_point: /data/log1
 
-  # OBProxy (можно 0 = развернуть на всех observer)
+  # OBProxy — stateless прокси, масштабируется отдельно
   obproxy:
-    count: 1
-    platform: null
+    count: 2
+    platform: standard-v3
     cores: 2
-    memory_gb: 8
+    memory_gb: 4
     boot_disk:
       type: network-ssd
-      size_gb: 30
+      size_gb: 20
     data_disk:
       enabled: false
+    log_disk:
+      enabled: false
 
-  # Отдельная ВМ для OBD + Prometheus + Grafana (опционально)
+  # ob-configserver — по умолчанию на observer-1; dedicated=true для отдельной ВМ
+  configserver:
+    dedicated: false
+    count: 1
+    platform: standard-v3
+    cores: 2
+    memory_gb: 4
+    boot_disk:
+      type: network-ssd-io-m3
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  # Prometheus + Grafana (опционально)
   monitoring:
     enabled: false
     count: 1
+    platform: standard-v3
     cores: 4
     memory_gb: 16
     boot_disk:
       type: network-ssd
-      size_gb: 50
+      size_gb: 30
     data_disk:
       enabled: true
-      type: network-ssd
-      size_gb: 100
+      # метрики — потеря нежелательна
+      type: network-ssd-io-m3
+      size_gb: 186
       mount_point: /data
+    log_disk:
+      enabled: false
 
-# Параметры OceanBase (OBD / oceanbase-ce)
 oceanbase:
   cluster_name: obcluster
-  version: ""                      # пусто = последняя из mirror OBD
+  version: ""
   deploy_user: obadmin
   home_path: /home/obadmin/observer
   data_dir: /data/1
   redo_dir: /data/log1
 
-  # Авторасчёт от ресурсов ВМ (true) или явные значения ниже
   auto_tune: true
-  memory_limit: 24G
+  memory_limit: 28G
   system_memory: 4G
-  datafile_size: 400G
-  log_disk_size: 120G
+  datafile_size: 474G
+  log_disk_size: 250G
   cpu_count: 8
 
   components:
@@ -120,10 +128,7 @@ oceanbase:
     obshell: 2886
     obproxy: 2883
 
-# SSH для OBD (удалённые узлы)
 ssh:
   port: 22
-  # Путь к приватному ключу для OBD
   private_key_file: ~/.ssh/id_ed25519
-  # Пароль не рекомендуется; оставьте пустым при использовании ключей
   password: ""

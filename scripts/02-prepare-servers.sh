@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Подготовка серверов: монтирование дисков, sysctl, пользователь OceanBase.
-# Основано на рекомендациях oceanbase-skills (prepare-servers, configure-sysctl-conf).
+# Подготовка серверов: монтирование data/log дисков, sysctl, пользователь OceanBase.
 
 set -euo pipefail
 
@@ -12,61 +11,82 @@ require_file "${CONFIG_FILE}"
 load_inventory
 
 DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
-DATA_MOUNT="$(yaml_get vm.data_disk.mount_point)"
-LOG_DISK_ENABLED="$(yaml_get vm.log_disk.enabled)"
-LOG_MOUNT="$(yaml_get vm.log_disk.mount_point)"
 DATA_DIR="$(yaml_get oceanbase.data_dir)"
 REDO_DIR="$(yaml_get oceanbase.redo_dir)"
+
+OBS_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve observer --config "${CONFIG_FILE}" --format json)"
+MON_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve monitoring --config "${CONFIG_FILE}" --format json)"
+
+read -r OBS_DATA_MOUNT OBS_LOG_ENABLED OBS_LOG_MOUNT < <(
+  python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/data')); print(str(o['log_disk'].get('enabled',False)).lower()); print(o['log_disk'].get('mount_point','/data/log1'))" "${OBS_JSON}"
+)
+
+MON_DATA_MOUNT="$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m['data_disk'].get('mount_point','/data') if m['data_disk'].get('enabled') else '')" "${MON_JSON}")"
 
 TARGET_HOSTS=("$@")
 
 prepare_host() {
   local host="$1" role="$2"
+  local data_mount="${OBS_DATA_MOUNT}" log_enabled="${OBS_LOG_ENABLED}" log_mount="${OBS_LOG_MOUNT}"
+  local need_data="true" need_log="${log_enabled}"
+
+  if [[ "${role}" == "obproxy" || "${role}" == "configserver" ]]; then
+    need_data="false"
+    need_log="false"
+  elif [[ "${role}" == "monitor" ]]; then
+    need_log="false"
+    data_mount="${MON_DATA_MOUNT}"
+    [[ -n "${data_mount}" ]] || need_data="false"
+  fi
+
   info "Подготовка ${host} (${role})..."
 
   run_remote "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 
 DEPLOY_USER="${DEPLOY_USER}"
-DATA_MOUNT="${DATA_MOUNT}"
-LOG_DISK_ENABLED="${LOG_DISK_ENABLED}"
-LOG_MOUNT="${LOG_MOUNT}"
 DATA_DIR="${DATA_DIR}"
 REDO_DIR="${REDO_DIR}"
+NEED_DATA="${need_data}"
+NEED_LOG="${need_log}"
+DATA_MOUNT="${data_mount}"
+LOG_MOUNT="${log_mount}"
 
-# --- Монтирование дополнительного диска ---
-mount_data_disk() {
-  local mount_point="\$1"
-  local device=""
-  for d in /dev/vdb /dev/sdb /dev/nvme1n1; do
-    if [[ -b "\$d" ]]; then device="\$d"; break; fi
-  done
-  [[ -n "\$device" ]] || { echo "Дополнительный диск не найден, пропуск"; return 0; }
-
-  if ! blkid "\$device" >/dev/null 2>&1; then
-    mkfs.ext4 -F "\$device"
+mount_device() {
+  local device="\$1" mount_point="\$2"
+  [[ -b "\${device}" ]] || return 1
+  if ! blkid "\${device}" >/dev/null 2>&1; then
+    mkfs.ext4 -F "\${device}"
   fi
-  mkdir -p "\$mount_point"
-  if ! grep -q "\$mount_point" /etc/fstab; then
-    uuid=\$(blkid -s UUID -o value "\$device")
+  mkdir -p "\${mount_point}"
+  if ! grep -q "\${mount_point}" /etc/fstab; then
+    uuid=\$(blkid -s UUID -o value "\${device}")
     echo "UUID=\${uuid} \${mount_point} ext4 defaults,noatime,nodiratime,nodelalloc 0 2" >> /etc/fstab
   fi
-  mount -a || mount "\$mount_point" || true
+  mount -a 2>/dev/null || mount "\${mount_point}" || true
 }
 
-if [[ "${role}" != "obproxy" ]]; then
-  mount_data_disk "\${DATA_MOUNT}"
-  if [[ "\${LOG_DISK_ENABLED}" == "true" ]]; then
-    mount_data_disk "\${LOG_MOUNT}"
-  fi
-  mkdir -p "\${DATA_DIR}" "\${REDO_DIR}"
+# vdb=data, vdc=log (device-name из yc create-disk)
+if [[ "\${NEED_DATA}" == "true" ]]; then
+  for d in /dev/disk/by-id/virtio-data /dev/vdb /dev/sdb; do
+    if mount_device "\${d}" "\${DATA_MOUNT}"; then break; fi
+  done
+fi
+if [[ "\${NEED_LOG}" == "true" ]]; then
+  for d in /dev/disk/by-id/virtio-log /dev/vdc /dev/sdc; do
+    if mount_device "\${d}" "\${LOG_MOUNT}"; then break; fi
+  done
+fi
+
+if [[ "${role}" == "observer" || "${role}" == "monitor" ]]; then
+  mkdir -p "\${DATA_DIR}" "\${REDO_DIR}" 2>/dev/null || mkdir -p "\${DATA_MOUNT}"
   chown -R "\${DEPLOY_USER}:\${DEPLOY_USER}" "\${DATA_MOUNT}" 2>/dev/null || true
+  [[ "\${NEED_LOG}" == "true" ]] && chown -R "\${DEPLOY_USER}:\${DEPLOY_USER}" "\${LOG_MOUNT}" 2>/dev/null || true
 fi
 
 id -u "\${DEPLOY_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "\${DEPLOY_USER}"
 usermod -aG sudo "\${DEPLOY_USER}" 2>/dev/null || usermod -aG wheel "\${DEPLOY_USER}" 2>/dev/null || true
 
-# --- sysctl (oceanbase-skills) ---
 cat >/etc/sysctl.d/99-oceanbase.conf <<'SYSCTL'
 fs.aio-max-nr = 1048576
 net.core.somaxconn = 2048
@@ -93,7 +113,6 @@ vm.max_map_count = 655360
 SYSCTL
 sysctl -p /etc/sysctl.d/99-oceanbase.conf || sysctl --system
 
-# --- limits ---
 cat >/etc/security/limits.d/oceanbase.conf <<LIMITS
 ${DEPLOY_USER} soft nofile 655350
 ${DEPLOY_USER} hard nofile 655350
@@ -103,10 +122,8 @@ ${DEPLOY_USER} soft core unlimited
 ${DEPLOY_USER} hard core unlimited
 LIMITS
 
-# --- disable swap (рекомендация для production) ---
 swapoff -a 2>/dev/null || true
 sed -i.bak '/ swap / s/^/#/' /etc/fstab 2>/dev/null || true
-
 echo "Подготовка завершена на \$(hostname)"
 REMOTE
 }
@@ -129,15 +146,15 @@ prepare_all_observers
 if ((${#TARGET_HOSTS[@]} == 0)); then
   if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${OBPROXY_COUNT}"); do
-      var="OBPROXY_${i}_IP"
-      prepare_host "${!var}" "obproxy"
+      prepare_host "${OBPROXY_${i}_IP}" "obproxy"
     done
   fi
-
+  if [[ "${CONFIGSERVER_DEDICATED:-false}" == "true" && "${CONFIGSERVER_COUNT:-0}" -gt 0 ]]; then
+    prepare_host "${CONFIGSERVER_1_IP}" "configserver"
+  fi
   if [[ "${MONITOR_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${MONITOR_COUNT}"); do
-      var="MONITOR_${i}_IP"
-      prepare_host "${!var}" "monitor"
+      prepare_host "${MONITOR_${i}_IP}" "monitor"
     done
   fi
 fi

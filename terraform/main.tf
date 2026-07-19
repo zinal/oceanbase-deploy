@@ -18,29 +18,56 @@ locals {
   })
 }
 
+data "yandex_compute_image" "os" {
+  family = var.image_family
+}
+
+resource "yandex_compute_disk" "observer_data" {
+  count = var.observer_count
+
+  name = "${var.deployment_name}-observer-${count.index + 1}-data"
+  type = var.observer_data_disk_type
+  zone = var.zone
+  size = var.observer_data_disk_size_gb
+}
+
+resource "yandex_compute_disk" "observer_log" {
+  count = var.observer_count
+
+  name = "${var.deployment_name}-observer-${count.index + 1}-log"
+  type = var.observer_log_disk_type
+  zone = var.zone
+  size = var.observer_log_disk_size_gb
+}
+
 resource "yandex_compute_instance" "observer" {
   count = var.observer_count
 
   name        = "${var.deployment_name}-observer-${count.index + 1}"
-  platform_id = var.platform_id
+  platform_id = var.observer_platform
   zone        = var.zone
 
   resources {
-    cores         = var.cores
-    memory        = var.memory_gb
-    core_fraction = var.core_fraction
+    cores  = var.observer_cores
+    memory = var.observer_memory_gb
   }
 
   boot_disk {
     initialize_params {
       image_id = data.yandex_compute_image.os.id
-      type     = var.boot_disk_type
-      size     = var.boot_disk_size_gb
+      type     = var.observer_boot_disk_type
+      size     = var.observer_boot_disk_size_gb
     }
   }
 
   secondary_disk {
-    disk_id = yandex_compute_disk.data[count.index].id
+    disk_id     = yandex_compute_disk.observer_data[count.index].id
+    device_name = "data"
+  }
+
+  secondary_disk {
+    disk_id     = yandex_compute_disk.observer_log[count.index].id
+    device_name = "log"
   }
 
   network_interface {
@@ -53,29 +80,52 @@ resource "yandex_compute_instance" "observer" {
   }
 
   labels = {
-    deployment  = var.deployment_name
-    role        = "observer"
-    managed-by  = "oceanbase-deploy"
+    deployment = var.deployment_name
+    role       = "observer"
+    managed-by = "oceanbase-deploy"
   }
 }
 
-resource "yandex_compute_disk" "data" {
-  count = var.observer_count
+resource "yandex_compute_instance" "obproxy" {
+  count = var.obproxy_count
 
-  name = "${var.deployment_name}-observer-${count.index + 1}-data"
-  type = var.data_disk_type
-  zone = var.zone
-  size = var.data_disk_size_gb
-}
+  name        = "${var.deployment_name}-obproxy-${count.index + 1}"
+  platform_id = var.observer_platform
+  zone        = var.zone
 
-data "yandex_compute_image" "os" {
-  family = var.image_family
+  resources {
+    cores  = var.obproxy_cores
+    memory = var.obproxy_memory_gb
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = data.yandex_compute_image.os.id
+      type     = "network-ssd"
+      size     = 20
+    }
+  }
+
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+
+  metadata = {
+    user-data = local.cloud_init
+  }
+
+  labels = {
+    deployment = var.deployment_name
+    role       = "obproxy"
+    managed-by = "oceanbase-deploy"
+  }
 }
 
 output "observer_public_ips" {
   value = [for vm in yandex_compute_instance.observer : vm.network_interface[0].nat_ip_address]
 }
 
-output "observer_private_ips" {
-  value = [for vm in yandex_compute_instance.observer : vm.network_interface[0].ip_address]
+output "obproxy_public_ips" {
+  value = [for vm in yandex_compute_instance.obproxy : vm.network_interface[0].nat_ip_address]
 }

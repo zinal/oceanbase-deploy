@@ -3,6 +3,10 @@ generated/
 *.env.local
 config/deploy.yaml
 
+# Python
+__pycache__/
+*.pyc
+
 # SSH keys and secrets
 *.pem
 *.key

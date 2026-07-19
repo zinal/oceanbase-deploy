@@ -39,28 +39,24 @@ def gb_suffix(value_gb: int | float) -> str:
 
 
 def auto_tune(cfg: dict, observer_count: int) -> dict:
-    vm = cfg["vm"]
-    cores = int(vm.get("cores", 4))
-    memory_gb = int(vm.get("memory_gb", 16))
-    data_gb = int(vm.get("data_disk", {}).get("size_gb", 100))
+    """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
+    import importlib.util
+    from pathlib import Path
 
-    memory_limit_gb = max(4, memory_gb - 4)
-    system_memory_gb = min(4, max(2, memory_gb // 8))
-    datafile_gb = max(20, int(data_gb * 0.8))
-    log_disk_gb = max(15, memory_limit_gb * 3)
-
-    return {
-        "memory_limit": gb_suffix(memory_limit_gb),
-        "system_memory": gb_suffix(system_memory_gb),
-        "datafile_size": gb_suffix(datafile_gb),
-        "log_disk_size": gb_suffix(log_disk_gb),
-        "cpu_count": cores,
-    }
+    spec = importlib.util.spec_from_file_location(
+        "vm_profiles",
+        Path(__file__).resolve().parent / "lib" / "vm_profiles.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.observer_auto_tune(cfg)
 
 
 def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
-    obs_count = int(inv.get("OBSERVER_COUNT", cfg["nodes"]["observers"]["count"]))
-    obproxy_count = int(inv.get("OBPROXY_COUNT", cfg["nodes"]["obproxy"]["count"]))
+    profiles = cfg.get("vm_profiles", {})
+    obs_count = int(inv.get("OBSERVER_COUNT", profiles.get("observer", {}).get("count", 3)))
+    obproxy_count = int(inv.get("OBPROXY_COUNT", profiles.get("obproxy", {}).get("count", 0)))
+    configserver_dedicated = inv.get("CONFIGSERVER_DEDICATED", "false").lower() == "true"
 
     observer_ips = [inv[f"OBSERVER_{i}_IP"] for i in range(1, obs_count + 1)]
     ob_cfg = cfg["oceanbase"]
@@ -109,8 +105,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     result: dict = {"user": user_block}
 
     if components.get("ob_configserver", True):
+        if configserver_dedicated and inv.get("CONFIGSERVER_1_IP"):
+            cs_servers = [inv["CONFIGSERVER_1_IP"]]
+        else:
+            cs_servers = [observer_ips[0]]
         result["ob-configserver"] = {
-            "servers": [observer_ips[0]],
+            "servers": cs_servers,
             "global": {
                 "listen_port": 8080,
                 "home_path": f"/home/{deploy_user}/ob-configserver",
@@ -162,7 +162,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             "global": {"home_path": f"/home/{deploy_user}/obagent"},
         }
 
-    monitor_enabled = cfg["nodes"].get("monitoring", {}).get("enabled", False)
+    monitor_enabled = profiles.get("monitoring", {}).get("enabled", False)
     mon_count = int(inv.get("MONITOR_COUNT", "0"))
     if components.get("prometheus", False):
         prom_ip = inv.get("MONITOR_1_IP", observer_ips[0])
