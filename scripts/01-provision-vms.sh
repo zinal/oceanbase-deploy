@@ -178,7 +178,6 @@ case "${ACTION}" in
         name="${!var}"
         delete_instance "${name}"
       done
-      delete_deployment_disks "${deploy_name}"
       rm -f "${inventory}"
     else
       warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
@@ -193,7 +192,8 @@ for i in json.load(sys.stdin):
       for n in "${names[@]}"; do
         delete_instance "$n"
       done
-      delete_deployment_disks "${deploy_name}"
+      # Осиротевшие secondary-диски (если ВМ удаляли вручную без auto-delete)
+      delete_orphan_deployment_disks "${deploy_name}"
     fi
     info "Удаление запущено (async)"
     ;;

@@ -233,22 +233,50 @@ delete_instance() {
 delete_instance_disk() {
   local name="$1"
   yc_folder_cache_init
-  if disk_exists "${name}"; then
-    info "Удаление диска ${name}..."
-    yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
-      || warn "Не удалось удалить диск ${name}"
+  if ! disk_exists "${name}"; then
+    return 0
   fi
+
+  local disk_state
+  disk_state="$(yc compute disk get "${YC_FOLDER_ARGS[@]}" --name "${name}" --format json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+status = d.get('status', '')
+if status == 'DELETING':
+    print('deleting')
+elif d.get('instance_ids'):
+    print('attached')
+else:
+    print('orphan')
+" 2>/dev/null || echo "missing")"
+
+  case "${disk_state}" in
+    missing|deleting|attached)
+      # attached — удалится вместе с ВМ (auto-delete=true); deleting — уже в процессе
+      return 0
+      ;;
+  esac
+
+  info "Удаление осиротевшего диска ${name}..."
+  yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
+    || warn "Не удалось удалить диск ${name}"
 }
 
-delete_deployment_disks() {
+# Только диски без привязки к ВМ (осиротевшие после сбоев или ручного удаления инстансов).
+delete_orphan_deployment_disks() {
   local deploy_name="$1"
   yc_folder_cache_init
   mapfile -t disk_names < <(yc compute disk list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
 import json, sys
 deploy = sys.argv[1]
 for d in json.load(sys.stdin):
-    if d.get('labels', {}).get('deployment') == deploy:
-        print(d['name'])
+    if d.get('labels', {}).get('deployment') != deploy:
+        continue
+    if d.get('instance_ids'):
+        continue
+    if d.get('status') == 'DELETING':
+        continue
+    print(d['name'])
 " "${deploy_name}")
   local n
   for n in "${disk_names[@]}"; do
