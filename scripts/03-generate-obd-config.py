@@ -68,7 +68,7 @@ def yc_internal_fqdn(hostname: str, zone: str) -> str:
 
 
 def inv_host(inv: dict[str, str], prefix: str, idx: int, zone: str = "") -> str:
-    """Имя хоста из инвентаря (предпочтительно) или IP (fallback)."""
+    """Внутренний FQDN YC из инвентаря (для SSH и Prometheus scrape)."""
     name = inv.get(f"{prefix}_{idx}_NAME")
     if name:
         return yc_internal_fqdn(name, zone)
@@ -76,6 +76,14 @@ def inv_host(inv: dict[str, str], prefix: str, idx: int, zone: str = "") -> str:
     if inv.get(ip_key):
         return inv[ip_key]
     raise KeyError(f"Missing host for {prefix}_{idx}")
+
+
+def inv_ip(inv: dict[str, str], prefix: str, idx: int) -> str:
+    """IP-адрес из инвентаря для OBD (поле ip — только IPv4, hostname не поддерживается)."""
+    ip_key = f"{prefix}_{idx}_IP"
+    if inv.get(ip_key):
+        return inv[ip_key]
+    raise KeyError(f"Missing IP for {prefix}_{idx} (OBD requires IP addresses, not hostnames)")
 
 
 def collect_cluster_hosts(inv: dict[str, str], zone: str) -> list[str]:
@@ -163,6 +171,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     yc = cfg["yandex_cloud"]
     zone = yc.get("zone", "")
     observer_hosts = [inv_host(inv, "OBSERVER", i, zone) for i in range(1, obs_count + 1)]
+    observer_ips = [inv_ip(inv, "OBSERVER", i) for i in range(1, obs_count + 1)]
     ob_cfg = cfg["oceanbase"]
     ssh_cfg = cfg["ssh"]
 
@@ -191,9 +200,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     servers = []
     server_overrides: dict = {}
-    for idx, host in enumerate(observer_hosts, start=1):
+    for idx, ip in enumerate(observer_ips, start=1):
         sname = f"server{idx}"
-        servers.append({"name": sname, "ip": host})
+        servers.append({"name": sname, "ip": ip})
         server_overrides[sname] = {
             "mysql_port": int(ports.get("mysql", 2881)),
             "rpc_port": int(ports.get("rpc", 2882)),
@@ -214,12 +223,10 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     result: dict = {"user": user_block}
 
     if components.get("ob_configserver", True):
-        if configserver_dedicated and inv.get("CONFIGSERVER_1_NAME"):
-            cs_servers = [yc_internal_fqdn(inv["CONFIGSERVER_1_NAME"], zone)]
-        elif configserver_dedicated and inv.get("CONFIGSERVER_1_IP"):
-            cs_servers = [inv["CONFIGSERVER_1_IP"]]
+        if configserver_dedicated:
+            cs_servers = [inv_ip(inv, "CONFIGSERVER", 1)]
         else:
-            cs_servers = [observer_hosts[0]]
+            cs_servers = [observer_ips[0]]
         result["ob-configserver"] = {
             "servers": cs_servers,
             "global": {
@@ -250,9 +257,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     if components.get("obproxy_ce", True):
         if obproxy_count > 0:
-            proxy_hosts = [inv_host(inv, "OBPROXY", i, zone) for i in range(1, obproxy_count + 1)]
+            proxy_hosts = [inv_ip(inv, "OBPROXY", i) for i in range(1, obproxy_count + 1)]
         else:
-            proxy_hosts = observer_hosts[:1]
+            proxy_hosts = observer_ips[:1]
         result["obproxy-ce"] = {
             "depends": ["oceanbase-ce"],
             "servers": proxy_hosts,
@@ -282,9 +289,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
 
     mon_count = int(inv.get("MONITOR_COUNT", "0"))
     if prometheus_enabled:
-        prom_host = observer_hosts[0]
+        prom_host = observer_ips[0]
         if monitor_vm_enabled and mon_count > 0:
-            prom_host = inv_host(inv, "MONITOR", 1, zone)
+            prom_host = inv_ip(inv, "MONITOR", 1)
         prom_port = int(prom_cfg.get("port", 9090))
         result["prometheus"] = {
             "depends": ["obagent"] if components.get("obagent", True) else [],
@@ -303,9 +310,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         }
 
     if grafana_enabled:
-        graf_host = inv_host(inv, "MONITOR", 1, zone) if inv.get("MONITOR_1_NAME") else observer_hosts[0]
+        graf_host = inv_ip(inv, "MONITOR", 1) if inv.get("MONITOR_1_IP") else observer_ips[0]
         if monitor_vm_enabled and mon_count > 0:
-            graf_host = inv_host(inv, "MONITOR", 1, zone)
+            graf_host = inv_ip(inv, "MONITOR", 1)
         result["grafana"] = {
             "depends": ["prometheus"],
             "servers": [graf_host],
