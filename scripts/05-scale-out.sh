@@ -24,30 +24,21 @@ current="${OBSERVER_COUNT}"
 deploy_name="${DEPLOY_NAME}"
 declare -a new_names=()
 declare -a new_ips=()
-declare -a disks_to_create=()
-declare -a disks_to_wait=()
-declare -a existing_disks=()
+declare -a disks_created=()
 declare -a existing_names=()
 
 for (( n=1; n<=ADD_COUNT; n++ )); do
   idx=$((current + n))
   name="${deploy_name}-observer-${idx}"
   new_names+=("${name}")
-  collect_disk_names_for_vm "${name}" "observer" disks_to_create
 done
 
 info "=== Создание дисков для ${ADD_COUNT} observer-узлов ==="
-yc_list_existing_disks existing_disks "${disks_to_create[@]}"
 for name in "${new_names[@]}"; do
-  create_instance_disks_async "${name}" "observer" "${existing_disks[@]}"
+  create_instance_disks_async "${name}" "observer" disks_created
 done
-for d in "${disks_to_create[@]}"; do
-  if ! printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${d}"; then
-    disks_to_wait+=("${d}")
-  fi
-done
-if ((${#disks_to_wait[@]} > 0)); then
-  wait_for_disks_ready "${disks_to_wait[@]}"
+if ((${#disks_created[@]} > 0)); then
+  wait_for_disks_ready "${disks_created[@]}"
 fi
 
 info "=== Создание ВМ ==="

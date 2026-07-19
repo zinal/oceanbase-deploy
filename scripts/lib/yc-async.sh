@@ -108,7 +108,11 @@ yc_list_existing_disks() {
   mapfile -t _out < <(yc compute disk list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
 import json, sys
 want = set(sys.argv[1:])
-existing = [d['name'] for d in json.load(sys.stdin) if d.get('name') in want]
+skip = {'DELETING'}
+existing = [
+    d['name'] for d in json.load(sys.stdin)
+    if d.get('name') in want and d.get('status') not in skip
+]
 print('\n'.join(existing))
 " "${names[@]}")
 }
@@ -120,11 +124,35 @@ instance_exists() {
   ((${#found[@]} > 0))
 }
 
+# Точная проверка через disk get (list может давать рассинхрон после удаления).
+disk_lookup() {
+  local name="$1"
+  yc_folder_cache_init
+  yc compute disk get "${YC_FOLDER_ARGS[@]}" --name "${name}" --format json 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+status = d.get('status', '')
+if status in ('DELETING',):
+    sys.exit(1)
+disk_id = d.get('id', '')
+if not disk_id:
+    sys.exit(1)
+print(f\"{disk_id}\t{status}\")
+"
+}
+
 disk_exists() {
   local name="$1"
-  local -a found=()
-  yc_list_existing_disks found "${name}"
-  ((${#found[@]} > 0))
+  disk_lookup "${name}" >/dev/null 2>&1
+}
+
+disk_exists_info() {
+  local name="$1"
+  disk_lookup "${name}" 2>/dev/null || true
 }
 
 # Ожидание READY только для указанных дисков (не всего каталога по префиксу)

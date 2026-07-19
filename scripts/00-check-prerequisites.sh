@@ -41,10 +41,10 @@ if command -v yc >/dev/null 2>&1; then
       warn "Образ ${image_name} не найден в folder ${folder_id}. Проверьте: yc compute image list --folder-id ${folder_id}"
     fi
   elif [[ -n "${image_family}" && "${image_family}" != "null" ]]; then
-    found="$(yc compute image list --folder-id "${folder_id}" --family-id "${image_family}" --format json 2>/dev/null \
-      | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
+    found="$(yc compute image list --folder-id "${folder_id}" --format json 2>/dev/null \
+      | python3 -c "import json,sys; fam=sys.argv[1]; print(sum(1 for i in json.load(sys.stdin) if i.get('family')==fam or i.get('family_id')==fam))" "${image_family}" 2>/dev/null || echo 0)"
     if [[ "${found}" == "0" ]]; then
-      warn "Семейство образов ${image_family} не найдено в folder ${folder_id}. Проверьте: yc compute image list --folder-id ${folder_id} --family-id ${image_family}"
+      warn "Семейство образов ${image_family} не найдено в folder ${folder_id}. Проверьте: yc compute image list --folder-id ${folder_id} --format json | jq '.[] | select(.family==\"${image_family}\")'"
     fi
   fi
 fi

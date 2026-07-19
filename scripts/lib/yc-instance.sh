@@ -77,13 +77,13 @@ PY
 }
 
 # Создание secondary-дисков асинхронно (отдельно от ВМ, как в ydb-snippets).
+# Третий аргумент — nameref-массив имён дисков, созданных в этом вызове.
 create_instance_disks_async() {
   local name="$1" role="$2"
-  shift 2
-  local -a existing_disks=("$@")
+  local -n _created_disks=$3
   load_vm_params "${role}"
 
-  local zone deploy_name
+  local zone deploy_name disk_name disk_info disk_id disk_status
   zone="$(yaml_get yandex_cloud.zone)"
   deploy_name="$(yaml_get deployment.name)"
   yc_folder_cache_init
@@ -91,39 +91,32 @@ create_instance_disks_async() {
   local labels="deployment=${deploy_name},role=${role},managed-by=oceanbase-deploy"
   local created=false
 
-  disk_already_exists() {
-    local disk_name="$1"
-    printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${disk_name}"
+  ensure_disk() {
+    local disk_name="$1" disk_type="$2" disk_size="$3"
+    disk_info="$(disk_exists_info "${disk_name}")"
+    if [[ -n "${disk_info}" ]]; then
+      IFS=$'\t' read -r disk_id disk_status <<< "${disk_info}"
+      info "Диск ${disk_name} уже существует (id=${disk_id}, status=${disk_status}), пропуск"
+      return 0
+    fi
+    info "Создание диска ${disk_name} (${disk_type}, ${disk_size}G)..."
+    yc_async_retry "создание диска ${disk_name}" \
+      yc compute disk create --name "${disk_name}" --zone "${zone}" \
+        "${YC_FOLDER_ARGS[@]}" \
+        --type "${disk_type}" --size "${disk_size}G" \
+        --labels "${labels}"
+    _created_disks+=("${disk_name}")
+    created=true
   }
 
   if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
-    local disk_name="${name}-data"
-    if disk_already_exists "${disk_name}" || disk_exists "${disk_name}"; then
-      info "Диск ${disk_name} уже существует, пропуск"
-    else
-      info "Создание диска ${disk_name} (${VM_DATA_TYPE}, ${VM_DATA_SIZE}G)..."
-      yc_async_retry "создание диска ${disk_name}" \
-        yc compute disk create --name "${disk_name}" --zone "${zone}" \
-          "${YC_FOLDER_ARGS[@]}" \
-          --type "${VM_DATA_TYPE}" --size "${VM_DATA_SIZE}G" \
-          --labels "${labels}"
-      created=true
-    fi
+    disk_name="${name}-data"
+    ensure_disk "${disk_name}" "${VM_DATA_TYPE}" "${VM_DATA_SIZE}"
   fi
 
   if [[ "${VM_LOG_ENABLED}" == "true" ]]; then
-    local disk_name="${name}-log"
-    if disk_already_exists "${disk_name}" || disk_exists "${disk_name}"; then
-      info "Диск ${disk_name} уже существует, пропуск"
-    else
-      info "Создание диска ${disk_name} (${VM_LOG_TYPE}, ${VM_LOG_SIZE}G)..."
-      yc_async_retry "создание диска ${disk_name}" \
-        yc compute disk create --name "${disk_name}" --zone "${zone}" \
-          "${YC_FOLDER_ARGS[@]}" \
-          --type "${VM_LOG_TYPE}" --size "${VM_LOG_SIZE}G" \
-          --labels "${labels}"
-      created=true
-    fi
+    disk_name="${name}-log"
+    ensure_disk "${disk_name}" "${VM_LOG_TYPE}" "${VM_LOG_SIZE}"
   fi
 
   [[ "${created}" == "true" ]]
@@ -249,7 +242,25 @@ delete_instance_disk() {
   local name="$1"
   yc_folder_cache_init
   if disk_exists "${name}"; then
+    info "Удаление диска ${name}..."
     yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
       || warn "Не удалось удалить диск ${name}"
   fi
+}
+
+delete_deployment_disks() {
+  local deploy_name="$1"
+  yc_folder_cache_init
+  mapfile -t disk_names < <(yc compute disk list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
+import json, sys
+deploy = sys.argv[1]
+for d in json.load(sys.stdin):
+    if d.get('labels', {}).get('deployment') == deploy:
+        print(d['name'])
+" "${deploy_name}")
+  local n
+  for n in "${disk_names[@]}"; do
+    [[ -n "${n}" ]] || continue
+    delete_instance_disk "${n}"
+  done
 }

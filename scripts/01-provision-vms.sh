@@ -67,7 +67,6 @@ provision_async() {
   local -a all_names=()
   local -a existing_names=()
   local -a disks_to_create=()
-  local -a disks_to_wait=()
   local disks_needed=false
 
   for entry in "${VM_QUEUE[@]}"; do
@@ -101,22 +100,20 @@ provision_async() {
 
   if [[ "${disks_needed}" == "true" ]]; then
     info "=== Фаза 1: создание дисков ==="
-    local -a existing_disks=()
-    yc_list_existing_disks existing_disks "${disks_to_create[@]}"
+    if [[ -n "${YC_FOLDER_ID}" && "${YC_FOLDER_ID}" != "null" ]]; then
+      info "Каталог Yandex Cloud: ${YC_FOLDER_ID}"
+    else
+      info "Каталог Yandex Cloud: из профиля yc (folder_id не задан в config)"
+    fi
+    local -a disks_created=()
 
     for entry in "${new_vms[@]}"; do
       IFS=: read -r role prefix idx name <<< "${entry}"
-      create_instance_disks_async "${name}" "${role}" "${existing_disks[@]}"
+      create_instance_disks_async "${name}" "${role}" disks_created
     done
 
-    for d in "${disks_to_create[@]}"; do
-      if ! printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${d}"; then
-        disks_to_wait+=("${d}")
-      fi
-    done
-
-    if ((${#disks_to_wait[@]} > 0)); then
-      wait_for_disks_ready "${disks_to_wait[@]}"
+    if ((${#disks_created[@]} > 0)); then
+      wait_for_disks_ready "${disks_created[@]}"
     fi
     yc_assert_last_op_ok "создание дисков"
   fi
@@ -196,9 +193,8 @@ for i in json.load(sys.stdin):
 ")
       for n in "${names[@]}"; do
         delete_instance "$n"
-        delete_instance_disk "${n}-data"
-        delete_instance_disk "${n}-log"
       done
+      delete_deployment_disks "${deploy_name}"
     fi
     info "Удаление запущено (async)"
     ;;
