@@ -11,6 +11,7 @@ source "${LIB_DIR}/lib/yc-instance.sh"
 
 require_file "${CONFIG_FILE}"
 load_inventory
+yc_folder_cache_init
 
 ADD_COUNT="${1:-1}"
 if ! [[ "${ADD_COUNT}" =~ ^[0-9]+$ ]] || [[ "${ADD_COUNT}" -lt 1 ]]; then
@@ -23,29 +24,43 @@ current="${OBSERVER_COUNT}"
 deploy_name="${DEPLOY_NAME}"
 declare -a new_names=()
 declare -a new_ips=()
+declare -a disks_to_create=()
+declare -a disks_to_wait=()
+declare -a existing_disks=()
+declare -a existing_names=()
 
 for (( n=1; n<=ADD_COUNT; n++ )); do
   idx=$((current + n))
   name="${deploy_name}-observer-${idx}"
   new_names+=("${name}")
+  collect_disk_names_for_vm "${name}" "observer" disks_to_create
 done
 
 info "=== Создание дисков для ${ADD_COUNT} observer-узлов ==="
+yc_list_existing_disks existing_disks "${disks_to_create[@]}"
 for name in "${new_names[@]}"; do
-  create_instance_disks_async "${name}" "observer" || true
+  create_instance_disks_async "${name}" "observer" "${existing_disks[@]}"
 done
-wait_for_disks_ready "${deploy_name}-"
+for d in "${disks_to_create[@]}"; do
+  if ! printf '%s\n' "${existing_disks[@]:-}" | grep -qx "${d}"; then
+    disks_to_wait+=("${d}")
+  fi
+done
+if ((${#disks_to_wait[@]} > 0)); then
+  wait_for_disks_ready "${disks_to_wait[@]}"
+fi
 
 info "=== Создание ВМ ==="
+yc_list_existing_instances existing_names "${new_names[@]}"
 for name in "${new_names[@]}"; do
-  if instance_exists "${name}"; then
+  if printf '%s\n' "${existing_names[@]:-}" | grep -qx "${name}"; then
     warn "ВМ ${name} уже существует, пропуск"
   else
     create_instance_async "${name}" "observer"
   fi
 done
 yc_assert_last_op_ok "создание observer-ВМ"
-wait_for_instances_ready "${deploy_name}"
+wait_for_instances_ready "${deploy_name}" "${new_names[@]}"
 
 for name in "${new_names[@]}"; do
   ip="$(get_instance_ip "${name}")"

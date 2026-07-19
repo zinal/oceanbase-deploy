@@ -196,6 +196,18 @@ needs_secondary_disks() {
   [[ "${VM_DATA_ENABLED}" == "true" || "${VM_LOG_ENABLED}" == "true" ]]
 }
 
+collect_disk_names_for_vm() {
+  local name="$1" role="$2"
+  local -n _out=$3
+  load_vm_params "${role}"
+  if [[ "${VM_DATA_ENABLED}" == "true" ]]; then
+    _out+=("${name}-data")
+  fi
+  if [[ "${VM_LOG_ENABLED}" == "true" ]]; then
+    _out+=("${name}-log")
+  fi
+}
+
 get_instance_ip() {
   local name="$1"
   yc_folder_cache_init
