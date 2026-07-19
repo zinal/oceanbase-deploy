@@ -148,7 +148,8 @@ prepare_all_observers
 if ((${#TARGET_HOSTS[@]} == 0)); then
   if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${OBPROXY_COUNT}"); do
-      prepare_host "${OBPROXY_${i}_IP}" "obproxy"
+      var="OBPROXY_${i}_IP"
+      prepare_host "${!var}" "obproxy"
     done
   fi
   if [[ "${CONFIGSERVER_DEDICATED:-false}" == "true" && "${CONFIGSERVER_COUNT:-0}" -gt 0 ]]; then
@@ -156,7 +157,8 @@ if ((${#TARGET_HOSTS[@]} == 0)); then
   fi
   if [[ "${MONITOR_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${MONITOR_COUNT}"); do
-      prepare_host "${MONITOR_${i}_IP}" "monitor"
+      var="MONITOR_${i}_IP"
+      prepare_host "${!var}" "monitor"
     done
   fi
 fi
