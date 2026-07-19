@@ -73,7 +73,7 @@ resource "yandex_compute_instance" "observer" {
 
   network_interface {
     subnet_id = var.subnet_id
-    nat       = true
+    nat       = var.nat_enabled
   }
 
   metadata = {
@@ -109,7 +109,7 @@ resource "yandex_compute_instance" "obproxy" {
 
   network_interface {
     subnet_id = var.subnet_id
-    nat       = true
+    nat       = var.nat_enabled
   }
 
   metadata = {
@@ -123,10 +123,10 @@ resource "yandex_compute_instance" "obproxy" {
   }
 }
 
-output "observer_public_ips" {
-  value = [for vm in yandex_compute_instance.observer : vm.network_interface[0].nat_ip_address]
+output "observer_private_ips" {
+  value = [for vm in yandex_compute_instance.observer : vm.network_interface[0].ip_address]
 }
 
-output "obproxy_public_ips" {
-  value = [for vm in yandex_compute_instance.obproxy : vm.network_interface[0].nat_ip_address]
+output "obproxy_private_ips" {
+  value = [for vm in yandex_compute_instance.obproxy : vm.network_interface[0].ip_address]
 }

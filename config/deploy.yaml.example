@@ -19,6 +19,8 @@ yandex_cloud:
   zone: ru-central1-a
   network_name: default
   subnet_name: default-ru-central1-a
+  # Публичный IP (NAT): false — только приватный адрес в подсети (как ydb-snippets)
+  nat_enabled: false
   # Ускорение сети (как в ydb-snippets/admin/vms): software-accelerated | standard
   network_acceleration: software-accelerated
   ssh_public_key_file: ~/.ssh/id_ed25519.pub

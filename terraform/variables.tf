@@ -23,9 +23,10 @@ variable "ssh_public_key" {
   description = "Содержимое публичного SSH-ключа"
 }
 
-variable "image_folder_id" {
-  type    = string
-  default = "standard-images"
+variable "nat_enabled" {
+  type        = bool
+  default     = false
+  description = "Assign public NAT IP to VMs"
 }
 
 variable "image_family" {

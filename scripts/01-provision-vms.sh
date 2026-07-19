@@ -13,6 +13,7 @@ ACTION="${1:-create}"
 
 require_file "${CONFIG_FILE}"
 ensure_generated_dir
+yc_folder_cache_init
 
 deploy_name="$(yaml_get deployment.name)"
 observer_count="$(yaml_get vm_profiles.observer.count)"
@@ -22,7 +23,6 @@ configserver_dedicated="$(yaml_get vm_profiles.configserver.dedicated)"
 
 inventory="${GENERATED_DIR}/inventory.env"
 
-# Список ВМ для создания: "role prefix index name"
 declare -a VM_QUEUE=()
 
 queue_vms() {
@@ -64,16 +64,28 @@ build_inventory_from_queue() {
 provision_async() {
   local entry role prefix idx name
   local -a new_vms=()
+  local -a all_names=()
+  local -a existing_names=()
+  local -a disks_to_create=()
   local disks_needed=false
 
   for entry in "${VM_QUEUE[@]}"; do
+    IFS=: read -r _ _ _ name <<< "${entry}"
+    all_names+=("${name}")
+  done
+
+  info "Проверка существующих ВМ (${#all_names[@]})..."
+  yc_list_existing_instances existing_names "${all_names[@]}"
+
+  for entry in "${VM_QUEUE[@]}"; do
     IFS=: read -r role prefix idx name <<< "${entry}"
-    if instance_exists "${name}"; then
+    if printf '%s\n' "${existing_names[@]:-}" | grep -qx "${name}"; then
       warn "ВМ ${name} уже существует, пропуск создания"
     else
       new_vms+=("${entry}")
       if needs_secondary_disks "${role}"; then
         disks_needed=true
+        collect_disk_names_for_vm "${name}" "${role}" disks_to_create
       fi
     fi
   done
@@ -84,29 +96,40 @@ provision_async() {
     return 0
   fi
 
-  # Фаза 1: secondary-диски (--async + retry)
+  info "Будет создано ВМ: ${#new_vms[@]}"
+
   if [[ "${disks_needed}" == "true" ]]; then
     info "=== Фаза 1: создание дисков ==="
+    if [[ -n "${YC_FOLDER_ID}" && "${YC_FOLDER_ID}" != "null" ]]; then
+      info "Каталог Yandex Cloud: ${YC_FOLDER_ID}"
+    else
+      info "Каталог Yandex Cloud: из профиля yc (folder_id не задан в config)"
+    fi
+    local -a disks_created=()
+
     for entry in "${new_vms[@]}"; do
       IFS=: read -r role prefix idx name <<< "${entry}"
-      create_instance_disks_async "${name}" "${role}" || true
+      create_instance_disks_async "${name}" "${role}" disks_created
     done
-    wait_for_disks_ready "${deploy_name}-"
+
+    if ((${#disks_created[@]} > 0)); then
+      wait_for_disks_ready "${disks_created[@]}"
+    fi
     yc_assert_last_op_ok "создание дисков"
   fi
 
-  # Фаза 2: виртуальные машины (--async + retry)
   info "=== Фаза 2: создание ВМ ==="
+  local -a new_vm_names=()
   for entry in "${new_vms[@]}"; do
     IFS=: read -r role prefix idx name <<< "${entry}"
+    new_vm_names+=("${name}")
     create_instance_async "${name}" "${role}"
   done
   yc_assert_last_op_ok "создание ВМ"
 
-  # Фаза 3: ожидание RUNNING/STOPPED
-  wait_for_instances_ready "${deploy_name}"
+  info "=== Фаза 3: ожидание готовности ВМ ==="
+  wait_for_instances_ready "${deploy_name}" "${new_vm_names[@]}"
 
-  # Фаза 4: inventory + SSH
   build_inventory_from_queue
 
   info "=== Фаза 4: проверка SSH ==="
@@ -131,8 +154,6 @@ case "${ACTION}" in
     if [[ "${obproxy_count}" -gt 0 ]]; then
       info "Планирование obproxy-ВМ: ${obproxy_count}"
       queue_vms "obproxy" "${obproxy_count}" "obproxy"
-    else
-      write_inventory "OBPROXY_COUNT" "0"
     fi
 
     if [[ "${configserver_dedicated}" == "true" ]]; then
@@ -156,13 +177,13 @@ case "${ACTION}" in
       for var in $(compgen -v | grep -E '_NAME$'); do
         name="${!var}"
         delete_instance "${name}"
-        delete_instance_disk "${name}-data"
-        delete_instance_disk "${name}-log"
       done
+      delete_deployment_disks "${deploy_name}"
       rm -f "${inventory}"
     else
       warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
-      mapfile -t names < <(yc compute instance list --format json | python3 -c "
+      yc_folder_cache_init
+      mapfile -t names < <(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json | python3 -c "
 import json,sys
 name='${deploy_name}'
 for i in json.load(sys.stdin):
@@ -171,9 +192,8 @@ for i in json.load(sys.stdin):
 ")
       for n in "${names[@]}"; do
         delete_instance "$n"
-        delete_instance_disk "${n}-data"
-        delete_instance_disk "${n}-log"
       done
+      delete_deployment_disks "${deploy_name}"
     fi
     info "Удаление запущено (async)"
     ;;
