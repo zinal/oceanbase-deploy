@@ -63,9 +63,12 @@ pip3 install -U pip
 
 # 1. Зависимости
 pip install -r requirements.txt
-# установка YC CLI
+# настройка Yandex Cloud
 curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
-yc init   # настройка Yandex Cloud
+yc init
+# установка obd
+bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/download-center/opensource/oceanbase-all-in-one/installer.sh)"
+source ~/.oceanbase-all-in-one/bin/env.sh
 
 # 2. Конфигурация
 cp config/deploy.yaml.example config/deploy.yaml
