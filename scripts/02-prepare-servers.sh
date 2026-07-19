@@ -44,6 +44,8 @@ prepare_host() {
   run_remote "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 
+command -v mkfs.ext4 >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y e2fsprogs; }
+
 DEPLOY_USER="${DEPLOY_USER}"
 DATA_DIR="${DATA_DIR}"
 REDO_DIR="${REDO_DIR}"

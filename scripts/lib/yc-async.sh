@@ -229,9 +229,21 @@ print(pending)
 
 wait_for_instances_ssh() {
   local -a ips=("$@")
-  local ip
+  local -a pids=()
+  local ip pid failed=0
+
   for ip in "${ips[@]}"; do
     [[ -n "${ip}" ]] || continue
-    wait_for_ssh "${ip}"
+    wait_for_ssh "${ip}" &
+    pids+=($!)
   done
+
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || failed=1
+  done
+
+  if (( failed != 0 )); then
+    die "SSH недоступен на одном или нескольких хостах"
+  fi
+  info "SSH доступен на всех ${#pids[@]} хост(ах)"
 }
