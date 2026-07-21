@@ -1,0 +1,135 @@
+# Предлагаемая конфигурация TPC-C на 25000 warehouses (вариант A: линейный scale-out).
+# База: bench/tpcc/deploy.yaml + Results.txt (2400 wh → 28040 tpmC @ 90.8%).
+# Обоснование: bench/tpcc/SIZING-25000wh.md
+#
+# Scale factor k = 25000/2400 ≈ 10.42
+# Aggregate: 33×16c/64G = 528 vCPU / 2112 GB RAM (~+10% к линейной оценке 500/2000)
+#
+# Скопируйте в config/deploy.yaml или используйте как overlay для сравнения.
+
+yandex_cloud:
+  folder_id: "b1gkt21tj69047alfmdp"
+  zone: ru-central1-d
+  network_name: oceanbase-testing-1
+  subnet_name: oceanbase-testing-1-d
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  network_acceleration: software-accelerated
+  ssh_public_key_file: ~/.ssh/id_ecdsa.pub
+  ssh_user: demo
+
+deployment:
+  name: ob-yc-tpcc-25k
+  control_mode: local
+
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
+
+vm_profiles:
+  # 11 узлов на logical zone × 3 = 33; unit_num=11 в tenant
+  observer:
+    count: 33
+    platform: standard-v3
+    cores: 16
+    memory_gb: 64
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      type: network-ssd-nonreplicated
+      size_gb: 930                 # per-node data ≈ baseline при unit_num=11
+      mount_point: /ob-data
+    log_disk:
+      enabled: true
+      type: network-ssd-io-m3
+      size_gb: 372                 # ≥ log_disk_size 250G, кратно 93
+      mount_point: /ob-log
+
+  # ~×4 к базе (2×4c): запас под ~289k tpmC и тысячи inflight-соединений
+  obproxy:
+    count: 8
+    platform: standard-v3
+    cores: 8
+    memory_gb: 16
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  configserver:
+    dedicated: false
+    count: 1
+    platform: standard-v3
+    cores: 2
+    memory_gb: 4
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  monitoring:
+    enabled: true
+    count: 1
+    platform: standard-v3
+    cores: 8
+    memory_gb: 32
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      type: network-ssd-io-m3
+      size_gb: 372
+      mount_point: /data
+    log_disk:
+      enabled: false
+
+oceanbase:
+  cluster_name: obcluster
+  version: ""
+  deploy_user: demo
+  home_path: /home/demo/observer
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
+
+  # false: иначе auto_tune перезапишет datafile/log под весь диск (790G/334G),
+  # а нам нужны те же per-node лимиты, что на 2400 wh при unit_num=11
+  auto_tune: false
+  memory_limit: 60G
+  system_memory: 4G
+  datafile_size: 474G
+  log_disk_size: 250G
+  cpu_count: 16
+
+  components:
+    oceanbase_ce: true
+    obproxy_ce: true
+    obagent: true
+    ob_configserver: true
+    prometheus: true
+    grafana: true
+
+  ports:
+    mysql: 2881
+    rpc: 2882
+    obshell: 2886
+    obproxy: 2883
+
+# Ожидаемый tenant после деплоя (выполнить вручную / через obd):
+#   UNIT: MAX_CPU 14, MEMORY_SIZE 52G, LOG_DISK_SIZE 180G
+#   POOL: UNIT_NUM=11, zones zone1..zone3
+#   TENANT: primary_zone=RANDOM, locality F@zone1,F@zone2,F@zone3
+#   Затем: obd cluster tenant optimize <deploy> tpcc -o express_oltp
+
+ssh:
+  port: 22
+  private_key_file: ~/.ssh/id_ecdsa
+  password: ""

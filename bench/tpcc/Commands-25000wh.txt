@@ -1,0 +1,26 @@
+# TPC-C 25000 warehouses — команды (вариант A: 33×16c observers)
+# База: Commands.txt (2400 wh, partitions 18, max-inflight 500)
+#
+# Перед тестом:
+#   1) развернуть config из deploy-25000wh.yaml
+#   2) создать tenant (UNIT_NUM=11), см. SIZING-25000wh.md
+#   3) obd cluster tenant optimize <deploy> tpcc -o express_oltp
+#   4) HAProxy на 8 obproxy (balance source / leastconn)
+
+./build/tpcc clean --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui
+
+# partitions ≈ 6 × observer_count (как 18 на 3 узлах)
+./build/tpcc init --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui --partitions 198
+
+# import: threads масштабируем с данных; при узком месте CPU клиента → 256
+./build/tpcc import -w 25000 --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui --threads 128
+
+# max-inflight ≈ 500 × (25000/2400) ≈ 5200
+./build/tpcc run -w 25000 --warmup 5 --duration 10 --no-tui --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --max-inflight 5200
+
+# --- Вариант B (18×32c, unit_num=6): partitions 108, max-inflight тот же ---
+# ./build/tpcc init ... --partitions 108
+# ./build/tpcc import -w 25000 ... --threads 128
+# ./build/tpcc run -w 25000 ... --max-inflight 5200
+
+# Ожидание: ~289000 tpmC при efficiency ~90% (max ≈ 25000×12.86 = 321500)

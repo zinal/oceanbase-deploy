@@ -1,0 +1,127 @@
+# Альтернатива B: TPC-C 25000 warehouses — меньше узлов, толще ВМ.
+# Aggregate: 18×32c/128G = 576 vCPU / 2304 GB (~+15% к линейной оценке).
+# См. bench/tpcc/SIZING-25000wh.md
+
+yandex_cloud:
+  folder_id: "b1gkt21tj69047alfmdp"
+  zone: ru-central1-d
+  network_name: oceanbase-testing-1
+  subnet_name: oceanbase-testing-1-d
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  network_acceleration: software-accelerated
+  ssh_public_key_file: ~/.ssh/id_ecdsa.pub
+  ssh_user: demo
+
+deployment:
+  name: ob-yc-tpcc-25k-compact
+  control_mode: local
+
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
+
+vm_profiles:
+  # 6 узлов на logical zone × 3 = 18; unit_num=6
+  observer:
+    count: 18
+    platform: standard-v3
+    cores: 32
+    memory_gb: 128
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      type: network-ssd-nonreplicated
+      size_gb: 1116                # ~2× data на узел vs база (25000/6 vs 2400/1)
+      mount_point: /ob-data
+    log_disk:
+      enabled: true
+      type: network-ssd-io-m3
+      size_gb: 372                 # ~3× memory_limit(112G)
+      mount_point: /ob-log
+
+  obproxy:
+    count: 6
+    platform: standard-v3
+    cores: 8
+    memory_gb: 16
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  configserver:
+    dedicated: false
+    count: 1
+    platform: standard-v3
+    cores: 2
+    memory_gb: 4
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  monitoring:
+    enabled: true
+    count: 1
+    platform: standard-v3
+    cores: 8
+    memory_gb: 32
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      type: network-ssd-io-m3
+      size_gb: 372
+      mount_point: /data
+    log_disk:
+      enabled: false
+
+oceanbase:
+  cluster_name: obcluster
+  version: ""
+  deploy_user: demo
+  home_path: /home/demo/observer
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
+
+  # false: фиксируем sizing под 25000 wh / unit_num=6 (см. SIZING-25000wh.md)
+  auto_tune: false
+  memory_limit: 112G               # 128 − ~16 GB OS/запас
+  system_memory: 8G
+  datafile_size: 950G
+  log_disk_size: 336G              # 3× memory_limit
+  cpu_count: 32
+
+  components:
+    oceanbase_ce: true
+    obproxy_ce: true
+    obagent: true
+    ob_configserver: true
+    prometheus: true
+    grafana: true
+
+  ports:
+    mysql: 2881
+    rpc: 2882
+    obshell: 2886
+    obproxy: 2883
+
+# Tenant (compact):
+#   UNIT: MAX_CPU 28, MEMORY_SIZE 100G, LOG_DISK_SIZE 300G
+#   POOL: UNIT_NUM=6
+#   TENANT: primary_zone=RANDOM, locality F@zone1,F@zone2,F@zone3
+
+ssh:
+  port: 22
+  private_key_file: ~/.ssh/id_ecdsa
+  password: ""
