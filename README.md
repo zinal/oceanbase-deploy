@@ -9,6 +9,7 @@
 - Подготовка серверов по best practices (sysctl, limits, монтирование дисков)
 - Генерация конфигурации OBD и развёртывание кластера
 - Горизонтальное масштабирование (`scale_out`)
+- **OceanBase Cloud Platform (OCP)** — отдельная ВМ и автоматическая установка через OBD
 - Альтернатива: Terraform-модуль для создания ВМ
 
 ## Архитектура
@@ -104,8 +105,9 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 |--------|------------|
 | `yandex_cloud` | Инфраструктура YC: zone, subnet, SSH, **образ ОС**, network_acceleration |
 | `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
-| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring |
+| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp** |
 | `oceanbase` | Параметры кластера, OBD, auto-tune |
+| `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 
 ```yaml
 yandex_cloud:
@@ -145,7 +147,14 @@ vm_profiles:
     enabled: false
     cores: 4
     memory_gb: 16
+
+  ocp:                         # OceanBase Cloud Platform (отдельная ВМ)
+    enabled: false
+    cores: 4
+    memory_gb: 16
 ```
+
+При `vm_profiles.ocp.enabled: true` и `ocp.enabled: true` разворачивается веб-консоль OCP на отдельной ВМ. См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 При `vm_profiles.monitoring.enabled: true` автоматически включаются Prometheus и Grafana (OBD). На **всех** узлах кластера устанавливается **node_exporter** (порт 9100 по умолчанию); Prometheus на monitoring-ВМ собирает OS-метрики (`job: node_exporter`) и метрики OceanBase через OBAgent (`node`, `ob_basic`, `ob_extra`, `agent`).
 
@@ -187,6 +196,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ```
 ├── docs/
 │   ├── component-vm-sizing.md         # анализ профилей ВМ по компонентам
+│   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
 │   └── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
@@ -201,6 +211,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 03-generate-obd-config.py
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
 │   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── deploy-ocp.sh            # развёртывание OCP (отдельная ВМ)
+│   ├── 02-prepare-ocp.sh        # подготовка OCP-ВМ (Java, clockdiff)
 │   └── 99-destroy.sh
 ├── terraform/                   # опциональный IaC
 ├── generated/                   # inventory.env, obd-cluster.yaml

@@ -54,6 +54,9 @@ case "${STEP}" in
     run_step 02-prepare-servers.sh
     run_step 04-deploy-cluster.sh
     ;;
+  ocp)
+    run_cmd bash "${ROOT}/scripts/deploy-ocp.sh" "${2:-all}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -74,6 +77,7 @@ case "${STEP}" in
   prepare    — подготовка серверов (диски, sysctl)
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
+  ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   all        — полный цикл (по умолчанию)
   destroy    — удаление ВМ [--destroy-obd]
 

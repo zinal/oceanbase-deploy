@@ -126,6 +126,9 @@ case "${ROLE}" in
   monitor|monitoring)
     [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
     ;;
+  ocp)
+    [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
+    ;;
 esac
 
 ensure_deploy_user
@@ -146,4 +149,9 @@ fi
 if [[ "${ROLE}" == "observer" || "${ROLE}" == "monitor" || "${ROLE}" == "monitoring" ]]; then
   [[ "${need_data}" != "true" || -z "${DATA_DIR}" ]] || prepare_data_paths "${DATA_MOUNT}" "${DATA_DIR}" "data-диск"
   [[ "${need_log}" != "true" || -z "${REDO_DIR}" ]] || prepare_data_paths "${LOG_MOUNT}" "${REDO_DIR}" "log-диск"
+fi
+
+if [[ "${ROLE}" == "ocp" && "${need_data}" == "true" ]]; then
+  chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "${DATA_MOUNT}"
+  install -d -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" -m 0755 "${DATA_MOUNT}"
 fi

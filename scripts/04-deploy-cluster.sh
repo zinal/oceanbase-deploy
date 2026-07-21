@@ -65,6 +65,23 @@ run_obd cluster start "${CLUSTER_NAME}"
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"
 
+ocp_enabled="$(yaml_get ocp.enabled)"
+ocp_vm_enabled="$(yaml_get vm_profiles.ocp.enabled)"
+if [[ "${ocp_enabled}" == "true" && "${ocp_vm_enabled}" == "true" && "${OCP_COUNT:-0}" -gt 0 ]]; then
+  ocp_port="$(yaml_get ocp.port)"
+  [[ -z "${ocp_port}" || "${ocp_port}" == "null" ]] && ocp_port=8080
+  ocp_user="$(yaml_get ocp.admin_username)"
+  [[ -z "${ocp_user}" || "${ocp_user}" == "null" ]] && ocp_user=admin
+  cat <<EOF
+
+OceanBase Cloud Platform (OCP):
+  URL:      http://${OCP_1_IP}:${ocp_port}
+  Username: ${ocp_user}
+  Password: см. ocp.admin_password в config/deploy.yaml
+
+EOF
+fi
+
 cat <<EOF
 
 Кластер развёрнут.

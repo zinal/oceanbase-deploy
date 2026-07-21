@@ -46,6 +46,16 @@ def auto_tune(cfg: dict, observer_count: int) -> dict:
     return mod.observer_auto_tune(cfg)
 
 
+def ocp_cfg(cfg: dict) -> dict:
+    return cfg.get("ocp", {}) or {}
+
+
+def ocp_enabled(cfg: dict) -> bool:
+    ocp = ocp_cfg(cfg)
+    profiles = cfg.get("vm_profiles", {})
+    return bool(ocp.get("enabled")) and bool(profiles.get("ocp", {}).get("enabled", False))
+
+
 def monitoring_cfg(cfg: dict) -> dict:
     return cfg.get("monitoring", {}) or {}
 
@@ -251,6 +261,34 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                 "enable_syslog_wf": False,
             },
         }
+        if ocp_enabled(cfg):
+            ocp = ocp_cfg(cfg)
+            meta = ocp.get("meta_tenant", {}) or {}
+            monitor = ocp.get("monitor_tenant", {}) or {}
+            obd_ob["global"].update(
+                {
+                    "ocp_meta_tenant": {
+                        "tenant_name": meta.get("tenant_name", "ocp_meta"),
+                        "max_cpu": float(meta.get("max_cpu", 2.0)),
+                        "memory_size": meta.get("memory_size", "4G"),
+                    },
+                    "ocp_meta_username": meta.get("username", "root"),
+                    "ocp_meta_password": meta.get("password", "ocp_meta_root"),
+                    "ocp_meta_db": meta.get("database", "meta_database"),
+                    "ocp_monitor_tenant": {
+                        "tenant_name": monitor.get("tenant_name", "ocp_monitor"),
+                        "max_cpu": float(monitor.get("max_cpu", 2.0)),
+                        "memory_size": monitor.get("memory_size", "4G"),
+                    },
+                    "ocp_monitor_username": monitor.get("username", "root"),
+                    "ocp_monitor_password": monitor.get("password", "ocp_monitor_root"),
+                    "ocp_monitor_db": monitor.get("database", "monitor_database"),
+                }
+            )
+            if ocp.get("root_password"):
+                obd_ob["global"]["root_password"] = ocp["root_password"]
+            if ocp.get("proxyro_password"):
+                obd_ob["global"]["proxyro_password"] = ocp["proxyro_password"]
         for sname, override in server_overrides.items():
             obd_ob[sname] = override
         result["oceanbase-ce"] = obd_ob
@@ -322,6 +360,32 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             },
         }
 
+    if ocp_enabled(cfg):
+        ocp = ocp_cfg(cfg)
+        ocp_count = int(inv.get("OCP_COUNT", "0"))
+        if ocp_count < 1:
+            raise ValueError("ocp.enabled=true, но OCP_COUNT=0 в inventory — выполните provision")
+        ocp_ip = inv_ip(inv, "OCP", 1)
+        ocp_port = int(ocp.get("port", 8080))
+        ocp_home = ocp.get("home_path", f"/home/{deploy_user}/ocp")
+        ocp_global = {
+            "home_path": ocp_home,
+            "soft_dir": ocp.get("soft_dir", f"{ocp_home}/software"),
+            "log_dir": ocp.get("log_dir", f"{ocp_home}/logs"),
+            "ocp_site_url": f"http://{ocp_ip}:{ocp_port}",
+            "port": ocp_port,
+            "admin_password": ocp.get("admin_password", "changeme"),
+            "memory_size": ocp.get("memory_size", "8G"),
+        }
+        ocp_block: dict = {
+            "depends": ["oceanbase-ce", "obproxy-ce"],
+            "servers": [ocp_ip],
+            "global": ocp_global,
+        }
+        if ocp.get("version"):
+            ocp_block["version"] = ocp["version"]
+        result["ocp-server-ce"] = ocp_block
+
     return result
 
 
@@ -362,6 +426,8 @@ def main() -> None:
 
     print(f"OBD config written: {out_path}")
     print(f"Observers: {inv.get('OBSERVER_COUNT')} | Deploy: {inv.get('DEPLOY_NAME')}")
+    if ocp_enabled(cfg):
+        print(f"OCP: enabled (servers={inv.get('OCP_COUNT', '0')})")
 
 
 if __name__ == "__main__":

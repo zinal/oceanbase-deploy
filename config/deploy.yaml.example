@@ -96,6 +96,25 @@ vm_profiles:
     log_disk:
       enabled: false
 
+  # OceanBase Cloud Platform (OCP) — отдельная ВМ для управления кластером
+  ocp:
+    enabled: false
+    count: 1
+    platform: standard-v3
+    cores: 4                       # мин. 4 vCPU для OCP
+    memory_gb: 16                  # мин. 16 GB RAM
+    boot_disk:
+      type: network-ssd-io-m3
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # Пакеты OCP, логи, временные файлы
+      type: network-ssd-io-m3
+      size_gb: 186
+      mount_point: /ocp-data
+    log_disk:
+      enabled: false
+
   # Prometheus + Grafana (опционально)
   monitoring:
     enabled: false
@@ -114,6 +133,37 @@ vm_profiles:
       mount_point: /data
     log_disk:
       enabled: false
+
+# OceanBase Cloud Platform — веб-консоль управления кластером (OBD + ocp-server-ce)
+# Требует vm_profiles.ocp.enabled: true и отдельную ВМ.
+# Документация: docs/ocp-deployment.md
+ocp:
+  enabled: false
+  version: ""                      # опционально: версия ocp-server-ce
+  port: 8080
+  admin_username: admin
+  admin_password: changeme         # смените перед production!
+  memory_size: 8G
+  home_path: /home/obadmin/ocp
+  soft_dir: /ocp-data/software
+  log_dir: /ocp-data/logs
+  # Пароли OceanBase для создания meta/monitor tenants (при integrated deploy)
+  root_password: changeme
+  proxyro_password: changeme
+  meta_tenant:
+    tenant_name: ocp_meta
+    max_cpu: 2.0
+    memory_size: 4G
+    username: root
+    password: ocp_meta_root
+    database: meta_database
+  monitor_tenant:
+    tenant_name: ocp_monitor
+    max_cpu: 2.0
+    memory_size: 4G
+    username: root
+    password: ocp_monitor_root
+    database: monitor_database
 
 # Настройки мониторинга (Prometheus/Grafana через OBD на monitoring-ВМ)
 monitoring:
@@ -149,6 +199,8 @@ oceanbase:
     obproxy_ce: true
     obagent: true
     ob_configserver: true
+    # При ocp.enabled=true добавляется ocp-server-ce (см. секцию ocp)
+    ocp_server: false
     # При vm_profiles.monitoring.enabled=true prometheus/grafana включаются автоматически
     prometheus: false
     grafana: false

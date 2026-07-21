@@ -21,6 +21,7 @@ REDO_DIR="$(yaml_get oceanbase.redo_dir)"
 
 OBS_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve observer --config "${CONFIG_FILE}" --format json)"
 MON_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve monitoring --config "${CONFIG_FILE}" --format json)"
+OCP_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve ocp --config "${CONFIG_FILE}" --format json)"
 
 read -r OBS_DATA_MOUNT OBS_LOG_ENABLED OBS_LOG_MOUNT < <(
   python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/data')); print(str(o['log_disk'].get('enabled',False)).lower()); print(o['log_disk'].get('mount_point','/data/log1'))" "${OBS_JSON}"
@@ -28,7 +29,15 @@ read -r OBS_DATA_MOUNT OBS_LOG_ENABLED OBS_LOG_MOUNT < <(
 
 MON_DATA_MOUNT="$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m['data_disk'].get('mount_point','/data') if m['data_disk'].get('enabled') else '')" "${MON_JSON}")"
 
+read -r OCP_DATA_MOUNT OCP_DATA_ENABLED < <(
+  python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/ocp-data')); print(str(o['data_disk'].get('enabled',False)).lower())" "${OCP_JSON}"
+)
+
 MONITORING_VM_ENABLED="$(yaml_get vm_profiles.monitoring.enabled)"
+OCP_VM_ENABLED="$(yaml_get vm_profiles.ocp.enabled)"
+OCP_HOME="$(yaml_get ocp.home_path)"
+OCP_SOFT_DIR="$(yaml_get ocp.soft_dir)"
+OCP_LOG_DIR="$(yaml_get ocp.log_dir)"
 PROMETHEUS_COMPONENT="$(yaml_get oceanbase.components.prometheus)"
 NODE_EXPORTER_ENABLED="$(yaml_get monitoring.node_exporter.enabled)"
 NODE_EXPORTER_PORT="$(yaml_get monitoring.node_exporter.port)"
@@ -59,6 +68,10 @@ prepare_host() {
     need_log="false"
     data_mount="${MON_DATA_MOUNT}"
     [[ -n "${data_mount}" ]] || need_data="false"
+  elif [[ "${role}" == "ocp" ]]; then
+    need_log="false"
+    data_mount="${OCP_DATA_MOUNT}"
+    [[ "${OCP_DATA_ENABLED}" == "true" ]] || need_data="false"
   fi
 
   info "Подготовка ${host} (${role})..."
@@ -176,6 +189,21 @@ REMOTE
   info "Готово: ${host} (${role})"
 }
 
+prepare_ocp_host() {
+  local host="$1"
+  info "Установка Java и clockdiff на ${host} (OCP)..."
+  if ! run_remote "${host}" "sudo env \
+DEPLOY_USER='${DEPLOY_USER}' \
+OCP_HOME='${OCP_HOME}' \
+OCP_SOFT_DIR='${OCP_SOFT_DIR}' \
+OCP_LOG_DIR='${OCP_LOG_DIR}' \
+bash -s" < "${LIB_DIR}/lib/prepare-ocp-host.sh"
+  then
+    die "Ошибка подготовки OCP на ${host}"
+  fi
+  info "OCP host готов: ${host}"
+}
+
 prepare_all_observers() {
   if ((${#TARGET_HOSTS[@]} > 0)); then
     for host in "${TARGET_HOSTS[@]}"; do
@@ -202,6 +230,13 @@ if ((${#TARGET_HOSTS[@]} == 0)); then
   if [[ "${MONITOR_COUNT:-0}" > 0 ]]; then
     for i in $(seq 1 "${MONITOR_COUNT}"); do
       prepare_host "$(inventory_host MONITOR "${i}")" "monitor"
+    done
+  fi
+  if [[ "${OCP_VM_ENABLED}" == "true" && "${OCP_COUNT:-0}" -gt 0 ]]; then
+    for i in $(seq 1 "${OCP_COUNT}"); do
+      host="$(inventory_host OCP "${i}")"
+      prepare_host "${host}" "ocp"
+      prepare_ocp_host "${host}"
     done
   fi
 fi

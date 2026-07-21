@@ -27,6 +27,7 @@ OCEANBASE_MIN = {
     "obproxy": {"cores": 2, "memory_gb": 4},
     "configserver": {"cores": 2, "memory_gb": 4},
     "monitoring": {"cores": 4, "memory_gb": 8},
+    "ocp": {"cores": 4, "memory_gb": 16},
 }
 
 ROLE_ALIASES = {
@@ -36,6 +37,7 @@ ROLE_ALIASES = {
     "monitor": "monitoring",
     "configserver": "configserver",
     "observer": "observer",
+    "ocp": "ocp",
 }
 
 
@@ -156,6 +158,8 @@ def validate_profiles(cfg: dict[str, Any]) -> list[str]:
         if role == "configserver" and not p.get("dedicated", False):
             continue
         if role == "monitoring" and not p.get("enabled", False):
+            continue
+        if role == "ocp" and not p.get("enabled", False):
             continue
         try:
             resolved = resolve_profile(cfg, role)
