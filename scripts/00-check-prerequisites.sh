@@ -63,4 +63,16 @@ else
   warn "OBD не установлен. Будет предложена установка на шаге 04-deploy-cluster.sh"
 fi
 
+ocp_enabled="$(yaml_get ocp.enabled)"
+ocp_vm_enabled="$(yaml_get vm_profiles.ocp.enabled)"
+if [[ "${ocp_enabled}" == "true" || "${ocp_vm_enabled}" == "true" ]]; then
+  if [[ "${ocp_enabled}" != "true" || "${ocp_vm_enabled}" != "true" ]]; then
+    warn "OCP: для развёртывания нужны оба флага — ocp.enabled и vm_profiles.ocp.enabled"
+  else
+    info "OCP включён: будет использована отдельная ВМ (vm_profiles.ocp)"
+    python3 "${LIB_DIR}/lib/vm_profiles.py" resolve ocp --config "${CONFIG_FILE}" >/dev/null
+    info "OCP: на ВМ будут установлены Java 8+ (/usr/bin/java) и clockdiff"
+  fi
+fi
+
 info "Проверка зависимостей успешно завершена"
