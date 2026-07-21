@@ -1,0 +1,12 @@
+2026-07-21T10:17:34.248 info: === TPC-C Results ===
+2026-07-21T10:17:34.248 info:   Scale: 2400 warehouses
+2026-07-21T10:17:34.248 info:   Measured Duration: 600.0s (configured: 600s)
+2026-07-21T10:17:34.248 info:   New-Order Throughput: 28039.94 tpmC
+2026-07-21T10:17:34.248 info:   Efficiency: 90.8%
+2026-07-21T10:17:34.248 info:   Total Failed: 0
+2026-07-21T10:17:34.248 info:   NewOrder: OK=280421 Failed=0 p50=1665ms p90=8192ms p99=8192ms
+2026-07-21T10:17:34.248 info:   Delivery: OK=25331 Failed=0 p50=2042ms p90=8192ms p99=8192ms
+2026-07-21T10:17:34.248 info:   OrderStatus: OK=25140 Failed=0 p50=926ms p90=8192ms p99=8192ms
+2026-07-21T10:17:34.248 info:   Payment: OK=271122 Failed=0 p50=1028ms p90=8192ms p99=8192ms
+2026-07-21T10:17:34.248 info:   StockLevel: OK=25367 Failed=0 p50=930ms p90=8192ms p99=8192ms
+

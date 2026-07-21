@@ -1,0 +1,7 @@
+./build/tpcc clean --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui
+./build/tpcc init --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui --partitions 18
+./build/tpcc import -w 3000 --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --no-tui --threads 64
+./build/tpcc run -w 3000 --warmup 5 --duration 10 --no-tui --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --max-inflight 300
+
+./build/tpcc run -w 2400 --warmup 5 --duration 10 --no-tui --connection='host=127.0.0.1;port=2883;user=tpcc@tpcc;password=passw0rd;database=tpcc' --max-inflight 500
+

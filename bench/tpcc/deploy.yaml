@@ -1,0 +1,127 @@
+yandex_cloud:
+  folder_id: "b1gkt21tj69047alfmdp"
+  zone: ru-central1-d
+  network_name: oceanbase-testing-1
+  subnet_name: oceanbase-testing-1-d
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  network_acceleration: software-accelerated
+  ssh_public_key_file: ~/.ssh/id_ecdsa.pub
+  ssh_user: demo
+
+deployment:
+  name: ob-yc-prod
+  control_mode: local
+
+# Общие значения по умолчанию для всех профилей (переопределяются в vm_profiles)
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
+
+# Профили ВМ по типу компонента OceanBase — раздельные ресурсы
+vm_profiles:
+  # OceanBase observer + obagent (основная нагрузка)
+  observer:
+    count: 3
+    platform: standard-v3
+    cores: 16                      # мин. 4 (OceanBase production)
+    memory_gb: 64                  # мин. 16 (OceanBase production)
+    boot_disk:
+      # home_path, бинарники observer — потеря недопустима
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # SSTable реплицируется между observer (Paxos) — можно non-replicated
+      type: network-ssd-nonreplicated
+      size_gb: 930
+      mount_point: /ob-data
+    log_disk:
+      enabled: true
+      # clog/redo — потеря недопустима; рекомендуется 3–4× memory_limit
+      type: network-ssd-io-m3
+      size_gb: 930                 # ~3× memory_limit (28G), кратно 93
+      mount_point: /ob-log
+
+  # OBProxy — stateless прокси, масштабируется отдельно
+  obproxy:
+    count: 2
+    platform: standard-v3
+    cores: 4
+    memory_gb: 8
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  # ob-configserver — по умолчанию на observer-1; dedicated=true для отдельной ВМ
+  configserver:
+    dedicated: false
+    count: 1
+    platform: standard-v3
+    cores: 2
+    memory_gb: 4
+    boot_disk:
+      type: network-ssd
+      size_gb: 20
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  # Prometheus + Grafana (опционально)
+  monitoring:
+    enabled: true
+    count: 1
+    platform: standard-v3
+    cores: 4
+    memory_gb: 16
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # метрики — потеря нежелательна
+      type: network-ssd-io-m3
+      size_gb: 186
+      mount_point: /data
+    log_disk:
+      enabled: false
+
+oceanbase:
+  cluster_name: obcluster
+  version: ""
+  deploy_user: demo
+  home_path: /home/demo/observer
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
+
+  auto_tune: true
+  memory_limit: 60G
+  system_memory: 4G
+  datafile_size: 474G
+  log_disk_size: 250G
+  cpu_count: 16
+
+  components:
+    oceanbase_ce: true
+    obproxy_ce: true
+    obagent: true
+    ob_configserver: true
+    prometheus: true
+    grafana: true
+
+  ports:
+    mysql: 2881
+    rpc: 2882
+    obshell: 2886
+    obproxy: 2883
+
+ssh:
+  port: 22
+  private_key_file: ~/.ssh/id_ecdsa
+  password: ""
+
