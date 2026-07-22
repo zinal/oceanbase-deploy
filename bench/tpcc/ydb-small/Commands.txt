@@ -1,0 +1,9 @@
+# YDB stable-26-2-1.e60d71d
+
+# CREATE USER tpcc PASSWORD "passw0rd";
+# GRANT ALL ON `/rnd-ydb/db1` TO tpcc;
+
+ydb workload tpcc -p tpcc init -w 3000
+ydb workload tpcc -p tpcc import -w 3000
+ydb workload tpcc -p tpcc run  -w 2400 --warmup 5m --time 10m --no-tui
+
