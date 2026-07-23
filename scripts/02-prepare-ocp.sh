@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Подготовка только OCP-ВМ: диски, sysctl, Java, clockdiff.
+# Хосты готовятся параллельно; подробные логи — в generated/prepare-logs/.
 
 set -euo pipefail
 
@@ -9,6 +10,10 @@ source "${LIB_DIR}/lib/common.sh"
 
 require_file "${CONFIG_FILE}"
 load_inventory
+ensure_generated_dir
+
+PREPARE_LOG_DIR="${GENERATED_DIR}/prepare-logs"
+mkdir -p "${PREPARE_LOG_DIR}"
 
 if [[ "${OCP_COUNT:-0}" -lt 1 ]]; then
   die "OCP_COUNT=0 — сначала выполните provision"
@@ -26,6 +31,17 @@ read -r OCP_DATA_MOUNT OCP_DATA_ENABLED < <(
 OCP_HOME="$(yaml_get ocp.home_path)"
 OCP_SOFT_DIR="$(yaml_get ocp.soft_dir)"
 OCP_LOG_DIR="$(yaml_get ocp.log_dir)"
+
+declare -a PREPARE_PIDS=()
+declare -a PREPARE_LABELS=()
+declare -a PREPARE_LOGS=()
+
+prepare_log_path() {
+  local host="$1"
+  local safe
+  safe="$(printf '%s' "${host}" | tr './:' '___')"
+  printf '%s/ocp-%s.log' "${PREPARE_LOG_DIR}" "${safe}"
+}
 
 prepare_ocp_vm() {
   local host="$1"
@@ -73,8 +89,52 @@ bash -s" < "${LIB_DIR}/lib/prepare-ocp-host.sh"
   info "OCP-ВМ готова: ${host}"
 }
 
+start_prepare_job() {
+  local host="$1"
+  local logfile
+  logfile="$(prepare_log_path "${host}")"
+  : > "${logfile}"
+  info "Старт: ${host} (ocp) → ${logfile}"
+  (
+    prepare_ocp_vm "${host}"
+  ) >>"${logfile}" 2>&1 &
+  PREPARE_PIDS+=($!)
+  PREPARE_LABELS+=("${host} (ocp)")
+  PREPARE_LOGS+=("${logfile}")
+}
+
+wait_prepare_jobs() {
+  local failed=0 i status
+  local -a failed_logs=()
+
+  for i in "${!PREPARE_PIDS[@]}"; do
+    status=0
+    wait "${PREPARE_PIDS[$i]}" || status=$?
+    if (( status == 0 )); then
+      info "Готово: ${PREPARE_LABELS[$i]}"
+    else
+      warn "Ошибка: ${PREPARE_LABELS[$i]} (код ${status}) — см. ${PREPARE_LOGS[$i]}"
+      failed_logs+=("${PREPARE_LOGS[$i]}")
+      failed=1
+    fi
+  done
+
+  if (( failed != 0 )); then
+    for logfile in "${failed_logs[@]}"; do
+      warn "----- tail ${logfile} -----"
+      tail -n 40 "${logfile}" >&2 || true
+    done
+    die "Подготовка OCP завершилась с ошибками на ${#failed_logs[@]} хост(ах). Логи: ${PREPARE_LOG_DIR}"
+  fi
+}
+
+info "Фаза prepare (OCP): параллельная подготовка (логи: ${PREPARE_LOG_DIR})"
+
 for i in $(seq 1 "${OCP_COUNT}"); do
-  prepare_ocp_vm "$(inventory_host OCP "${i}")"
+  start_prepare_job "$(inventory_host OCP "${i}")"
 done
+
+info "Ожидание завершения ${#PREPARE_PIDS[@]} параллельн(ых) задач(и)..."
+wait_prepare_jobs
 
 info "Подготовка OCP-ВМ завершена"
