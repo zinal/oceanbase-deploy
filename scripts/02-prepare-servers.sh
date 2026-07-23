@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Подготовка серверов: монтирование data/log дисков, sysctl, пользователь OceanBase.
+# Хосты готовятся параллельно; подробные логи — в generated/prepare-logs/.
 
 set -euo pipefail
 
@@ -9,6 +10,10 @@ source "${LIB_DIR}/lib/common.sh"
 
 require_file "${CONFIG_FILE}"
 load_inventory
+ensure_generated_dir
+
+PREPARE_LOG_DIR="${GENERATED_DIR}/prepare-logs"
+mkdir -p "${PREPARE_LOG_DIR}"
 
 DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
 SSH_USER="$(yaml_get yandex_cloud.ssh_user)"
@@ -64,6 +69,17 @@ if [[ "${NODE_EXPORTER_ENABLED}" == "true" ]]; then
 fi
 
 TARGET_HOSTS=("$@")
+
+declare -a PREPARE_PIDS=()
+declare -a PREPARE_LABELS=()
+declare -a PREPARE_LOGS=()
+
+prepare_log_path() {
+  local host="$1" role="$2"
+  local safe
+  safe="$(printf '%s' "${host}" | tr './:' '___')"
+  printf '%s/%s-%s.log' "${PREPARE_LOG_DIR}" "${role}" "${safe}"
+}
 
 prepare_host() {
   local host="$1" role="$2"
@@ -213,42 +229,85 @@ bash -s" < "${LIB_DIR}/lib/prepare-ocp-host.sh"
   info "OCP host готов: ${host}"
 }
 
-prepare_all_observers() {
-  if ((${#TARGET_HOSTS[@]} > 0)); then
-    for host in "${TARGET_HOSTS[@]}"; do
-      prepare_host "${host}" "observer"
-    done
-    return
+run_prepare_job() {
+  local host="$1" role="$2"
+  prepare_host "${host}" "${role}"
+  if [[ "${role}" == "ocp" ]]; then
+    prepare_ocp_host "${host}"
   fi
-  for i in $(seq 1 "${OBSERVER_COUNT}"); do
-    prepare_host "$(inventory_host OBSERVER "${i}")" "observer"
-  done
 }
 
-prepare_all_observers
+start_prepare_job() {
+  local host="$1" role="$2"
+  local logfile
+  logfile="$(prepare_log_path "${host}" "${role}")"
+  : > "${logfile}"
+  info "Старт: ${host} (${role}) → ${logfile}"
+  (
+    run_prepare_job "${host}" "${role}"
+  ) >>"${logfile}" 2>&1 &
+  PREPARE_PIDS+=($!)
+  PREPARE_LABELS+=("${host} (${role})")
+  PREPARE_LOGS+=("${logfile}")
+}
 
-if ((${#TARGET_HOSTS[@]} == 0)); then
+wait_prepare_jobs() {
+  local failed=0 i status
+  local -a failed_logs=()
+
+  for i in "${!PREPARE_PIDS[@]}"; do
+    status=0
+    wait "${PREPARE_PIDS[$i]}" || status=$?
+    if (( status == 0 )); then
+      info "Готово: ${PREPARE_LABELS[$i]}"
+    else
+      warn "Ошибка: ${PREPARE_LABELS[$i]} (код ${status}) — см. ${PREPARE_LOGS[$i]}"
+      failed_logs+=("${PREPARE_LOGS[$i]}")
+      failed=1
+    fi
+  done
+
+  if (( failed != 0 )); then
+    for logfile in "${failed_logs[@]}"; do
+      warn "----- tail ${logfile} -----"
+      tail -n 40 "${logfile}" >&2 || true
+    done
+    die "Подготовка завершилась с ошибками на ${#failed_logs[@]} хост(ах). Логи: ${PREPARE_LOG_DIR}"
+  fi
+}
+
+info "Фаза prepare: параллельная подготовка серверов (логи: ${PREPARE_LOG_DIR})"
+
+if ((${#TARGET_HOSTS[@]} > 0)); then
+  for host in "${TARGET_HOSTS[@]}"; do
+    start_prepare_job "${host}" "observer"
+  done
+else
+  for i in $(seq 1 "${OBSERVER_COUNT}"); do
+    start_prepare_job "$(inventory_host OBSERVER "${i}")" "observer"
+  done
   if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${OBPROXY_COUNT}"); do
-      prepare_host "$(inventory_host OBPROXY "${i}")" "obproxy"
+      start_prepare_job "$(inventory_host OBPROXY "${i}")" "obproxy"
     done
   fi
   if [[ "${CONFIGSERVER_DEDICATED:-false}" == "true" && "${CONFIGSERVER_COUNT:-0}" -gt 0 ]]; then
-    prepare_host "$(inventory_host CONFIGSERVER 1)" "configserver"
+    start_prepare_job "$(inventory_host CONFIGSERVER 1)" "configserver"
   fi
-  if [[ "${MONITOR_COUNT:-0}" > 0 ]]; then
+  if [[ "${MONITOR_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${MONITOR_COUNT}"); do
-      prepare_host "$(inventory_host MONITOR "${i}")" "monitor"
+      start_prepare_job "$(inventory_host MONITOR "${i}")" "monitor"
     done
   fi
   if [[ "${OCP_VM_ENABLED}" == "true" && "${OCP_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${OCP_COUNT}"); do
-      host="$(inventory_host OCP "${i}")"
-      prepare_host "${host}" "ocp"
-      prepare_ocp_host "${host}"
+      start_prepare_job "$(inventory_host OCP "${i}")" "ocp"
     done
   fi
 fi
+
+info "Ожидание завершения ${#PREPARE_PIDS[@]} параллельн(ых) задач(и)..."
+wait_prepare_jobs
 
 if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
   info "node_exporter установлен на всех узлах (port ${NODE_EXPORTER_PORT})"

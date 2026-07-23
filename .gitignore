@@ -1,5 +1,6 @@
 # Generated deployment artifacts
 generated/
+generated/prepare-logs/
 *.env.local
 config/deploy.yaml
 
