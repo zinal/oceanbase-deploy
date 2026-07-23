@@ -20,21 +20,30 @@ DATA_DIR="$(yaml_get oceanbase.data_dir)"
 REDO_DIR="$(yaml_get oceanbase.redo_dir)"
 
 OBS_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve observer --config "${CONFIG_FILE}" --format json)"
-MON_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve monitoring --config "${CONFIG_FILE}" --format json)"
-OCP_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve ocp --config "${CONFIG_FILE}" --format json)"
 
 read -r OBS_DATA_MOUNT OBS_LOG_ENABLED OBS_LOG_MOUNT < <(
   python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/data')); print(str(o['log_disk'].get('enabled',False)).lower()); print(o['log_disk'].get('mount_point','/data/log1'))" "${OBS_JSON}"
 )
 
-MON_DATA_MOUNT="$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m['data_disk'].get('mount_point','/data') if m['data_disk'].get('enabled') else '')" "${MON_JSON}")"
-
-read -r OCP_DATA_MOUNT OCP_DATA_ENABLED < <(
-  python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/ocp-data')); print(str(o['data_disk'].get('enabled',False)).lower())" "${OCP_JSON}"
-)
-
 MONITORING_VM_ENABLED="$(yaml_get vm_profiles.monitoring.enabled)"
 OCP_VM_ENABLED="$(yaml_get vm_profiles.ocp.enabled)"
+
+# monitoring/ocp профили опциональны — resolve только если включены
+MON_DATA_MOUNT=""
+if [[ "${MONITORING_VM_ENABLED}" == "true" ]]; then
+  MON_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve monitoring --config "${CONFIG_FILE}" --format json)"
+  MON_DATA_MOUNT="$(python3 -c "import json,sys; m=json.loads(sys.argv[1]); print(m['data_disk'].get('mount_point','/data') if m['data_disk'].get('enabled') else '')" "${MON_JSON}")"
+fi
+
+OCP_DATA_MOUNT="/ocp-data"
+OCP_DATA_ENABLED="false"
+if [[ "${OCP_VM_ENABLED}" == "true" ]]; then
+  OCP_JSON="$(python3 "${LIB_DIR}/lib/vm_profiles.py" resolve ocp --config "${CONFIG_FILE}" --format json)"
+  read -r OCP_DATA_MOUNT OCP_DATA_ENABLED < <(
+    python3 -c "import json,sys; o=json.loads(sys.argv[1]); print(o['data_disk'].get('mount_point','/ocp-data')); print(str(o['data_disk'].get('enabled',False)).lower())" "${OCP_JSON}"
+  )
+fi
+
 OCP_HOME="$(yaml_get ocp.home_path)"
 OCP_SOFT_DIR="$(yaml_get ocp.soft_dir)"
 OCP_LOG_DIR="$(yaml_get ocp.log_dir)"
