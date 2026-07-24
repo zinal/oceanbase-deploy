@@ -37,9 +37,9 @@ yc_vm_image="image-folder-id=standard-images,image-family=ubuntu-2404-lts"
 #yc_vm_image="image-folder-id=standard-images,image-name=almalinux-9-v20250324"
 #yc_vm_image="image-folder-id=standard-images,image-name=almalinux-v20230417"
 # Количество vCPU каждой виртуалки
-yc_vm_cores=16
+yc_vm_cores=20
 # Объем оперативной памяти на одну виртуалку, Гбайт
-yc_vm_mem=64
+yc_vm_mem=80
 # Размер диска для данных YDB на одну виртуалку, Гбайт
 yc_data_disk_size=651G
 yc_data_disk_type=network-ssd-nonreplicated

@@ -102,7 +102,7 @@ all:
         ydb_database_groups: 5
 
         # 16 vCPU на узел БД.
-        ydb_cores_dynamic: 12
+        ydb_cores_dynamic: 15
 
         # На каждом ydbd_dynamic-хосте запускается ОДИН dynnode для базы db1.
         # offset=0 → grpcs=2136, ic=19002, mon=8766.
@@ -112,4 +112,3 @@ all:
         # === Безопасность ======================================================
         ydb_enforce_user_token_requirement: true
         ydb_request_client_certificate: true
-
