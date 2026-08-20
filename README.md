@@ -197,7 +197,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ├── docs/
 │   ├── component-vm-sizing.md         # анализ профилей ВМ по компонентам
 │   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
-│   └── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
+│   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
+│   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
 │   └── haproxy-obproxy-tcp-lb.cfg.example
@@ -274,6 +275,8 @@ mysql -h<obproxy_ip> -P2883 -uroot -p
 ```
 
 При нескольких ВМ obproxy (`vm_profiles.obproxy.count > 1`) можно поставить **HAProxy** как TCP-балансировщик с привязкой соединений по IP клиента — см. [docs/haproxy-obproxy-tcp-lb.md](docs/haproxy-obproxy-tcp-lb.md) и [config/haproxy-obproxy-tcp-lb.cfg.example](config/haproxy-obproxy-tcp-lb.cfg.example).
+
+Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
 
 ## Лицензия
 
