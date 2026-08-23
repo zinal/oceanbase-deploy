@@ -451,6 +451,6 @@ ALTER SYSTEM SET max_syslog_file_count = 1000;
 
 [`docs/component-vm-sizing.md`](component-vm-sizing.md) описывает **Yandex Cloud ВМ** для автоматизации OBD (типично 8 vCPU / 32 ГБ, облачные диски). Этот документ — про **крупный on-prem / bare-metal** контур. Цифры не взаимозаменяемы:
 
-- в облаке data-диск может быть `network-ssd-nonreplicated`, потому что тройная репликация уже на уровне OceanBase;
+- в облаке data- и log-диски могут быть `network-ssd-nonreplicated`, потому что тройная репликация уже на уровне OceanBase (majority persist Paxos);
 - на физике data — локальные NVMe + LVM stripe, без аппаратного RAID;
 - 2 vCPU / 4 ГБ на obproxy достаточно для стенда; для большой нагруженной БД — на порядок больше.

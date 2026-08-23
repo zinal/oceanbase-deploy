@@ -22,7 +22,7 @@
 | Назначение | Тип по умолчанию | Почему |
 |------------|------------------|--------|
 | **Data** (SSTable, `data_dir`) | `network-ssd-nonreplicated` | Данные реплицируются между observer (3 реплики Paxos); отказ одного диска/узла перекрывается репликацией. Максимальная производительность без избыточности на уровне блока |
-| **Log** (clog/redo, `redo_dir`) | `network-ssd-io-m3` | Журнал транзакций критичен для восстановления; потеря недопустима. Трёхкратная репликация на уровне YC + высокая скорость |
+| **Log** (clog/redo, `redo_dir`) | `network-ssd-nonreplicated` | Clog реплицируется между observer (majority persist Paxos); отказ одного диска/узла перекрывается репликацией. Максимальная производительность без избыточности на уровне блока |
 | **Boot** (observer) | `network-ssd-io-m3` | Бинарники и `home_path`; потеря усложняет восстановление |
 | **Boot** (obproxy, monitoring) | `network-ssd` | Достаточно для лёгких компонентов |
 | **Monitoring data** | `network-ssd-io-m3` | История метрик; потеря нежелательна |
@@ -41,7 +41,7 @@
 | Observer vCPU | ≥4 | 8 | OK |
 | Observer RAM | ≥16 GB | 32 GB | OK |
 | Data disk | ≥100 GB SSD | 558 GB non-replicated | OK |
-| Log disk | ≥1× RAM, реком. 3–4× | 279 GB io-m3 (~3× memory_limit) | OK |
+| Log disk | ≥1× RAM, реком. 3–4× | 279 GB non-replicated (~3× memory_limit) | OK |
 | OBProxy | Лёгкий компонент | 2 vCPU, 4 GB | OK |
 | Отдельные диски data/log | Рекомендуется (enterprise) | enabled | OK |
 

@@ -187,9 +187,10 @@ def validate_profiles(cfg: dict[str, Any]) -> list[str]:
                 )
             if resolved["log_disk"].get("enabled"):
                 ltype = resolved["log_disk"].get("type", "")
-                if ltype != "network-ssd-io-m3":
+                if ltype != "network-ssd-nonreplicated":
                     issues.append(
-                        f"WARN: observer log_disk.type={ltype} — для clog рекомендуется network-ssd-io-m3"
+                        f"WARN: observer log_disk.type={ltype} — для clog рекомендуется "
+                        "network-ssd-nonreplicated (репликация Paxos, как у data)"
                     )
 
     return issues
@@ -217,7 +218,7 @@ def cmd_resolve(args: argparse.Namespace) -> None:
             data.get("size_gb", 0),
             data.get("mount_point", "/data"),
             str(log.get("enabled", False)).lower(),
-            log.get("type", "network-ssd-io-m3"),
+            log.get("type", "network-ssd-nonreplicated"),
             log.get("size_gb", 0),
             log.get("mount_point", "/data/log1"),
         ]
