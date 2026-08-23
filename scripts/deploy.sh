@@ -84,8 +84,8 @@ case "${STEP}" in
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
-  recover-observer — замена одного погибшего observer (см. docs/node-recovery.md)
-  recover-obproxy  — замена одного погибшего obproxy
+  recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
+  recover-obproxy  — obproxy: --temporary или --replace
   all        — полный цикл (по умолчанию)
   destroy    — удаление ВМ [--destroy-obd]
 

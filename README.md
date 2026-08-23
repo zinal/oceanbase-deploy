@@ -236,16 +236,23 @@ SSH и подготовка серверов используют **внутре
 
 Скрипт создаёт ВМ, подготавливает серверы и выполняет `obd cluster scale_out`.
 
-## Восстановление потерянного узла
+## Восстановление узла
 
-Если **один** хост observer или obproxy уничтожен целиком (majority остальных узлов жив), пересоздайте ВМ с тем же именем и верните узел в кластер:
+Временный отказ (ВМ или процессы остановились, диски целы):
 
 ```bash
-./scripts/06-recover-observer.sh 2 --yes    # OBSERVER_2_*, zone2
-./scripts/07-recover-obproxy.sh 1 --yes     # OBPROXY_1_*
+./scripts/06-recover-observer.sh 2 --temporary --yes
+./scripts/07-recover-obproxy.sh 1 --temporary --yes
 ```
 
-Порядок шагов — официальный: изоляция `STOP SERVER`, `obd cluster scale_out` только нового узла, `MIGRATE UNIT`, `DELETE SERVER`, правка метаданных OBD. Подробности и источники: [docs/node-recovery.md](docs/node-recovery.md).
+Полная гибель хоста (majority остальных observer жив):
+
+```bash
+./scripts/06-recover-observer.sh 2 --replace --yes
+./scripts/07-recover-obproxy.sh 1 --replace --yes
+```
+
+Без флага режима скрипт выбирает сам: ВМ есть в YC → temporary, нет → replace. Подробности: [docs/node-recovery.md](docs/node-recovery.md).
 
 ## Terraform (альтернатива)
 

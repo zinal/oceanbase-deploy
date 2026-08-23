@@ -227,6 +227,31 @@ print(pending)
   die "Таймаут ожидания ВМ (${YC_WAIT_TIMEOUT}с). Проверьте: yc compute instance list"
 }
 
+get_instance_status() {
+  local name="$1"
+  yc_folder_cache_init
+  yc compute instance get "${YC_FOLDER_ARGS[@]}" --name "${name}" --format json 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" \
+    || true
+}
+
+wait_until_instance_status() {
+  local name="$1" want="$2"
+  local elapsed=0 status=""
+  yc_folder_cache_init
+  info "Ожидание статуса ${want} для ВМ ${name}..."
+  while (( elapsed < YC_WAIT_TIMEOUT )); do
+    status="$(get_instance_status "${name}")"
+    if [[ "${status}" == "${want}" ]]; then
+      info "ВМ ${name}: ${status}"
+      return 0
+    fi
+    sleep "${YC_WAIT_POLL}"
+    elapsed=$((elapsed + YC_WAIT_POLL))
+  done
+  die "ВМ ${name} не перешла в ${want} за ${YC_WAIT_TIMEOUT}с (сейчас: ${status:-unknown})"
+}
+
 wait_until_instance_absent() {
   local name="$1"
   local elapsed=0

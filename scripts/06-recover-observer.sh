@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Восстановление после полной потери одного хоста observer.
-# Официальный порядок OceanBase: STOP SERVER → add в ту же zone → MIGRATE UNIT → DELETE SERVER.
+# Восстановление observer: временный отказ (--temporary) или полная потеря хоста (--replace).
+# Временный: start ВМ → obd/manual start процесса → START SERVER.
+# Замена: STOP SERVER → add в ту же zone → MIGRATE UNIT → DELETE SERVER.
 
 set -euo pipefail
 
@@ -12,22 +13,27 @@ source "${SCRIPTS_DIR}/lib/recover-common.sh"
 
 usage() {
   cat <<'USAGE'
-Использование: ./scripts/06-recover-observer.sh <index> [опции]
+Использование: ./scripts/06-recover-observer.sh <index> [--temporary|--replace] [опции]
 
 <index> — номер observer в inventory (1 = zone1 / OBSERVER_1_*).
+
+Режим (если не указан — авто: ВМ есть → --temporary, нет → --replace):
+  --temporary        ВМ и диски целы: запустить машину и процессы, START SERVER
+  --replace          Полная гибель хоста: пересоздать ВМ и заменить узел в кластере
 
 Опции:
   --yes              не спрашивать подтверждение
   --dry-run          показать план, ничего не менять
-  --skip-provision   ВМ уже создана; только кластерные шаги
-  --skip-sql         не выполнять SQL (только инфраструктура)
-  --keep-old-vm      не удалять старую ВМ в YC (её уже нет)
+  --skip-provision   только для --replace: ВМ уже создана
+  --skip-sql         не выполнять SQL
+  --keep-old-vm      только для --replace: не удалять старую ВМ
 
 Документация: docs/node-recovery.md
 USAGE
 }
 
 INDEX=""
+MODE=""
 RECOVER_YES=false
 DRY_RUN=false
 SKIP_PROVISION=false
@@ -36,6 +42,18 @@ KEEP_OLD_VM=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --temporary)
+      [[ -z "${MODE}" || "${MODE}" == "temporary" ]] \
+        || die "Укажите только один режим: --temporary или --replace"
+      MODE=temporary
+      shift
+      ;;
+    --replace)
+      [[ -z "${MODE}" || "${MODE}" == "replace" ]] \
+        || die "Укажите только один режим: --temporary или --replace"
+      MODE=replace
+      shift
+      ;;
     --yes) RECOVER_YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --skip-provision) SKIP_PROVISION=true; shift ;;
@@ -91,14 +109,37 @@ run_cluster_sql() {
   fi
 }
 
-info "Потерянный observer: ${OLD_NAME} (${OLD_IP}), zone=${ZONE}"
-if [[ "${INDEX}" -eq 1 && "${CS_DEDICATED}" != "true" ]]; then
-  warn "observer-1 обычно несёт ob-configserver. После замены узла проверьте компонент ob-configserver (см. docs/node-recovery.md)."
-fi
+resolve_mode() {
+  if [[ -n "${MODE}" ]]; then
+    return 0
+  fi
+  if instance_exists "${OLD_NAME}"; then
+    MODE=temporary
+    info "Режим не указан, ВМ ${OLD_NAME} существует → --temporary"
+  else
+    MODE=replace
+    info "Режим не указан, ВМ ${OLD_NAME} нет → --replace"
+  fi
+}
 
-if [[ "${DRY_RUN}" == "true" ]]; then
+print_temporary_plan() {
   cat <<EOF
-План восстановления observer ${INDEX}:
+План временного восстановления observer ${INDEX} (${OLD_NAME}, ${OLD_IP}, ${ZONE}):
+  1. yc compute instance start, если ВМ STOPPED (диски не трогаем)
+  2. Дождаться RUNNING и SSH
+  3. obd cluster start ${DEPLOY_NAME_CLUSTER} -c oceanbase-ce -s ${OLD_IP}
+     запасной путь: cd home_path && ./bin/observer
+  4. при необходимости obagent / ob-configserver (observer-1)
+  5. ALTER SYSTEM START SERVER '${OLD_IP}:${RPC_PORT}'
+  6. Проверить DBA_OB_SERVERS: STATUS=ACTIVE, STOP_TIME IS NULL, START_SERVICE_TIME IS NOT NULL
+  Окно простоя должно быть меньше server_permanent_offline_time (по умолчанию 3600s),
+  иначе узел уже снят с Paxos — нужен --replace.
+EOF
+}
+
+print_replace_plan() {
+  cat <<EOF
+План замены observer ${INDEX} (${OLD_NAME}, ${OLD_IP}, ${ZONE}):
   1. Проверить majority через DBA_OB_SERVERS (оставшиеся ACTIVE > N/2)
   2. ALTER SYSTEM STOP SERVER '${OLD_IP}:${RPC_PORT}'
   3. Удалить ВМ ${OLD_NAME} и её диски в Yandex Cloud
@@ -109,12 +150,126 @@ if [[ "${DRY_RUN}" == "true" ]]; then
   8. Вычистить ${OLD_IP} из ~/.obd/cluster/${DEPLOY_NAME_CLUSTER}/
   9. Обновить inventory и generated/obd-cluster.yaml
 EOF
+}
+
+recover_observer_temporary() {
+  local home_path deploy_user live_ip host zone
+  home_path="$(yaml_get oceanbase.home_path)"
+  deploy_user="$(yaml_get oceanbase.deploy_user)"
+  [[ -z "${home_path}" || "${home_path}" == "null" ]] && home_path="/home/${deploy_user:-obadmin}/observer"
+
+  confirm_or_die "Временно восстановить ${OLD_NAME} (${OLD_IP})? ВМ и диски сохраняются."
+
+  ensure_instance_running "${OLD_NAME}"
+  live_ip="$(get_instance_ip "${OLD_NAME}")"
+  [[ -n "${live_ip}" ]] || die "Нет IP у ${OLD_NAME}"
+  if [[ "${live_ip}" != "${OLD_IP}" ]]; then
+    warn "IP сменился ${OLD_IP} → ${live_ip}; обновляю inventory (OBD поле ip — только IPv4)"
+    ob_sys update-inventory --prefix OBSERVER --index "${INDEX}" --ip "${live_ip}" --name "${OLD_NAME}"
+    python3 "${SCRIPTS_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/obd-cluster.yaml" || true
+    OLD_IP="${live_ip}"
+  fi
+
+  zone="$(yaml_get yandex_cloud.zone)"
+  host="$(yc_internal_fqdn "${OLD_NAME}" "${zone}")"
+
+  if ! obd_start_component "${DEPLOY_NAME_CLUSTER}" "oceanbase-ce" "${OLD_IP}"; then
+    warn "OBD start не удался — ручной старт ./bin/observer из home_path"
+    start_binary_from_home "${host}" "${home_path}" "observer" \
+      || die "Не удалось запустить observer на ${host}"
+  fi
+
+  if [[ "${OBAGENT_ON}" == "true" ]]; then
+    obd_start_component "${DEPLOY_NAME_CLUSTER}" "obagent" "${OLD_IP}" \
+      || warn "obagent не стартовал — метрики узла могут отсутствовать"
+  fi
+  if [[ "${INDEX}" -eq 1 && "${CS_DEDICATED}" != "true" ]]; then
+    obd_start_component "${DEPLOY_NAME_CLUSTER}" "ob-configserver" "${OLD_IP}" \
+      || warn "ob-configserver на observer-1 не стартовал"
+  fi
+
+  if [[ "${SKIP_SQL}" == "true" ]]; then
+    info "SQL пропущен. Проверьте START SERVER вручную."
+    return 0
+  fi
+
+  info "START SERVER ${OLD_IP}:${RPC_PORT}..."
+  if ! run_cluster_sql "ALTER SYSTEM START SERVER '${OLD_IP}:${RPC_PORT}';" --ignore-error; then
+    ob_sys sql --host "${OLD_IP}" --user root@sys --ignore-error \
+      "ALTER SYSTEM START SERVER '${OLD_IP}:${RPC_PORT}';" \
+      || warn "START SERVER не принят — процесс мог поднять сервис сам"
+  fi
+
+  local deadline status_row recovered=false
+  deadline=$((SECONDS + 600))
+  while (( SECONDS < deadline )); do
+    status_row="$(run_cluster_sql "SELECT STATUS, STOP_TIME, START_SERVICE_TIME FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='${OLD_IP}';" || true)"
+    if [[ -z "${status_row}" ]]; then
+      status_row="$(ob_sys sql --host "${OLD_IP}" --user root@sys --ignore-error \
+        "SELECT STATUS, STOP_TIME, START_SERVICE_TIME FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='${OLD_IP}';" || true)"
+    fi
+    info "DBA_OB_SERVERS ${OLD_IP}: ${status_row:-<нет строки>}"
+    if echo "${status_row}" | awk '{print toupper($1)}' | grep -qx ACTIVE; then
+      info "Узел ${OLD_IP} ACTIVE"
+      recovered=true
+      break
+    fi
+    sleep 10
+  done
+  if [[ "${recovered}" != "true" ]]; then
+    warn "Узел ${OLD_IP} не стал ACTIVE за 600с. Если простой дольше server_permanent_offline_time — нужен --replace."
+  fi
+
+  info "Статус кластера:"
+  obd cluster display "${DEPLOY_NAME_CLUSTER}" || true
+  cat <<EOF
+
+Временное восстановление observer-${INDEX} завершено.
+  ВМ:  ${OLD_NAME}
+  IP:  ${OLD_IP}
+  Zone: ${ZONE}
+
+Если узел не вернулся в ACTIVE — возможно истёк server_permanent_offline_time.
+Тогда это уже не временный отказ: ./scripts/06-recover-observer.sh ${INDEX} --replace
+
+EOF
+}
+
+info "Observer ${INDEX}: ${OLD_NAME} (${OLD_IP}), zone=${ZONE}"
+if [[ "${INDEX}" -eq 1 && "${CS_DEDICATED}" != "true" ]]; then
+  warn "observer-1 обычно несёт ob-configserver."
+fi
+
+if [[ "${DRY_RUN}" == "true" ]]; then
+  if [[ -z "${MODE}" ]]; then
+    echo "Режим не указан. Для точного плана задайте --temporary или --replace."
+    echo
+    print_temporary_plan
+    echo
+    print_replace_plan
+  elif [[ "${MODE}" == "temporary" ]]; then
+    print_temporary_plan
+  else
+    print_replace_plan
+  fi
   exit 0
 fi
+
+resolve_mode
+info "Режим: ${MODE}"
 
 command -v obd >/dev/null 2>&1 || die "OBD не установлен"
 obd_cluster_registered "${DEPLOY_NAME_CLUSTER}" \
   || die "Кластер OBD ${DEPLOY_NAME_CLUSTER} не зарегистрирован"
+
+if [[ "${MODE}" == "temporary" ]]; then
+  recover_observer_temporary
+  exit 0
+fi
+
+if instance_exists "${OLD_NAME}"; then
+  warn "ВМ ${OLD_NAME} ещё существует. Для остановки процессов/ВМ без потери дисков используйте --temporary."
+fi
 
 if [[ "${SKIP_SQL}" != "true" ]]; then
   if ! ob_sys pick-sql --skip-observer "${INDEX}" >/dev/null; then

@@ -321,7 +321,14 @@ def parse_units(stdout: str) -> list[str]:
 def cmd_sql(args: argparse.Namespace) -> None:
     cfg = load_yaml(Path(args.config))
     inv = load_inventory(Path(args.inventory))
-    endpoint = pick_sql_endpoint(cfg, inv, args.skip_observer, args.skip_obproxy)
+    if args.host:
+        endpoint = {
+            "ip": args.host,
+            "port": int(args.port or cfg_int(cfg, "oceanbase.ports.mysql", 2881)),
+            "user": args.user or "root@sys",
+        }
+    else:
+        endpoint = pick_sql_endpoint(cfg, inv, args.skip_observer, args.skip_obproxy)
     password = discover_root_password(cfg, inv.get("DEPLOY_NAME", ""))
     proc = run_sql(endpoint, password, args.sql, ignore_error=args.ignore_error)
     sys.stdout.write(proc.stdout)
@@ -432,6 +439,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_sql.add_argument("sql")
     p_sql.add_argument("--skip-observer", type=int, default=None)
     p_sql.add_argument("--skip-obproxy", type=int, default=None)
+    p_sql.add_argument("--host", default=None, help="Явный observer/obproxy IP вместо auto-pick")
+    p_sql.add_argument("--port", type=int, default=None)
+    p_sql.add_argument("--user", default=None)
     p_sql.add_argument("--ignore-error", action="store_true")
     p_sql.set_defaults(func=cmd_sql)
 

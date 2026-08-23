@@ -1,8 +1,13 @@
-# Восстановление после полной потери observer или obproxy
+# Восстановление observer и obproxy
 
-Скрипты рассчитаны на **полную гибель одного хоста** (ВМ удалена, диск недоступен, ОС не загружается). Они следуют публичной документации OceanBase, а не эвристикам этого репозитория.
+Два разных отказа — два режима одних и тех же скриптов. Порядок шагов взят из публичной документации OceanBase.
 
-Если хост ещё жив и процесс можно поднять — не используйте эти скрипты. Официально: перезапустить `./bin/observer` из `home_path` или `ALTER SYSTEM START SERVER`.
+| Отказ | Режим | Когда |
+|-------|--------|--------|
+| Временный | `--temporary` | ВМ можно запустить и/или процессы на ней можно поднять; data/clog на дисках целы |
+| Полная гибель | `--replace` | ВМ или диски уничтожены, данные узла нечитаемы |
+
+Если режим не указан, скрипт смотрит в Yandex Cloud: ВМ есть → `--temporary`, нет → `--replace`.
 
 ## Источники
 
@@ -18,25 +23,71 @@
 | OBD не умеет scale_in | [Perform O&M by using OBD](https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_05_operation_and_maintenance/o_m_by_obd) |
 | Правка метаданных OBD после `DELETE SERVER` | [OBD 集群中执行删除节点 SQL 后…](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000001277967) |
 | Замена OBProxy: сначала add, потом delete | [替换 OBProxy 节点](https://www.oceanbase.com/docs/common-ocp-1000000001739900) |
+| Рестарт узла, `START SERVER`, окно `server_permanent_offline_time` | [重启节点](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000507923) |
+| Ручной старт `./bin/observer` из `home_path` | [Node Failures](https://oceanbase.github.io/docs/user_manual/operation_and_maintenance/en-US/emergency_handbook/node_breakdown) |
+| OBD `start -c … -s <ip>` | [Perform O&M by using OBD](https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_05_operation_and_maintenance/o_m_by_obd) |
 
 ## Предусловия
 
-- Жив **majority** исходного состава observer (для 3 узлов — не меньше двух ACTIVE). Иначе официально: physical backup/restore или standby, не замена узла.
 - Есть `obd`, `obclient` или `mysql`, `yc`, SSH-ключ из `config/deploy.yaml`.
 - Пароль `root` sys-тенанта: переменная `OB_ROOT_PASSWORD`, иначе `ocp.root_password`, иначе значение из `~/.obd/cluster/<deploy>/`.
-- SQL идёт на **оставшийся** observer (`root@sys`, порт 2881) или оставшийся obproxy (`root@sys#<cluster>`, порт 2883).
+- Для `--replace` нужен **majority** оставшихся observer (для 3 узлов — не меньше двух ACTIVE). Иначе официально: physical backup/restore, не замена узла.
+- Для `--temporary` majority не обязателен: официальный handbook при отсутствии majority предлагает по очереди поднимать `observer` на узлах.
+- SQL идёт на **оставшийся** observer (`root@sys`, порт 2881) или оставшийся obproxy (`root@sys#<cluster>`, порт 2883); после старта процесса — при необходимости на сам восстанавливаемый узел.
 
-## Observer: `scripts/06-recover-observer.sh`
+## Временный отказ: `--temporary`
+
+Официальный документ «重启节点»: простой применим, только пока простой короче `server_permanent_offline_time` (по умолчанию **3600s**). Иначе Root Service снимает реплики с Paxos — это уже сценарий `--replace`.
+
+### Observer
+
+```bash
+./scripts/06-recover-observer.sh 2 --temporary --yes
+```
+
+Что делает скрипт:
+
+1. **`yc compute instance start`**, если ВМ в `STOPPED` / `STOPPING`. Диски не удаляет и не пересоздаёт.
+2. Ждёт `RUNNING` и SSH. Если у ВМ сменился IP — обновляет inventory (OBD принимает только IPv4 в поле `ip`).
+3. **`obd cluster start <deploy> -c oceanbase-ce -s <ip>`** — официальный точечный старт компонента на узле. SSH до узла обязателен.
+4. Если OBD не поднял процесс — запасной путь из аварийного handbook: `cd <home_path> && ./bin/observer` (не из каталога `bin/`: нужен `etc/observer.config.bin`).
+5. Тем же способом пытается поднять `obagent` и, для index=1 без dedicated configserver, `ob-configserver`.
+6. **`ALTER SYSTEM START SERVER 'ip:2882'`** — если ранее был `STOP SERVER` (`STOP_TIME` не NULL). Официально сервис считается поднятым, когда `STOP_TIME` снова NULL, а `START_SERVICE_TIME` не NULL.
+7. Ждёт `STATUS=ACTIVE` в `oceanbase.DBA_OB_SERVERS`.
+
+Если после окна в час узел не член кластера — не повторяйте `--temporary`, переходите на `--replace`.
+
+В off-peak можно вернуть leader в исходную zone:
+
+```sql
+ALTER TENANT <tenant> PRIMARY_ZONE='zoneN';
+```
+
+### Obproxy
+
+```bash
+./scripts/07-recover-obproxy.sh 1 --temporary --yes
+```
+
+1. Запускает ВМ, если она остановлена.
+2. `obd cluster start <deploy> -c obproxy-ce -s <ip>`.
+3. Запасной путь: `cd /home/<deploy_user>/obproxy && ./bin/obproxy`.
+
+HAProxy не трогаем: IP тот же.
+
+## Полная гибель хоста: `--replace`
+
+### Observer: `scripts/06-recover-observer.sh --replace`
 
 Типовой вызов после гибели `observer-2`:
 
 ```bash
-./scripts/06-recover-observer.sh 2 --yes
+./scripts/06-recover-observer.sh 2 --replace --yes
 ```
 
 Индекс совпадает с inventory: `1` → `zone1` / `OBSERVER_1_*`. Скрипт **пересоздаёт ВМ с тем же именем**; IP обычно новый.
 
-### Что делает скрипт
+#### Что делает скрипт
 
 1. **Проверка majority**  
    `SELECT SVR_IP, STATUS FROM oceanbase.DBA_OB_SERVERS`.  
@@ -72,14 +123,14 @@
 8. **Метаданные OBD**  
    OBD **не поддерживает scale_in**. После SQL-delete старый IP вычищается из `~/.obd/cluster/<name>/config.yaml` и `inner_config.yaml` (с `.bak-*`). Inventory и `generated/obd-cluster.yaml` получают новый IP.
 
-### Чего скрипт не делает
+#### Чего скрипт не делает
 
 - Не восстанавливает данные с погибших дисков — durability даёт Paxos на оставшемся majority.
 - Не меняет `server_permanent_offline_time` (по умолчанию 3600s; для замены железа официально советуют 4h, для быстрой очистки — 10m).
 - Не чинит **ob-configserver**, если он был на `observer-1` (`configserver.dedicated: false`). После замены index=1 проверьте компонент и при необходимости сделайте `obd cluster scale_out` / `component add` на новый IP.
 - Не покрывает гибель **двух** observer сразу.
 
-### Полезные флаги
+#### Полезные флаги
 
 | Флаг | Смысл |
 |------|--------|
@@ -88,6 +139,7 @@
 | `--skip-provision` | ВМ уже создана вручную |
 | `--skip-sql` | Только облако, SQL не трогать |
 | `--keep-old-vm` | Не удалять YC instance (её уже нет) |
+| `--temporary` | Не замена, а рестарт ВМ/процессов |
 
 Пароль:
 
@@ -96,15 +148,15 @@ export OB_ROOT_PASSWORD='...'
 ./scripts/06-recover-observer.sh 2 --yes
 ```
 
-## Obproxy: `scripts/07-recover-obproxy.sh`
+### Obproxy: `scripts/07-recover-obproxy.sh --replace`
 
 OBProxy stateless. Официальная замена: **сначала добавить новый экземпляр, потом убрать старый**.
 
 ```bash
-./scripts/07-recover-obproxy.sh 1 --yes
+./scripts/07-recover-obproxy.sh 1 --replace --yes
 ```
 
-### Что делает скрипт
+#### Что делает скрипт
 
 1. Удаляет погибшую ВМ (дисков data/log у роли нет).
 2. Создаёт замену с тем же именем, готовит ОС (`--role obproxy`).
@@ -133,6 +185,9 @@ WHERE TENANT_ID = 1
 ORDER BY LS_ID, ROLE;
 
 SHOW PARAMETERS LIKE '%server_permanent_offline_time%';
+
+ALTER SYSTEM START SERVER 'ip:2882';
+-- сервис поднят, когда STOP_TIME IS NULL и START_SERVICE_TIME IS NOT NULL
 
 ALTER SYSTEM STOP SERVER 'old_ip:2882';
 -- после OBD scale_out / ADD SERVER:
