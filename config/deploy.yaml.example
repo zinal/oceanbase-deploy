@@ -62,8 +62,9 @@ vm_profiles:
       mount_point: /ob-data
     log_disk:
       enabled: true
-      # clog/redo — потеря недопустима; рекомендуется 3–4× memory_limit
-      type: network-ssd-io-m3
+      # clog/redo реплицируется Paxos (majority persist) — можно non-replicated
+      # размер рекомендуется 3–4× memory_limit
+      type: network-ssd-nonreplicated
       size_gb: 279                 # ~3× memory_limit (28G), кратно 93
       mount_point: /ob-log
 

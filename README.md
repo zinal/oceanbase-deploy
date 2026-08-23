@@ -132,7 +132,7 @@ vm_profiles:
       size_gb: 558             # кратно 93 GB
     log_disk:
       enabled: true
-      type: network-ssd-io-m3  # clog — потеря недопустима
+      type: network-ssd-nonreplicated  # clog, реплицируется Paxos
       size_gb: 279
 
   obproxy:                     # лёгкий stateless прокси
@@ -187,7 +187,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 | Диск | Тип | Обоснование |
 |------|-----|-------------|
 | Observer data | `network-ssd-nonreplicated` | Данные реплицируются между узлами |
-| Observer log | `network-ssd-io-m3` | Журнал транзакций, потеря недопустима |
+| Observer log | `network-ssd-nonreplicated` | Clog реплицируется между узлами (Paxos) |
 | Observer boot | `network-ssd-io-m3` | Бинарники и home_path |
 | Monitoring data | `network-ssd-io-m3` | Метрики, потеря нежелательна |
 

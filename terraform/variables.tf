@@ -76,8 +76,9 @@ variable "observer_data_disk_size_gb" {
 }
 
 variable "observer_log_disk_type" {
-  type    = string
-  default = "network-ssd-io-m3"
+  type        = string
+  default     = "network-ssd-nonreplicated"
+  description = "Clog реплицируется Paxos; локальная избыточность диска не требуется"
 }
 
 variable "observer_log_disk_size_gb" {
