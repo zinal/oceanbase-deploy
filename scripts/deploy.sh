@@ -57,6 +57,12 @@ case "${STEP}" in
   ocp)
     run_cmd bash "${ROOT}/scripts/deploy-ocp.sh" "${2:-all}"
     ;;
+  recover-observer)
+    run_cmd bash "${ROOT}/scripts/06-recover-observer.sh" "${@:2}"
+    ;;
+  recover-obproxy)
+    run_cmd bash "${ROOT}/scripts/07-recover-obproxy.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -78,6 +84,8 @@ case "${STEP}" in
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
+  recover-observer — замена одного погибшего observer (см. docs/node-recovery.md)
+  recover-obproxy  — замена одного погибшего obproxy
   all        — полный цикл (по умолчанию)
   destroy    — удаление ВМ [--destroy-obd]
 

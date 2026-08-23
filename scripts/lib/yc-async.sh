@@ -227,6 +227,48 @@ print(pending)
   die "Таймаут ожидания ВМ (${YC_WAIT_TIMEOUT}с). Проверьте: yc compute instance list"
 }
 
+wait_until_instance_absent() {
+  local name="$1"
+  local elapsed=0
+  yc_folder_cache_init
+  info "Ожидание удаления ВМ ${name}..."
+  while (( elapsed < YC_WAIT_TIMEOUT )); do
+    if ! instance_exists "${name}"; then
+      info "ВМ ${name} удалена"
+      return 0
+    fi
+    sleep "${YC_WAIT_POLL}"
+    elapsed=$((elapsed + YC_WAIT_POLL))
+  done
+  die "ВМ ${name} всё ещё существует после ${YC_WAIT_TIMEOUT}с"
+}
+
+wait_until_disks_absent() {
+  local -a disk_names=("$@")
+  local elapsed=0
+  if ((${#disk_names[@]} == 0)); then
+    return 0
+  fi
+  yc_folder_cache_init
+  info "Ожидание удаления дисков: ${disk_names[*]}"
+  while (( elapsed < YC_WAIT_TIMEOUT )); do
+    local pending=0
+    local disk_name
+    for disk_name in "${disk_names[@]}"; do
+      if disk_exists "${disk_name}"; then
+        pending=1
+      fi
+    done
+    if (( pending == 0 )); then
+      info "Указанные диски удалены"
+      return 0
+    fi
+    sleep "${YC_WAIT_POLL}"
+    elapsed=$((elapsed + YC_WAIT_POLL))
+  done
+  die "Диски не удалились за ${YC_WAIT_TIMEOUT}с: ${disk_names[*]}"
+}
+
 wait_for_instances_ssh() {
   local -a ips=("$@")
   local -a pids=()
