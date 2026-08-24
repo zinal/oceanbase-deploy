@@ -1,0 +1,17 @@
+run_id=6100-clean3 result_class=engineering workers_complete=true assignment_valid=true clock_skew_ok=true integrity_ok=true tpcc_settings_conformant=false
+tpcc_settings_deviation=phases.measurement=1200000ms; TPC-C requires >= 120m (7200000ms)
+=== TPC-C Results ===
+  Scale: 6100 warehouses
+  Measured Duration: 1200.0s (configured: 1200s)
+  New-Order Throughput: 73849.00 tpmC
+  Efficiency: 94.1%
+  Total Failed: 0
+  NewOrder: OK=1462176 UserAborted=14804 Failed=0 min=32.1ms max=27565.4ms avg=1592.9ms p50=524.3ms p90=4194.3ms p99=33554.4ms
+  Delivery: OK=131302 UserAborted=0 Failed=0 min=70.1ms max=27737.9ms avg=1612.5ms p50=524.3ms p90=4194.3ms p99=33554.4ms
+  OrderStatus: OK=131541 UserAborted=0 Failed=0 min=7.1ms max=25421.3ms avg=962.7ms p50=131.1ms p90=4194.3ms p99=16777.2ms
+  Payment: OK=1412427 UserAborted=0 Failed=0 min=10.8ms max=26344.6ms avg=1016.6ms p50=131.1ms p90=4194.3ms p99=16777.2ms
+  StockLevel: OK=131125 UserAborted=0 Failed=0 min=6.2ms max=25490.7ms avg=990.3ms p50=131.1ms p90=4194.3ms p99=33554.4ms
+  Clients: 5
+  threads_per_worker: 5
+  max_inflight_per_worker: 200
+  Worker threads: ob-runner-1-2=5, ob-runner-2-2=5, ob-runner-3-2=5, ob-runner-4-2=5, ob-runner-5-2=5

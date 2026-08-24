@@ -1,0 +1,79 @@
+apiVersion: portable-tpcc/v1
+kind: TpccRunProfile
+metadata:
+    name: lab-oceanbase-10
+ssh:
+    user: yc-user
+    use_agent: false
+    known_hosts: ~/.ssh/known_hosts
+    connect_timeout: 10s
+paths:
+    local_artifacts: .
+    remote_root: ./ob-work
+    result_root: ./ob/results
+    state_dir: ./ob/state
+database:
+    dbms: oceanbase
+    # MySQL-compatible SQL port (default 2881 if omitted).
+    endpoint: 127.0.0.1:2883
+    # Connection database=… value (tenant-local database name).
+    database: tpcc
+    # Effective database for TPC-C tables; CREATE DATABASE IF NOT EXISTS is used.
+    path: tpcc
+    user: tpcc@tpcc
+    # Password is read from this environment variable (never put secrets in YAML).
+    password_env: TPCC_PASSWORD
+    options:
+        # Hash partitions via tablegroup: -1 = off, 0 = derive from scale.warehouses,
+        # N = explicit count (max 8192).
+        partitions: 9
+        query_timeout: 3600
+        # Omit FOREIGN KEY constraints at schema time when off (default on).
+        foreign_keys: off
+scale:
+    warehouses: 7000
+data:
+    seed: 42
+    batch_rows: 5000
+workload:
+    transaction_mix:
+        new_order: 45
+        payment: 43
+        order_status: 4
+        delivery: 4
+        stock_level: 4
+# host is the connection address. Same host => co-located instances.
+# Mind assigns balanced contiguous warehouse ranges across loaders/workers.
+loaders:
+    - ob-runner-1
+    - ob-runner-2
+    - ob-runner-3
+    - ob-runner-4
+    - ob-runner-5
+workers:
+    - ob-runner-1
+    - ob-runner-2
+    - ob-runner-3
+    - ob-runner-4
+    - ob-runner-5
+checks:
+    after_import: false
+    after_run: false
+phases:
+    start_lead: 45s
+    ramp_up: 10m
+    measurement: 20m
+    transaction_drain: 30s
+    stop_grace: 15s
+    max_clock_skew_ms: 100
+runtime:
+    pacing: enabled
+    think_time_distribution: exponential
+    threads_per_loader: 16
+    threads_per_worker: 5 # 0=auto
+    max_inflight_per_worker: 200 # 0=auto
+    retry:
+        max_attempts: 4
+        initial_backoff: 10ms
+        max_backoff: 500ms
+        jitter: full

@@ -1,3 +1,13 @@
+# Пример конфигурации развёртывания OceanBase в Yandex Cloud.
+# Скопируйте в config/deploy.yaml и отредактируйте под своё окружение.
+#
+# Анализ профилей ВМ: docs/component-vm-sizing.md
+# Рекомендации oceanbase-skills (cluster-management):
+# - минимум 3 observer для HA
+# - observer: минимум 4 vCPU, 16 GB RAM, 100 GB data SSD
+# - obproxy: лёгкий stateless-компонент — отдельные маленькие ВМ
+# - monitoring: отдельная ВМ, чтобы не конкурировать с observer за ресурсы
+
 yandex_cloud:
   folder_id: "b1gkt21tj69047alfmdp"
   zone: ru-central1-d
@@ -45,7 +55,7 @@ vm_profiles:
 
   # OBProxy — stateless прокси, масштабируется отдельно
   obproxy:
-    count: 2
+    count: 3
     platform: standard-v3
     cores: 4
     memory_gb: 8
@@ -78,7 +88,7 @@ vm_profiles:
     count: 1
     platform: standard-v3
     cores: 4
-    memory_gb: 16
+    memory_gb: 8
     boot_disk:
       type: network-ssd
       size_gb: 50
@@ -124,4 +134,3 @@ ssh:
   port: 22
   private_key_file: ~/.ssh/id_ecdsa
   password: ""
-
