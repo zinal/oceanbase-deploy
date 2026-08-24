@@ -9,6 +9,7 @@
 - Подготовка серверов по best practices (sysctl, limits, монтирование дисков)
 - Генерация конфигурации OBD и развёртывание кластера
 - Горизонтальное масштабирование (`scale_out`)
+- Восстановление после полной потери одного хоста **observer** или **obproxy**
 - **OceanBase Cloud Platform (OCP)** — отдельная ВМ и автоматическая установка через OBD
 - Альтернатива: Terraform-модуль для создания ВМ
 
@@ -198,6 +199,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── component-vm-sizing.md         # анализ профилей ВМ по компонентам
 │   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
 │   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
+│   ├── node-recovery.md           # потеря одного observer/obproxy
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
@@ -212,6 +214,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 03-generate-obd-config.py
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
 │   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── 06-recover-observer.sh   # замена погибшего observer
+│   ├── 07-recover-obproxy.sh    # замена погибшего obproxy
 │   ├── deploy-ocp.sh            # развёртывание OCP (отдельная ВМ)
 │   ├── 02-prepare-ocp.sh        # подготовка OCP-ВМ (Java, clockdiff)
 │   └── 99-destroy.sh
@@ -231,6 +235,24 @@ SSH и подготовка серверов используют **внутре
 ```
 
 Скрипт создаёт ВМ, подготавливает серверы и выполняет `obd cluster scale_out`.
+
+## Восстановление узла
+
+Временный отказ (ВМ или процессы остановились, диски целы):
+
+```bash
+./scripts/06-recover-observer.sh 2 --temporary --yes
+./scripts/07-recover-obproxy.sh 1 --temporary --yes
+```
+
+Полная гибель хоста (majority остальных observer жив):
+
+```bash
+./scripts/06-recover-observer.sh 2 --replace --yes
+./scripts/07-recover-obproxy.sh 1 --replace --yes
+```
+
+Без флага режима скрипт выбирает сам: ВМ есть в YC → temporary, нет → replace. Подробности: [docs/node-recovery.md](docs/node-recovery.md).
 
 ## Terraform (альтернатива)
 
