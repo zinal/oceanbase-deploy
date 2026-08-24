@@ -68,7 +68,26 @@ if [[ "${NODE_EXPORTER_ENABLED}" == "true" ]]; then
   fi
 fi
 
-TARGET_HOSTS=("$@")
+PREPARE_ROLE="observer"
+TARGET_HOSTS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --role)
+      PREPARE_ROLE="${2:-}"
+      [[ -n "${PREPARE_ROLE}" ]] || die "--role требует значение (observer|obproxy|configserver|monitor|ocp)"
+      shift 2
+      ;;
+    --)
+      shift
+      TARGET_HOSTS+=("$@")
+      break
+      ;;
+    *)
+      TARGET_HOSTS+=("$1")
+      shift
+      ;;
+  esac
+done
 
 declare -a PREPARE_PIDS=()
 declare -a PREPARE_LABELS=()
@@ -280,7 +299,7 @@ info "Фаза prepare: параллельная подготовка серве
 
 if ((${#TARGET_HOSTS[@]} > 0)); then
   for host in "${TARGET_HOSTS[@]}"; do
-    start_prepare_job "${host}" "observer"
+    start_prepare_job "${host}" "${PREPARE_ROLE}"
   done
 else
   for i in $(seq 1 "${OBSERVER_COUNT}"); do
