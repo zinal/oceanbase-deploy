@@ -1,0 +1,165 @@
+user:
+  username: demo
+  port: 22
+  timeout: 60
+  key_file: /home/demo/.ssh/id_ecdsa
+  password:
+ob-configserver:
+  servers:
+  - 10.130.0.7
+  global:
+    listen_port: 8080
+    home_path: /home/demo/ob-configserver
+oceanbase-ce:
+  depends:
+  - ob-configserver
+  servers:
+  - name: server1
+    ip: 10.130.0.7
+  - name: server2
+    ip: 10.130.0.12
+  - name: server3
+    ip: 10.130.0.13
+  global:
+    appname: obcluster
+    cluster_id: 1
+    memory_limit: 56G
+    system_memory: 4G
+    datafile_size: 790G
+    log_disk_size: 837G
+    cpu_count: 16
+    production_mode: true
+    enable_syslog_wf: false
+    root_password: HNNEuGmNtINoiSEDd0qH
+    ocp_agent_monitor_password: mU6OXYz6AG
+    proxyro_password: XK2dlathLL
+  server1:
+    mysql_port: 2881
+    rpc_port: 2882
+    obshell_port: 2886
+    home_path: /home/demo/observer
+    data_dir: /ob-data/1
+    redo_dir: /ob-log/1
+    zone: zone1
+  server2:
+    mysql_port: 2881
+    rpc_port: 2882
+    obshell_port: 2886
+    home_path: /home/demo/observer
+    data_dir: /ob-data/1
+    redo_dir: /ob-log/1
+    zone: zone2
+  server3:
+    mysql_port: 2881
+    rpc_port: 2882
+    obshell_port: 2886
+    home_path: /home/demo/observer
+    data_dir: /ob-data/1
+    redo_dir: /ob-log/1
+    zone: zone3
+obproxy-ce:
+  depends:
+  - oceanbase-ce
+  servers:
+  - 10.130.0.20
+  - 10.130.0.24
+  - 10.130.0.23
+  global:
+    listen_port: 2883
+    prometheus_listen_port: 2884
+    home_path: /home/demo/obproxy
+    enable_cluster_checkout: false
+    skip_proxy_sys_private_check: true
+    enable_strict_kernel_release: false
+    obproxy_sys_password: JFNtf3VLOK
+    rs_list: 10.130.0.7:2881;10.130.0.12:2881;10.130.0.13:2881
+    cluster_name: obcluster
+    observer_root_password: HNNEuGmNtINoiSEDd0qH
+obagent:
+  depends:
+  - oceanbase-ce
+  servers:
+  - name: server1
+    ip: 10.130.0.7
+  - name: server2
+    ip: 10.130.0.12
+  - name: server3
+    ip: 10.130.0.13
+  global:
+    home_path: /home/demo/obagent
+    monagent_http_port: 8088
+    http_basic_auth_user: admin
+    http_basic_auth_password: oceanbase
+    ob_monitor_status: active
+prometheus:
+  depends:
+  - obagent
+  servers:
+  - 10.130.0.9
+  global:
+    home_path: /home/demo/prometheus
+    port: 9090
+    config:
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+      scrape_configs:
+      - job_name: prometheus
+        metrics_path: /metrics
+        static_configs:
+        - targets:
+          - localhost:9090
+      - job_name: node_exporter
+        metrics_path: /metrics
+        static_configs:
+        - targets:
+          - ob-yc-prod-observer-1.ru-central1.internal:9100
+          - ob-yc-prod-observer-2.ru-central1.internal:9100
+          - ob-yc-prod-observer-3.ru-central1.internal:9100
+          - ob-yc-prod-obproxy-1.ru-central1.internal:9100
+          - ob-yc-prod-obproxy-2.ru-central1.internal:9100
+          - ob-yc-prod-obproxy-3.ru-central1.internal:9100
+          - ob-yc-prod-monitor-1.ru-central1.internal:9100
+      - job_name: node
+        metrics_path: /metrics/node/host
+        basic_auth:
+          username: admin
+          password: oceanbase
+        static_configs:
+        - targets: &id001
+          - ob-yc-prod-observer-1.ru-central1.internal:8088
+          - ob-yc-prod-observer-2.ru-central1.internal:8088
+          - ob-yc-prod-observer-3.ru-central1.internal:8088
+      - job_name: ob_basic
+        metrics_path: /metrics/ob/basic
+        basic_auth:
+          username: admin
+          password: oceanbase
+        static_configs:
+        - targets: *id001
+      - job_name: ob_extra
+        metrics_path: /metrics/ob/extra
+        basic_auth:
+          username: admin
+          password: oceanbase
+        static_configs:
+        - targets: *id001
+      - job_name: agent
+        metrics_path: /metrics/stat
+        basic_auth:
+          username: admin
+          password: oceanbase
+        static_configs:
+        - targets: *id001
+    basic_auth_users:
+      admin: gvxX3BtbYE
+grafana:
+  depends:
+  - prometheus
+  servers:
+  - 10.130.0.9
+  global:
+    home_path: /home/demo/grafana
+    login_password: oceanbase
+  10.130.0.9:
+    login_password: oceanbase
