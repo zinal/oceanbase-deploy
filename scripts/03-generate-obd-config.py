@@ -32,10 +32,8 @@ def load_inventory(path: Path) -> dict[str, str]:
     return data
 
 
-def auto_tune(cfg: dict, observer_count: int) -> dict:
-    """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
+def _vm_profiles_mod():
     import importlib.util
-    from pathlib import Path
 
     spec = importlib.util.spec_from_file_location(
         "vm_profiles",
@@ -43,7 +41,12 @@ def auto_tune(cfg: dict, observer_count: int) -> dict:
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.observer_auto_tune(cfg)
+    return mod
+
+
+def auto_tune(cfg: dict, observer_count: int) -> dict:
+    """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
+    return _vm_profiles_mod().observer_auto_tune(cfg)
 
 
 def ocp_cfg(cfg: dict) -> dict:
@@ -365,6 +368,9 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         ocp_count = int(inv.get("OCP_COUNT", "0"))
         if ocp_count < 1:
             raise ValueError("ocp.enabled=true, но OCP_COUNT=0 в inventory — выполните provision")
+        pwd_err = _vm_profiles_mod().ocp_admin_password_error(ocp.get("admin_password"))
+        if pwd_err:
+            raise ValueError(pwd_err.removeprefix("ERROR: "))
         ocp_ip = inv_ip(inv, "OCP", 1)
         ocp_port = int(ocp.get("port", 8080))
         ocp_home = ocp.get("home_path", f"/home/{deploy_user}/ocp")
@@ -374,7 +380,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             "log_dir": ocp.get("log_dir", f"{ocp_home}/logs"),
             "ocp_site_url": f"http://{ocp_ip}:{ocp_port}",
             "port": ocp_port,
-            "admin_password": ocp.get("admin_password", "changeme"),
+            "admin_password": ocp.get("admin_password"),
             "memory_size": ocp.get("memory_size", "8G"),
         }
         ocp_block: dict = {
@@ -419,7 +425,11 @@ def main() -> None:
         print(f"Inventory not found or empty: {inv_path}", file=sys.stderr)
         sys.exit(1)
 
-    obd_cfg = build_obd_config(cfg, inv)
+    try:
+        obd_cfg = build_obd_config(cfg, inv)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(obd_cfg, f, sort_keys=False, allow_unicode=True, default_flow_style=False)

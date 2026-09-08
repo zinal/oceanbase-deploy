@@ -44,6 +44,11 @@ OB_PROD_CPU_MIN = 4
 OB_PROD_MEMORY_MIN_GB = 16
 OB_PROD_MEMORY_LONG_TERM_GB = 32
 OB_OCP_SERVER_MEMORY_MIN_GB = 8
+# OBD-1025: ocp-server-ce admin_password
+# https://www.oceanbase.com/docs/common-obd-cn-1000000003892226
+OCP_ADMIN_PASSWORD_MIN = 8
+OCP_ADMIN_PASSWORD_MAX = 32
+OCP_ADMIN_PASSWORD_SPECIAL = set("~!@#%^&*_-+=|(){}[]:;,.?/$`'\"\\<>")
 # datafile/log prealloc: OBD max occupancy ~85–90% диска, в production log ≥ 48G, data ≥ 20G
 OB_DATAFILE_DISK_PCT = 90
 OB_LOGFILE_DISK_PCT = 90
@@ -684,6 +689,46 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
     return issues
 
 
+def ocp_admin_password_error(password: Any) -> str | None:
+    """Проверка ocp.admin_password по правилу OBD-1025 (start ocp-server-ce)."""
+    if password is None or (isinstance(password, str) and not password.strip()):
+        return (
+            "ERROR: ocp.admin_password не задан — OBD требует пароль admin OCP "
+            f"(OBD-1025: {OCP_ADMIN_PASSWORD_MIN}–{OCP_ADMIN_PASSWORD_MAX} символов, "
+            "≥3 класса из цифр / a-z / A-Z / спец.)"
+        )
+    text = str(password)
+    if len(text) < OCP_ADMIN_PASSWORD_MIN or len(text) > OCP_ADMIN_PASSWORD_MAX:
+        return (
+            f"ERROR: ocp.admin_password длина {len(text)} — нужно "
+            f"{OCP_ADMIN_PASSWORD_MIN}–{OCP_ADMIN_PASSWORD_MAX} символов (OBD-1025)"
+        )
+    classes = 0
+    if any(c.isdigit() for c in text):
+        classes += 1
+    if any(c.islower() and c.isascii() for c in text):
+        classes += 1
+    if any(c.isupper() and c.isascii() for c in text):
+        classes += 1
+    if any(c in OCP_ADMIN_PASSWORD_SPECIAL for c in text):
+        classes += 1
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") | OCP_ADMIN_PASSWORD_SPECIAL
+    extra = sorted({c for c in text if c not in allowed})
+    if extra:
+        shown = " ".join(repr(c) for c in extra[:8])
+        return (
+            f"ERROR: ocp.admin_password содержит недопустимые символы ({shown}) — "
+            "спец. из набора OBD: ~!@#%^&*_-+=|(){}[]:;,.?/$`'\\\"<>"
+        )
+    if classes < 3:
+        return (
+            "ERROR: ocp.admin_password не проходит OBD-1025 — нужны ≥3 класса из "
+            "цифр, строчных, заглавных и спец. (~!@#%^&*_-+=|(){}[]:;,.?/$`'\\\"<>); "
+            f"сейчас классов: {classes}"
+        )
+    return None
+
+
 def _validate_ocp_against_vms(
     cfg: dict[str, Any],
     observer_cores: int,
@@ -698,6 +743,10 @@ def _validate_ocp_against_vms(
     enabled = bool(ocp.get("enabled")) and bool(ocp_vm.get("enabled", False))
     if not enabled:
         return issues
+
+    pwd_err = ocp_admin_password_error(ocp.get("admin_password"))
+    if pwd_err:
+        issues.append(pwd_err)
 
     try:
         ocp_profile = resolve_profile(cfg, "ocp")

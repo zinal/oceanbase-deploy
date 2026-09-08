@@ -61,7 +61,7 @@ vm_profiles:
 ocp:
   enabled: true
   port: 8080
-  admin_password: <secure-password>
+  admin_password: <secure-password>   # 8–32 символа, ≥3 класса: цифры, a-z, A-Z, спец. (OBD-1025)
   root_password: <oceanbase-root-password>
   proxyro_password: <proxyro-password>
 ```
@@ -114,7 +114,7 @@ python3 scripts/lib/vm_profiles.py resolve ocp --config config/deploy.yaml --for
 |----------|----------|
 | `enabled` | Включить развёртывание OCP |
 | `port` | HTTP-порт веб-консоли (8080) |
-| `admin_password` | Пароль пользователя admin OCP |
+| `admin_password` | Пароль admin OCP. OBD-1025: длина 8–32, не меньше трёх классов из цифр, строчных, заглавных и спец. (`~!@#%^&*_-+=\|(){}[]:;,.?/$`'\"<>`) |
 | `memory_size` | Память JVM OCP (8G по умолчанию) |
 | `home_path`, `soft_dir`, `log_dir` | Каталоги на OCP-ВМ |
 | `root_password`, `proxyro_password` | Пароли OceanBase для meta-тенантов |
@@ -136,7 +136,7 @@ IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP
 
 - **Integrated deploy** — OCP разворачивается вместе с OceanBase через один `obd cluster deploy`. Добавление OCP к уже работающему кластеру может потребовать `obd cluster redeploy` или ручного добавления компонента.
 - **Сеть** — OCP-ВМ должна иметь доступ к observer и obproxy по внутренней сети YC.
-- **Пароли** — смените значения по умолчанию (`changeme`) перед production.
+- **Пароли** — `ocp.admin_password` должен удовлетворять OBD-1025 (иначе `obd cluster start` падает). Смените значения-заглушки перед production.
 
 ## Ссылки
 

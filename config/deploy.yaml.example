@@ -148,7 +148,7 @@ ocp:
   version: ""                      # опционально: версия ocp-server-ce
   port: 8080
   admin_username: admin
-  admin_password: changeme         # смените перед production!
+  admin_password: ChangeMe1!       # OBD-1025: 8–32 символа, ≥3 класса (цифры/a-z/A-Z/спец.)
   memory_size: 8G
   home_path: /home/obadmin/ocp
   soft_dir: /ocp-data/software
