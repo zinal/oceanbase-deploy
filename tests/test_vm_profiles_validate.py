@@ -13,6 +13,7 @@ from vm_profiles import (  # noqa: E402
     observer_auto_tune,
     ocp_admin_password_error,
     parse_size_to_gb,
+    password_complexity_error,
     recommended_system_memory_gb,
     recommended_system_memory_range,
     validate_oceanbase_against_vms,
@@ -287,6 +288,46 @@ def test_ocp_admin_password_valid() -> None:
     assert ocp_admin_password_error(None) is not None
 
 
+def test_ocp_root_password_changeme_is_error() -> None:
+    cfg = base_cfg()
+    cfg["vm_profiles"]["ocp"] = {
+        "enabled": True,
+        "count": 1,
+        "cores": 4,
+        "memory_gb": 16,
+        "boot_disk": {"type": "network-ssd", "size_gb": 50},
+        "data_disk": {"enabled": False},
+        "log_disk": {"enabled": False},
+    }
+    cfg["ocp"] = {
+        "enabled": True,
+        "admin_password": "ChangeMe1!",
+        "root_password": "changeme",
+        "memory_size": "8G",
+    }
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("root_password" in i for i in errors), errors
+
+
+def test_ob_user_password_two_classes() -> None:
+    assert password_complexity_error("x", "ChangeMe1!", required=False, min_classes=2) is None
+    assert password_complexity_error("x", "changeme", required=False, min_classes=2) is not None
+    assert password_complexity_error("x", "ocp_meta_root", required=False, min_classes=2) is None
+    assert password_complexity_error("x", None, required=False, min_classes=2) is None
+
+
+def test_ob_idc_name() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "gen_obd", ROOT / "scripts" / "03-generate-obd-config.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.ob_idc_name("ru-central1-d") == "ru_central1_d"
+    assert mod.ob_idc_name("") == "default_idc"
+
+
 def test_example_yaml_has_no_errors() -> None:
     example = ROOT / "config" / "deploy.yaml.example"
     import yaml
@@ -321,6 +362,9 @@ def main() -> None:
         test_cpu_using_all_cores_is_warn,
         test_ocp_admin_password_changeme_is_error,
         test_ocp_admin_password_valid,
+        test_ocp_root_password_changeme_is_error,
+        test_ob_user_password_two_classes,
+        test_ob_idc_name,
         test_example_yaml_has_no_errors,
     ]
     for fn in tests:

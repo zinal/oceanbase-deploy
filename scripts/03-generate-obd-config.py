@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -61,6 +62,12 @@ def ocp_enabled(cfg: dict) -> bool:
 
 def monitoring_cfg(cfg: dict) -> dict:
     return cfg.get("monitoring", {}) or {}
+
+
+def ob_idc_name(yc_zone: str) -> str:
+    """Имя IDC для OBD (ALTER SYSTEM MODIFY ZONE SET IDC): [A-Za-z0-9_]."""
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", (yc_zone or "").strip()).strip("_")
+    return cleaned or "default_idc"
 
 
 def yc_region_from_zone(zone: str) -> str:
@@ -224,6 +231,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             "data_dir": data_dir,
             "redo_dir": redo_dir,
             "zone": zones[(idx - 1) % len(zones)],
+            "idc": ob_idc_name(zone),
         }
 
     components = ob_cfg.get("components", {})
@@ -288,9 +296,20 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                     "ocp_monitor_db": monitor.get("database", "monitor_database"),
                 }
             )
+            vp = _vm_profiles_mod()
             if ocp.get("root_password"):
+                err = vp.password_complexity_error(
+                    "ocp.root_password", ocp.get("root_password"), required=False, min_classes=2
+                )
+                if err:
+                    raise ValueError(err.removeprefix("ERROR: "))
                 obd_ob["global"]["root_password"] = ocp["root_password"]
             if ocp.get("proxyro_password"):
+                err = vp.password_complexity_error(
+                    "ocp.proxyro_password", ocp.get("proxyro_password"), required=False, min_classes=2
+                )
+                if err:
+                    raise ValueError(err.removeprefix("ERROR: "))
                 obd_ob["global"]["proxyro_password"] = ocp["proxyro_password"]
         for sname, override in server_overrides.items():
             obd_ob[sname] = override

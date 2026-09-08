@@ -117,7 +117,7 @@ python3 scripts/lib/vm_profiles.py resolve ocp --config config/deploy.yaml --for
 | `admin_password` | Пароль admin OCP. OBD-1025: длина 8–32, не меньше трёх классов из цифр, строчных, заглавных и спец. (`~!@#%^&*_-+=\|(){}[]:;,.?/$`'\"<>`) |
 | `memory_size` | Память JVM OCP (8G по умолчанию) |
 | `home_path`, `soft_dir`, `log_dir` | Каталоги на OCP-ВМ |
-| `root_password`, `proxyro_password` | Пароли OceanBase для meta-тенантов |
+| `root_password`, `proxyro_password` | Пароли `root@sys` / `proxyro`. После bootstrap OBD выполняет `ALTER USER`; нужны ≥8 символов и ≥2 класса (цифры/буквы/спец.). `changeme` даёт OBD-5000 и зависание start. |
 | `meta_tenant`, `monitor_tenant` | Имена и ресурсы тенантов OCP |
 
 ## Доступ к консоли
@@ -136,7 +136,8 @@ IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP
 
 - **Integrated deploy** — OCP разворачивается вместе с OceanBase через один `obd cluster deploy`. Добавление OCP к уже работающему кластеру может потребовать `obd cluster redeploy` или ручного добавления компонента.
 - **Сеть** — OCP-ВМ должна иметь доступ к observer и obproxy по внутренней сети YC.
-- **Пароли** — `ocp.admin_password` должен удовлетворять OBD-1025 (иначе `obd cluster start` падает). Смените значения-заглушки перед production.
+- **Пароли** — `ocp.admin_password` должен удовлетворять OBD-1025. `ocp.root_password` / `proxyro_password` — не слабее 8 символов и 2 классов: иначе после `oceanbase bootstrap ok` будет `OBD-5000 ALTER USER` и `obd cluster start` может «зависнуть».
+- **OBD-5000 `set idc = %s`** — `%s` это плейсхолдер лога OBD, не буквальное значение. Если bootstrap уже прошёл, observer'ы живы; destroy не нужен. Проверьте `mysql` на observer:2881 и `obd display-trace`.
 
 ## Ссылки
 

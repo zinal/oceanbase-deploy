@@ -154,8 +154,8 @@ ocp:
   soft_dir: /ocp-data/software
   log_dir: /ocp-data/logs
   # Пароли OceanBase для создания meta/monitor tenants (при integrated deploy)
-  root_password: changeme
-  proxyro_password: changeme
+  root_password: ChangeMe1!        # после bootstrap OBD делает ALTER USER; не используйте changeme
+  proxyro_password: ChangeMe1!
   meta_tenant:
     tenant_name: ocp_meta
     max_cpu: 2.0
