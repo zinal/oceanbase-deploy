@@ -60,9 +60,16 @@ install_clockdiff() {
 }
 
 ensure_directories() {
-  local user="$1"
-  install -d -o "${user}" -g "${user}" -m 0755 "${OCP_HOME}" "${OCP_SOFT_DIR}" "${OCP_LOG_DIR}"
-  sudo -u "${user}" test -w "${OCP_HOME}" "${OCP_SOFT_DIR}" "${OCP_LOG_DIR}"
+  local user="$1" dir
+  for dir in "${OCP_HOME}" "${OCP_SOFT_DIR}" "${OCP_LOG_DIR}"; do
+    [[ -n "${dir}" ]] || continue
+    install -d -o "${user}" -g "${user}" -m 0755 "${dir}"
+    # test -w принимает ровно один путь; несколько аргументов → «extra argument».
+    sudo -u "${user}" test -w "${dir}" || {
+      echo "ERROR: ${dir} недоступен для записи пользователю ${user}" >&2
+      exit 1
+    }
+  done
 }
 
 require_root
