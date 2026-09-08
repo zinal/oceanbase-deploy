@@ -15,7 +15,9 @@ usage() {
   cat <<'USAGE'
 Использование: ./scripts/06-recover-observer.sh <index> [--temporary|--replace] [опции]
 
-<index> — номер observer в inventory (1 = zone1 / OBSERVER_1_*).
+<index> — номер observer в inventory (1 = OBSERVER_1_*).
+Zone узла: observer раскладываются по трём zone по кругу
+(1,4,7... → zone1; 2,5,8... → zone2; 3,6,9... → zone3).
 
 Режим (если не указан — авто: ВМ есть → --temporary, нет → --replace):
   --temporary        ВМ и диски целы: запустить машину и процессы, START SERVER
@@ -88,7 +90,7 @@ OLD_IP="${!OLD_IP_VAR:-}"
 OLD_NAME="${!OLD_NAME_VAR:-}"
 [[ -n "${OLD_IP}" && -n "${OLD_NAME}" ]] || die "В inventory нет OBSERVER_${INDEX}_{NAME,IP}"
 
-ZONE="zone${INDEX}"
+ZONE="$(python3 "${SCRIPTS_DIR}/lib/ob_zones.py" name "${INDEX}")"
 RPC_PORT="$(yaml_get oceanbase.ports.rpc)"
 [[ -z "${RPC_PORT}" || "${RPC_PORT}" == "null" ]] && RPC_PORT=2882
 DEPLOY_NAME_CLUSTER="${DEPLOY_NAME}"

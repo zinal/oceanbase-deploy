@@ -33,16 +33,24 @@ def load_inventory(path: Path) -> dict[str, str]:
     return data
 
 
-def _vm_profiles_mod():
+def _lib_mod(name: str):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "vm_profiles",
-        Path(__file__).resolve().parent / "lib" / "vm_profiles.py",
+        name,
+        Path(__file__).resolve().parent / "lib" / f"{name}.py",
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _vm_profiles_mod():
+    return _lib_mod("vm_profiles")
+
+
+def _ob_zones_mod():
+    return _lib_mod("ob_zones")
 
 
 def auto_tune(cfg: dict, observer_count: int) -> dict:
@@ -216,7 +224,10 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
     if ssh_cfg.get("password"):
         user_block["password"] = ssh_cfg["password"]
 
-    zones = [f"zone{i}" for i in range(1, obs_count + 1)]
+    ob_zones = _ob_zones_mod()
+    zones_warning = ob_zones.uneven_zones_warning(obs_count)
+    if zones_warning:
+        print(f"WARNING: {zones_warning}", file=sys.stderr)
 
     servers = []
     server_overrides: dict = {}
@@ -230,7 +241,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             "home_path": home_path,
             "data_dir": data_dir,
             "redo_dir": redo_dir,
-            "zone": zones[(idx - 1) % len(zones)],
+            "zone": ob_zones.zone_for_index(idx),
             "idc": ob_idc_name(zone),
         }
 
@@ -455,6 +466,10 @@ def main() -> None:
 
     print(f"OBD config written: {out_path}")
     print(f"Observers: {inv.get('OBSERVER_COUNT')} | Deploy: {inv.get('DEPLOY_NAME')}")
+    obs_count = int(inv.get("OBSERVER_COUNT", 0))
+    if obs_count:
+        sizes = _ob_zones_mod().zone_sizes(obs_count)
+        print("Zones: " + ", ".join(f"{name}={count}" for name, count in sizes.items()))
     if ocp_enabled(cfg):
         print(f"OCP: enabled (servers={inv.get('OCP_COUNT', '0')})")
 
