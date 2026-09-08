@@ -6,7 +6,7 @@
 
 - Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring)
 - Оптимальные типы дисков YC: non-replicated для реплицируемых data, io-m3 для log/boot
-- Подготовка серверов по best practices (sysctl, limits, монтирование дисков)
+- Подготовка серверов по best practices (sysctl, limits, chrony, монтирование дисков)
 - Генерация конфигурации OBD и развёртывание кластера
 - Горизонтальное масштабирование (`scale_out`)
 - Восстановление после полной потери одного хоста **observer** или **obproxy**
@@ -212,14 +212,14 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── deploy.sh                # главный сценарий
 │   ├── 00-check-prerequisites.sh
 │   ├── 01-provision-vms.sh      # yc compute instance create
-│   ├── 02-prepare-servers.sh    # sysctl, диски, пользователь
+│   ├── 02-prepare-servers.sh    # sysctl, диски, chrony, пользователь
 │   ├── 03-generate-obd-config.py
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── 06-recover-observer.sh   # замена погибшего observer
 │   ├── 07-recover-obproxy.sh    # замена погибшего obproxy
 │   ├── deploy-ocp.sh            # развёртывание OCP (отдельная ВМ)
-│   ├── 02-prepare-ocp.sh        # подготовка OCP-ВМ (Java, clockdiff)
+│   ├── 02-prepare-ocp.sh        # подготовка OCP-ВМ (chrony, Java, clockdiff)
 │   └── 99-destroy.sh
 ├── terraform/                   # опциональный IaC
 ├── generated/                   # inventory.env, obd-cluster.yaml

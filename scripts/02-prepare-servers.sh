@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Подготовка серверов: монтирование data/log дисков, sysctl, пользователь OceanBase.
+# Подготовка серверов: диски, sysctl, chrony, пользователь OceanBase.
 # Хосты готовятся параллельно; подробные логи — в generated/prepare-logs/.
 
 set -euo pipefail
@@ -67,6 +67,8 @@ if [[ "${NODE_EXPORTER_ENABLED}" == "true" ]]; then
     INSTALL_NODE_EXPORTER=true
   fi
 fi
+
+NTP_SERVERS="$(yaml_get_list yandex_cloud.ntp_servers)"
 
 PREPARE_ROLE="observer"
 TARGET_HOSTS=()
@@ -230,6 +232,12 @@ REMOTE
     die "Ошибка подготовки ${host} (${role})"
   fi
 
+  info "Установка chrony на ${host} (${role})..."
+  if ! run_remote "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
+  then
+    die "Ошибка установки chrony на ${host} (${role})"
+  fi
+
   info "Готово: ${host} (${role})"
 }
 
@@ -331,4 +339,5 @@ wait_prepare_jobs
 if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
   info "node_exporter установлен на всех узлах (port ${NODE_EXPORTER_PORT})"
 fi
+info "chrony установлен на всех подготовленных хостах"
 info "Подготовка всех серверов завершена"

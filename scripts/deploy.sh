@@ -80,7 +80,7 @@ case "${STEP}" in
 Команды:
   check      — проверка зависимостей, профилей ВМ и секции oceanbase vs ВМ
   provision  — создание ВМ в Yandex Cloud
-  prepare    — подготовка серверов (диски, sysctl)
+  prepare    — подготовка серверов (диски, sysctl, chrony)
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)

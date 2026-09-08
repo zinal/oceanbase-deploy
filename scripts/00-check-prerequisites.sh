@@ -75,4 +75,6 @@ if [[ "${ocp_enabled}" == "true" || "${ocp_vm_enabled}" == "true" ]]; then
   fi
 fi
 
+info "prepare установит chrony на все ВМ (NTP: DHCP YC или yandex_cloud.ntp_servers)"
+
 info "Проверка зависимостей успешно завершена"

@@ -32,6 +32,11 @@ yandex_cloud:
   image_family: ubuntu-2204-lts
   # Альтернатива image_family — указать image_name:
   # image_name: redsoft-red-os-standart-server-7-3-v20240402
+  # NTP для chrony на шаге prepare (необязательно). Если не задано —
+  # DHCP option 42 (Yandex Cloud) либо публичные серверы из docs Compute Cloud.
+  # ntp_servers:
+  #   - ntp.ix.ru
+  #   - ntp2.vniiftri.ru
 
 deployment:
   name: ob-yc-prod
