@@ -24,8 +24,12 @@ EOF
 
 names=()
 collect_inventory_vm_names names "${inv}"
-got="$(printf '%s\n' "${names[@]}" | sort | tr '\n' ' ')"
-want="ob-yc-prod-observer-1 ob-yc-prod-observer-25 ob-yc-prod-obproxy-1 ob-yc-prod-ocp-1 "
+got="$(printf '%s\n' "${names[@]}" | sort)"
+want="$(printf '%s\n' \
+  ob-yc-prod-obproxy-1 \
+  ob-yc-prod-observer-1 \
+  ob-yc-prod-observer-25 \
+  ob-yc-prod-ocp-1)"
 [[ "${got}" == "${want}" ]] || {
   echo "FAIL inventory names: got '${got}' want '${want}'" >&2
   exit 1
