@@ -45,6 +45,24 @@ install_obd_if_needed
 
 verify_all_observer_storage
 
+if [[ "$(yaml_get ocp.enabled)" == "true" && "$(yaml_get vm_profiles.ocp.enabled)" == "true" ]]; then
+  python3 - "${LIB_DIR}/lib/vm_profiles.py" "${CONFIG_FILE}" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("vm_profiles", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+cfg = mod.load_config(Path(sys.argv[2]))
+ocp = cfg.get("ocp") or {}
+err = mod.ocp_admin_password_error(ocp.get("admin_password"))
+if err:
+    print(err, file=sys.stderr)
+    sys.exit(1)
+PY
+fi
+
 ob_version="$(yaml_get oceanbase.version)"
 
 if obd_cluster_registered "${CLUSTER_NAME}"; then

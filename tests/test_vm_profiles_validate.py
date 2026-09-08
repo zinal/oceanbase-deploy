@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from vm_profiles import (  # noqa: E402
     observer_auto_tune,
+    ocp_admin_password_error,
     parse_size_to_gb,
     recommended_system_memory_gb,
     recommended_system_memory_range,
@@ -204,6 +205,7 @@ def test_ocp_heap_exceeds_vm() -> None:
     }
     cfg["ocp"] = {
         "enabled": True,
+        "admin_password": "ChangeMe1!",
         "memory_size": "32G",
         "meta_tenant": {"max_cpu": 2.0, "memory_size": "4G"},
         "monitor_tenant": {"max_cpu": 2.0, "memory_size": "4G"},
@@ -260,6 +262,31 @@ def test_cpu_using_all_cores_is_warn() -> None:
     assert any("почти равен" in i and "cpu_count=32" in i for i in warns), warns
 
 
+def test_ocp_admin_password_changeme_is_error() -> None:
+    cfg = base_cfg()
+    cfg["vm_profiles"]["ocp"] = {
+        "enabled": True,
+        "count": 1,
+        "cores": 4,
+        "memory_gb": 16,
+        "boot_disk": {"type": "network-ssd", "size_gb": 50},
+        "data_disk": {"enabled": False},
+        "log_disk": {"enabled": False},
+    }
+    cfg["ocp"] = {"enabled": True, "admin_password": "changeme", "memory_size": "8G"}
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("admin_password" in i and "OBD-1025" in i for i in errors), errors
+
+
+def test_ocp_admin_password_valid() -> None:
+    assert ocp_admin_password_error("ChangeMe1!") is None
+    assert ocp_admin_password_error("NoSpecial1") is None  # 3 класса без спец.
+    assert ocp_admin_password_error("changeme") is not None
+    assert ocp_admin_password_error("short") is not None
+    assert ocp_admin_password_error("") is not None
+    assert ocp_admin_password_error(None) is not None
+
+
 def test_example_yaml_has_no_errors() -> None:
     example = ROOT / "config" / "deploy.yaml.example"
     import yaml
@@ -292,6 +319,8 @@ def main() -> None:
         test_auto_tune_32c_128g_follows_docs,
         test_gist_like_yaml_has_no_false_warns,
         test_cpu_using_all_cores_is_warn,
+        test_ocp_admin_password_changeme_is_error,
+        test_ocp_admin_password_valid,
         test_example_yaml_has_no_errors,
     ]
     for fn in tests:
