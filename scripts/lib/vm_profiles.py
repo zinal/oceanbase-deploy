@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import re
@@ -837,6 +838,20 @@ def _validate_ocp_against_vms(
     return issues
 
 
+def validate_tenant_section(cfg: dict[str, Any]) -> list[str]:
+    """Проверка секции tenant (шаг deploy.sh tenant)."""
+    path = Path(__file__).resolve().parent / "tenant-create.py"
+    if not path.exists():
+        return []
+    spec = importlib.util.spec_from_file_location("tenant_create", path)
+    if spec is None or spec.loader is None:
+        return []
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    tenant_cfg = mod.resolve_tenant_cfg(cfg)
+    return mod.validate_tenant_cfg(tenant_cfg)
+
+
 def validate_profiles(cfg: dict[str, Any]) -> list[str]:
     """Проверка соответствия профилей рекомендациям OceanBase."""
     issues: list[str] = []
@@ -932,6 +947,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
     cfg = load_config(Path(args.config))
     issues = validate_profiles(cfg)
     issues.extend(validate_oceanbase_against_vms(cfg))
+    issues.extend(validate_tenant_section(cfg))
     has_error = False
     for item in issues:
         if item.startswith("ERROR"):

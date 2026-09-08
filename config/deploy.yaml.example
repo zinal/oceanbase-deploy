@@ -185,6 +185,24 @@ monitoring:
     basic_auth_password: oceanbase
   grafana_password: oceanbase
 
+# User tenant — создаётся явно после deploy: ./scripts/deploy.sh tenant
+# obd cluster tenant create с max-cpu=0 / memory-size=0 / unit-num=0 забирает все
+# ресурсы, доступные для тенантов (sys и OCP уже заняли свою долю).
+tenant:
+  tenant_name: tpcc
+  username: tpcc
+  database: tpcc
+  root_password: ChangeMe!       # пароль root@<tenant_name>
+  user_password: ChangeMe!       # пароль application user
+  # Режим нагрузки → obd cluster tenant create -o / --optimize (OceanBase ≥ 4.3):
+  #   express_oltp — простой OLTP (высокая конкуренция, короткие запросы)
+  #   complex_oltp — сложный OLTP (join, PL, длинные/большие транзакции)
+  #   olap         — аналитика / real-time DW
+  #   htap         — смешанные OLTP и OLAP (по умолчанию)
+  #   kv           — key-value и wide-column нагрузки
+  # Алиас: oltp = express_oltp
+  mode: htap
+
 oceanbase:
   cluster_name: obcluster
   version: ""

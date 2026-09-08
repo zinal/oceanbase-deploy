@@ -30,6 +30,7 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 | `02-prepare-servers.sh` | prepare-servers, configure-sysctl-conf, chrony |
 | `03-generate-obd-config.py` | config-deployment.md |
 | `04-deploy-cluster.sh` | cluster lifecycle (deploy, start, display) |
+| `08-create-tenant.sh` | tenant-management (create tenant, user, database) |
 | `05-scale-out.sh` | scale_out |
 
 ## Безопасность (из cluster-management)
