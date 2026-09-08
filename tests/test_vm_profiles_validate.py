@@ -95,6 +95,53 @@ def test_system_memory_ge_limit_is_error() -> None:
     assert any("system_memory" in i for i in errors), errors
 
 
+def test_datafile_exceeds_data_disk_is_error() -> None:
+    cfg = base_cfg()
+    cfg["oceanbase"]["datafile_size"] = "2000G"
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("datafile_size=2000G" in i and "data_disk=930G" in i for i in errors), errors
+
+
+def test_log_size_exceeds_log_disk_is_error() -> None:
+    cfg = base_cfg()
+    cfg["oceanbase"]["log_disk_size"] = "500G"
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("log_disk_size=500G" in i and "log_disk=279G" in i for i in errors), errors
+
+
+def test_auto_tune_yaml_disk_exceed_still_error() -> None:
+    cfg = base_cfg()
+    cfg["oceanbase"]["auto_tune"] = True
+    cfg["oceanbase"]["datafile_size"] = "5000G"
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("datafile_size=5000G" in i for i in errors), errors
+
+
+def test_datafile_over_90_percent_disk_is_warn() -> None:
+    cfg = base_cfg()
+    cfg["oceanbase"]["datafile_size"] = "900G"
+    warns = kinds(validate_oceanbase_against_vms(cfg), "WARN")
+    assert any("datafile_size=900G" in i and "90%" in i for i in warns), warns
+
+
+def test_shared_disk_sum_exceeds_is_error() -> None:
+    cfg = base_cfg()
+    cfg["vm_profiles"]["observer"]["log_disk"]["enabled"] = False
+    cfg["oceanbase"]["datafile_size"] = "800G"
+    cfg["oceanbase"]["log_disk_size"] = "250G"
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("datafile_size+log_disk_size" in i and "930G" in i for i in errors), errors
+
+
+def test_yc_rounded_disk_is_used() -> None:
+    """network-ssd-nonreplicated округляется до кратного 93 GB: 100 → 186."""
+    cfg = base_cfg()
+    cfg["vm_profiles"]["observer"]["data_disk"]["size_gb"] = 100
+    cfg["oceanbase"]["datafile_size"] = "187G"
+    errors = kinds(validate_oceanbase_against_vms(cfg), "ERROR")
+    assert any("datafile_size=187G" in i and "data_disk=186G" in i for i in errors), errors
+
+
 def test_log_disk_smaller_than_3x_is_warn() -> None:
     cfg = base_cfg()
     cfg["oceanbase"]["log_disk_size"] = "20G"
@@ -172,6 +219,12 @@ def main() -> None:
         test_memory_exceeds_vm_is_error,
         test_system_memory_ge_limit_is_error,
         test_log_disk_smaller_than_3x_is_warn,
+        test_datafile_exceeds_data_disk_is_error,
+        test_log_size_exceeds_log_disk_is_error,
+        test_auto_tune_yaml_disk_exceed_still_error,
+        test_datafile_over_90_percent_disk_is_warn,
+        test_shared_disk_sum_exceeds_is_error,
+        test_yc_rounded_disk_is_used,
         test_balanced_config_has_no_errors,
         test_memory_over_80_percent_is_warn,
         test_auto_tune_yaml_mismatch_is_warn,

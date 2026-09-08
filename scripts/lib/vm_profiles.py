@@ -45,6 +45,11 @@ OB_PROD_CPU_RECOMMENDED = 32
 OB_PROD_MEMORY_MIN_GB = 16
 OB_PROD_MEMORY_LONG_TERM_GB = 32
 OB_OCP_SERVER_MEMORY_MIN_GB = 8
+# datafile/log prealloc: OBD max occupancy ~85–90% диска, в production log ≥ 48G, data ≥ 20G
+OB_DATAFILE_DISK_PCT = 90
+OB_LOGFILE_DISK_PCT = 90
+OB_PROD_DATAFILE_MIN_GB = 20
+OB_PROD_LOG_MIN_GB = 48
 _SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]I?B?)?$", re.IGNORECASE)
 
 ROLE_ALIASES = {
@@ -322,6 +327,156 @@ def _issue_memory_vs_vm(
     return issues
 
 
+def _observer_provisioned_disks(obs: dict[str, Any]) -> dict[str, Any]:
+    """Фактические размеры дисков ВМ после округления YC (шаг 93 GB)."""
+    data = obs.get("data_disk") or {}
+    log = obs.get("log_disk") or {}
+    boot = obs.get("boot_disk") or {}
+    data_enabled = bool(data.get("enabled"))
+    log_enabled = bool(log.get("enabled"))
+    return {
+        "data_enabled": data_enabled,
+        "log_enabled": log_enabled,
+        "data_gb": float(int(data.get("size_gb", 0) or 0)) if data_enabled else 0.0,
+        "log_gb": float(int(log.get("size_gb", 0) or 0)) if log_enabled else 0.0,
+        "boot_gb": float(int(boot.get("size_gb", 0) or 0)),
+    }
+
+
+def _issue_prealloc_vs_disk(
+    param: str,
+    size_gb: float | None,
+    disk_gb: float,
+    disk_label: str,
+    *,
+    fill_pct: int,
+    kinds: str = "all",
+) -> list[str]:
+    issues: list[str] = []
+
+    def emit(msg: str) -> None:
+        if kinds == "all" or (kinds == "error" and msg.startswith("ERROR")) or (
+            kinds == "warn" and msg.startswith("WARN")
+        ):
+            issues.append(msg)
+
+    if size_gb is None:
+        return issues
+    if disk_gb <= 0:
+        emit(
+            f"ERROR: oceanbase.{param}={fmt_gb(size_gb)}, но {disk_label} не задан "
+            "(enabled=false или size_gb=0)"
+        )
+        return issues
+    if size_gb > disk_gb + 1e-6:
+        emit(
+            f"ERROR: oceanbase.{param}={fmt_gb(size_gb)} превышает {disk_label}={fmt_gb(disk_gb)} "
+            "(prealloc больше диска ВМ)"
+        )
+        return issues
+    max_fill = disk_gb * fill_pct / 100.0
+    if size_gb > max_fill + 0.5:
+        emit(
+            f"WARN: oceanbase.{param}={fmt_gb(size_gb)} > {fill_pct}% {disk_label} "
+            f"({fmt_gb(max_fill)}) — prealloc; оставьте запас файловой системы"
+        )
+    return issues
+
+
+def _check_oceanbase_disks(
+    *,
+    datafile: float | None,
+    log_size: float | None,
+    disks: dict[str, Any],
+    memory_limit_gb: float | None,
+    production: bool,
+    kinds: str,
+) -> list[str]:
+    """Сверка datafile_size / log_disk_size с реальными дисками observer."""
+    issues: list[str] = []
+    data_gb = disks["data_gb"]
+    log_gb = disks["log_gb"]
+    log_enabled = disks["log_enabled"]
+    data_enabled = disks["data_enabled"]
+
+    if log_enabled:
+        issues.extend(
+            _issue_prealloc_vs_disk(
+                "datafile_size",
+                datafile,
+                data_gb,
+                "observer data_disk",
+                fill_pct=OB_DATAFILE_DISK_PCT,
+                kinds=kinds,
+            )
+        )
+        issues.extend(
+            _issue_prealloc_vs_disk(
+                "log_disk_size",
+                log_size,
+                log_gb,
+                "observer log_disk",
+                fill_pct=OB_LOGFILE_DISK_PCT,
+                kinds=kinds,
+            )
+        )
+    else:
+        # clog на том же диске, что и data (или на boot, если data выключен)
+        shared_gb = data_gb if data_enabled else disks["boot_gb"]
+        shared_label = "observer data_disk" if data_enabled else "observer boot_disk"
+        occupied = None
+        if datafile is not None or log_size is not None:
+            occupied = (datafile or 0.0) + (log_size or 0.0)
+        issues.extend(
+            _issue_prealloc_vs_disk(
+                "datafile_size+log_disk_size",
+                occupied,
+                shared_gb,
+                shared_label,
+                fill_pct=OB_DATAFILE_DISK_PCT,
+                kinds=kinds,
+            )
+        )
+        if kinds in ("all", "warn") and production:
+            issues.append(
+                "WARN: observer log_disk.enabled=false — в production data и clog должны быть "
+                "на разных дисках"
+            )
+
+    if kinds in ("all", "warn"):
+        if production and datafile is not None and datafile < OB_PROD_DATAFILE_MIN_GB:
+            issues.append(
+                f"WARN: oceanbase.datafile_size={fmt_gb(datafile)} < {OB_PROD_DATAFILE_MIN_GB}G — "
+                "минимум data directory в доке"
+            )
+        if production and log_size is not None and log_size < OB_PROD_LOG_MIN_GB:
+            issues.append(
+                f"WARN: oceanbase.log_disk_size={fmt_gb(log_size)} < {OB_PROD_LOG_MIN_GB}G — "
+                "в production log disk ≥ 48G"
+            )
+        if memory_limit_gb is not None:
+            if log_size is not None and log_size + 1e-6 < memory_limit_gb * OB_LOG_DISK_FACTOR:
+                issues.append(
+                    f"WARN: oceanbase.log_disk_size={fmt_gb(log_size)} < "
+                    f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(memory_limit_gb * OB_LOG_DISK_FACTOR)}) — "
+                    "официально log_disk_size ≥ memory_limit × 3"
+                )
+            elif log_enabled and log_gb + 1e-6 < memory_limit_gb * OB_LOG_DISK_FACTOR:
+                issues.append(
+                    f"WARN: observer log_disk={fmt_gb(log_gb)} < "
+                    f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(memory_limit_gb * OB_LOG_DISK_FACTOR)})"
+                )
+            total_disk = data_gb + (log_gb if log_enabled else 0.0)
+            if total_disk > 0 and total_disk + 1e-6 < memory_limit_gb * OB_DATA_PLUS_LOG_FACTOR:
+                issues.append(
+                    f"WARN: data_disk+log_disk={fmt_gb(total_disk)} < "
+                    f"{OB_DATA_PLUS_LOG_FACTOR}× memory_limit "
+                    f"({fmt_gb(memory_limit_gb * OB_DATA_PLUS_LOG_FACTOR)}) — "
+                    "суммарно диск должен быть > 6× памяти OceanBase"
+                )
+    return issues
+
+
 def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
     """Сверка секции oceanbase (и ocp) с профилями ВМ.
 
@@ -363,10 +518,29 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
         f"OBD cpu_count={effective.get('cpu_count')} memory_limit={effective.get('memory_limit')}; "
         f"ВМ {cores} vCPU / {memory_gb} GB"
     )
+    disks = _observer_provisioned_disks(obs)
+    issues.append(
+        f"INFO: oceanbase disks: yaml datafile_size={ob.get('datafile_size')} "
+        f"log_disk_size={ob.get('log_disk_size')}; auto_tune → "
+        f"OBD datafile_size={effective.get('datafile_size')} "
+        f"log_disk_size={effective.get('log_disk_size')}; "
+        f"ВМ data_disk={fmt_gb(disks['data_gb']) if disks['data_enabled'] else 'off'} "
+        f"log_disk={fmt_gb(disks['log_gb']) if disks['log_enabled'] else 'off'}"
+    )
 
     # (а) превышение ресурсов ВМ — YAML всегда, auto_tune — если отличается
     issues.extend(_issue_cpu_vs_vm("oceanbase", yaml_cpu, cores, production=production, kinds="error"))
     issues.extend(_issue_memory_vs_vm("oceanbase", yaml_mem, memory_gb, production=production, kinds="error"))
+    issues.extend(
+        _check_oceanbase_disks(
+            datafile=yaml_data,
+            log_size=yaml_log,
+            disks=disks,
+            memory_limit_gb=yaml_mem,
+            production=production,
+            kinds="error",
+        )
+    )
     if auto_tune:
         if eff_cpu != yaml_cpu:
             issues.extend(
@@ -378,20 +552,44 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
                     "auto_tune/OBD", eff_mem, memory_gb, production=production, kinds="error"
                 )
             )
-        yaml_cpu_s = None if yaml_cpu is None else f"{yaml_cpu:g}"
-        yaml_mem_s = None if yaml_mem is None else fmt_gb(yaml_mem)
-        eff_cpu_s = None if eff_cpu is None else f"{eff_cpu:g}"
-        eff_mem_s = None if eff_mem is None else fmt_gb(eff_mem)
-        if (yaml_cpu_s, yaml_mem_s) != (eff_cpu_s, eff_mem_s):
+        if eff_data != yaml_data or eff_log != yaml_log:
+            issues.extend(
+                _check_oceanbase_disks(
+                    datafile=eff_data,
+                    log_size=eff_log,
+                    disks=disks,
+                    memory_limit_gb=eff_mem,
+                    production=production,
+                    kinds="error",
+                )
+            )
+        yaml_sig = (
+            None if yaml_cpu is None else f"{yaml_cpu:g}",
+            None if yaml_mem is None else fmt_gb(yaml_mem),
+            None if yaml_data is None else fmt_gb(yaml_data),
+            None if yaml_log is None else fmt_gb(yaml_log),
+        )
+        eff_sig = (
+            None if eff_cpu is None else f"{eff_cpu:g}",
+            None if eff_mem is None else fmt_gb(eff_mem),
+            None if eff_data is None else fmt_gb(eff_data),
+            None if eff_log is None else fmt_gb(eff_log),
+        )
+        if yaml_sig != eff_sig:
             issues.append(
-                "WARN: oceanbase.auto_tune=true — cpu_count/memory_limit из YAML будут "
-                f"заменены при генерации OBD (yaml {ob.get('cpu_count')}/{ob.get('memory_limit')} → "
-                f"{effective.get('cpu_count')}/{effective.get('memory_limit')})"
+                "WARN: oceanbase.auto_tune=true — cpu_count/memory_limit/datafile_size/log_disk_size "
+                "из YAML будут заменены при генерации OBD "
+                f"(yaml {ob.get('cpu_count')}/{ob.get('memory_limit')}/"
+                f"{ob.get('datafile_size')}/{ob.get('log_disk_size')} → "
+                f"{effective.get('cpu_count')}/{effective.get('memory_limit')}/"
+                f"{effective.get('datafile_size')}/{effective.get('log_disk_size')})"
             )
 
     # (б) рекомендации — по эффективным значениям (то, что реально попадёт в OBD)
     warn_cpu = eff_cpu if auto_tune else yaml_cpu
     warn_mem = eff_mem if auto_tune else yaml_mem
+    warn_data = eff_data if auto_tune else yaml_data
+    warn_log = eff_log if auto_tune else yaml_log
     issues.extend(_issue_cpu_vs_vm("oceanbase", warn_cpu, cores, production=production, kinds="warn"))
     issues.extend(
         _issue_memory_vs_vm("oceanbase", warn_mem, memory_gb, production=production, kinds="warn")
@@ -416,41 +614,16 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
                     "3×(√memory_limit−3G))"
                 )
 
-    data_disk_gb = int(obs["data_disk"].get("size_gb", 0) or 0) if obs["data_disk"].get("enabled") else 0
-    log_disk_gb = int(obs["log_disk"].get("size_gb", 0) or 0) if obs["log_disk"].get("enabled") else 0
-    datafile = yaml_data if not auto_tune else eff_data
-    log_size = yaml_log if not auto_tune else eff_log
-    mem_for_disk = yaml_mem if not auto_tune else eff_mem
-
-    if datafile is not None and data_disk_gb > 0 and datafile > data_disk_gb + 1e-6:
-        issues.append(
-            f"ERROR: oceanbase.datafile_size={fmt_gb(datafile)} превышает "
-            f"observer data_disk={data_disk_gb}G"
+    issues.extend(
+        _check_oceanbase_disks(
+            datafile=warn_data,
+            log_size=warn_log,
+            disks=disks,
+            memory_limit_gb=warn_mem,
+            production=production,
+            kinds="warn",
         )
-    if log_size is not None and log_disk_gb > 0 and log_size > log_disk_gb + 1e-6:
-        issues.append(
-            f"ERROR: oceanbase.log_disk_size={fmt_gb(log_size)} превышает "
-            f"observer log_disk={log_disk_gb}G"
-        )
-    if mem_for_disk is not None:
-        if log_size is not None and log_size + 1e-6 < mem_for_disk * OB_LOG_DISK_FACTOR:
-            issues.append(
-                f"WARN: oceanbase.log_disk_size={fmt_gb(log_size)} < "
-                f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_LOG_DISK_FACTOR)}) — "
-                "официально log_disk_size ≥ memory_limit × 3"
-            )
-        elif log_disk_gb > 0 and log_disk_gb + 1e-6 < mem_for_disk * OB_LOG_DISK_FACTOR:
-            issues.append(
-                f"WARN: observer log_disk={log_disk_gb}G < "
-                f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_LOG_DISK_FACTOR)})"
-            )
-        total_disk = data_disk_gb + log_disk_gb
-        if total_disk > 0 and total_disk + 1e-6 < mem_for_disk * OB_DATA_PLUS_LOG_FACTOR:
-            issues.append(
-                f"WARN: data_disk+log_disk={total_disk}G < "
-                f"{OB_DATA_PLUS_LOG_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_DATA_PLUS_LOG_FACTOR)}) — "
-                "суммарно диск должен быть > 6× памяти OceanBase"
-            )
+    )
 
     issues.extend(_validate_ocp_against_vms(cfg, cores, mem_for_sys, sys_for_check, production))
     return issues
