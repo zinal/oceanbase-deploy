@@ -78,7 +78,16 @@ else
 fi
 
 info "Запуск кластера..."
-run_obd cluster start "${CLUSTER_NAME}"
+if ! run_obd cluster start "${CLUSTER_NAME}"; then
+  warn "obd cluster start не завершился (ошибка или зависание/Ctrl+C)."
+  warn "Если уже было «oceanbase bootstrap ok» — observer'ы подняты, destroy не нужен."
+  warn "Проверьте: mysql -h<OBSERVER_1_IP> -P$(yaml_get oceanbase.ports.mysql) -uroot"
+  warn "          (сначала пустой пароль, затем ocp.root_password)"
+  warn "          obd cluster display ${CLUSTER_NAME}"
+  warn "          obd display-trace   # последний Trace ID из вывода OBD"
+  warn "После правки пароля: obd cluster edit-config ${CLUSTER_NAME}, затем снова start."
+  die "obd cluster start ${CLUSTER_NAME} не завершился успешно"
+fi
 
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"

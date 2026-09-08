@@ -689,19 +689,27 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
     return issues
 
 
-def ocp_admin_password_error(password: Any) -> str | None:
-    """Проверка ocp.admin_password по правилу OBD-1025 (start ocp-server-ce)."""
-    if password is None or (isinstance(password, str) and not password.strip()):
-        return (
-            "ERROR: ocp.admin_password не задан — OBD требует пароль admin OCP "
-            f"(OBD-1025: {OCP_ADMIN_PASSWORD_MIN}–{OCP_ADMIN_PASSWORD_MAX} символов, "
-            "≥3 класса из цифр / a-z / A-Z / спец.)"
-        )
+def password_complexity_error(
+    label: str,
+    password: Any,
+    *,
+    required: bool,
+    min_classes: int,
+) -> str | None:
+    """Сложность пароля OBD/OceanBase: длина 8–32, N классов из цифр/a-z/A-Z/спец."""
+    if password is None or (isinstance(password, str) and not str(password).strip()):
+        if required:
+            return (
+                f"ERROR: {label} не задан — нужно {OCP_ADMIN_PASSWORD_MIN}–"
+                f"{OCP_ADMIN_PASSWORD_MAX} символов и ≥{min_classes} класса "
+                "(цифры / a-z / A-Z / спец.)"
+            )
+        return None
     text = str(password)
     if len(text) < OCP_ADMIN_PASSWORD_MIN or len(text) > OCP_ADMIN_PASSWORD_MAX:
         return (
-            f"ERROR: ocp.admin_password длина {len(text)} — нужно "
-            f"{OCP_ADMIN_PASSWORD_MIN}–{OCP_ADMIN_PASSWORD_MAX} символов (OBD-1025)"
+            f"ERROR: {label} длина {len(text)} — нужно "
+            f"{OCP_ADMIN_PASSWORD_MIN}–{OCP_ADMIN_PASSWORD_MAX} символов"
         )
     classes = 0
     if any(c.isdigit() for c in text):
@@ -717,16 +725,26 @@ def ocp_admin_password_error(password: Any) -> str | None:
     if extra:
         shown = " ".join(repr(c) for c in extra[:8])
         return (
-            f"ERROR: ocp.admin_password содержит недопустимые символы ({shown}) — "
+            f"ERROR: {label} содержит недопустимые символы ({shown}) — "
             "спец. из набора OBD: ~!@#%^&*_-+=|(){}[]:;,.?/$`'\\\"<>"
         )
-    if classes < 3:
+    if classes < min_classes:
         return (
-            "ERROR: ocp.admin_password не проходит OBD-1025 — нужны ≥3 класса из "
-            "цифр, строчных, заглавных и спец. (~!@#%^&*_-+=|(){}[]:;,.?/$`'\\\"<>); "
-            f"сейчас классов: {classes}"
+            f"ERROR: {label} слишком простой — нужны ≥{min_classes} класса из "
+            "цифр, строчных, заглавных и спец.; "
+            f"сейчас классов: {classes} (иначе OBD-5000 ALTER USER после bootstrap)"
         )
     return None
+
+
+def ocp_admin_password_error(password: Any) -> str | None:
+    """Проверка ocp.admin_password по правилу OBD-1025 (start ocp-server-ce)."""
+    err = password_complexity_error(
+        "ocp.admin_password", password, required=True, min_classes=3
+    )
+    if err and "OBD-1025" not in err:
+        return err.replace("ocp.admin_password", "ocp.admin_password (OBD-1025)", 1)
+    return err
 
 
 def _validate_ocp_against_vms(
@@ -747,6 +765,20 @@ def _validate_ocp_against_vms(
     pwd_err = ocp_admin_password_error(ocp.get("admin_password"))
     if pwd_err:
         issues.append(pwd_err)
+    for label, key in (
+        ("ocp.root_password", "root_password"),
+        ("ocp.proxyro_password", "proxyro_password"),
+    ):
+        err = password_complexity_error(label, ocp.get(key), required=False, min_classes=2)
+        if err:
+            issues.append(err)
+    for tkey in ("meta_tenant", "monitor_tenant"):
+        tenant = ocp.get(tkey) or {}
+        err = password_complexity_error(
+            f"ocp.{tkey}.password", tenant.get("password"), required=False, min_classes=2
+        )
+        if err:
+            issues.append(err)
 
     try:
         ocp_profile = resolve_profile(cfg, "ocp")
