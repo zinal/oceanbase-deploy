@@ -30,7 +30,7 @@ OceanBase в продакшене — это кластер, а не набор 
 
 - Минимум **3 узла / 3 полных реплики**.
 - **Один процесс `observer` = один узел**.
-- Для десятков машин — **3 Zone с одинаковым числом серверов** (например 12+12+12 или 16+16+16). Нечётное число Zone и равная ёмкость зон — штатная модель Paxos.
+- Для десятков машин — **3 Zone с одинаковым числом серверов** (например 12+12+12 или 16+16+16). Нечётное число Zone и равная ёмкость зон — штатная модель Paxos. Это не «рекомендация на вырост»: больше семи Zone кластер физически не забутстрапится, см. [§12](#12-zone-и-bootstrap-почему-ровно-три-zone).
 - Одна нагруженная БД = **один user tenant**, растянутый на все узлы:
   - `UNIT_NUM` = числу `observer` в Zone;
   - `PRIMARY_ZONE='RANDOM'`;
@@ -454,3 +454,32 @@ ALTER SYSTEM SET max_syslog_file_count = 1000;
 - в облаке data- и log-диски могут быть `network-ssd-nonreplicated`, потому что тройная репликация уже на уровне OceanBase (majority persist Paxos);
 - на физике data — локальные NVMe + LVM stripe, без аппаратного RAID;
 - 2 vCPU / 4 ГБ на obproxy достаточно для стенда; для большой нагруженной БД — на порядок больше.
+
+---
+
+## 12. Zone и bootstrap: почему ровно три Zone
+
+Zone — это не «метка узла», а единица репликации. При `alter system bootstrap` OceanBase создаёт sys-тенант с locality `F{1}@zone1, F{1}@zone2, …` — **по одной full-реплике на каждую Zone** ([`ObBootstrap::gen_multiple_zone_deployment_sys_tenant_locality_str`](https://github.com/oceanbase/oceanbase/blob/master/src/rootserver/ob_bootstrap.cpp)), и `paxos_replica_num` лог-стрима sys-тенанта равен числу Zone. Размер Paxos-группы жёстко ограничен `OB_MAX_MEMBER_NUMBER = 7` (`deps/oblib/src/lib/ob_define.h`), поэтому **больше семи Zone — bootstrap падает**: `ObMemberList::add_member` возвращает `OB_SIZE_OVERFLOW`.
+
+Как это выглядит в логе `obd cluster start`:
+
+```text
+oceanbase bootstrap ok
+[ERROR] OBD-5000: alter system modify zone zone1 set idc = %s execute failed
+...
+[ERROR] OBD-5000: alter system modify zone zone30 set idc = %s execute failed
+[ERROR] OBD-5000: alter user "root" IDENTIFIED BY %s execute failed
+```
+
+Читается это не буквально:
+
+- `%s` — плейсхолдер параметра в шаблоне SQL; OBD печатает шаблон, а не подставленное значение (`EC_SQL_EXECUTE_FAILED` в `_errno.py`);
+- **`oceanbase bootstrap ok` — это надпись спиннера**, а не результат SQL. Сам `alter system bootstrap` выполняется с `exc_level='verbose'`, поэтому его ошибка видна только в `~/.obd/log/obd` / `obd display-trace`;
+- ошибки на `modify zone … set idc` и `alter user "root"` — это следствия: они идут по тому же соединению уже после неудачного bootstrap;
+- OBD не прерывается на первой ошибке (у `Cursor.execute` значение по умолчанию `raise_exception=False`, и `raise_cursor` его не переопределяет), а затем уходит в цикл ожидания `select * from oceanbase.__all_server` — отсюда «зависший» `obd cluster start`.
+
+Из-за этого число OBD-5000 равно числу Zone: по строке на Zone — удобный индикатор реальной топологии кластера.
+
+Раскладка в этом репозитории (`scripts/lib/ob_zones.py`): ровно три Zone, observer распределяются по кругу — `1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`. Тем же правилом пользуются `scripts/05-scale-out.sh` и `scripts/06-recover-observer.sh`, поэтому расширение и замена узла попадают в правильную Zone. Число observer стоит держать кратным трём: `UNIT_NUM` тенанта одинаков для всех Zone, и «лишние» узлы в перекошенной Zone останутся без unit — генератор конфигурации предупреждает об этом.
+
+Кластер, уже развёрнутый со схемой «Zone на observer», починить правкой конфигурации нельзя: locality sys-тенанта фиксируется на bootstrap. Нужен `obd cluster destroy <deploy> -f` и повторный `deploy` (данных там всё равно нет — bootstrap не прошёл).

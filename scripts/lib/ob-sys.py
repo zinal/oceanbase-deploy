@@ -25,6 +25,9 @@ except ImportError:
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from ob_zones import zone_for_index  # noqa: E402
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -226,7 +229,7 @@ def build_observer_scale_out(
                 "home_path": home_path,
                 "data_dir": cfg_str(cfg, "oceanbase.data_dir", "/data/1"),
                 "redo_dir": cfg_str(cfg, "oceanbase.redo_dir", "/data/log1"),
-                "zone": f"zone{idx}",
+                "zone": zone_for_index(idx),
             },
         }
     }
@@ -405,6 +408,8 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert so["oceanbase-ce"]["server2r"]["zone"] == "zone2"
     assert "global" not in so["oceanbase-ce"]
     assert so["obagent"]["servers"][0]["name"] == "server2r"
+    so5 = build_observer_scale_out(cfg, 5, "10.9.9.5", include_obagent=False)
+    assert so5["oceanbase-ce"]["server5r"]["zone"] == "zone2"
     po = build_obproxy_scale_out(cfg, "10.8.8.8")
     assert po["obproxy-ce"]["servers"] == ["10.8.8.8"]
 
