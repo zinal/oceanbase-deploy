@@ -185,6 +185,17 @@ monitoring:
     basic_auth_password: oceanbase
   grafana_password: oceanbase
 
+# User tenant — создаётся явно после deploy: ./scripts/deploy.sh tenant
+# obd cluster tenant create с max-cpu=0 / memory-size=0 / unit-num=0 забирает все
+# ресурсы, доступные для тенантов (sys и OCP уже заняли свою долю).
+tenant:
+  tenant_name: tpcc
+  username: tpcc
+  database: tpcc
+  root_password: ChangeMe!       # пароль root@<tenant_name>
+  user_password: ChangeMe!       # пароль application user
+  mode: htap                     # htap | oltp (express_oltp через obd -o)
+
 oceanbase:
   cluster_name: obcluster
   version: ""

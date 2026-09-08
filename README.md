@@ -89,6 +89,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
 ./scripts/deploy.sh deploy      # obd cluster deploy + start
+./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ```
 
 `provision` создаёт ресурсы асинхронно (как [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms)):
@@ -110,6 +111,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
 | `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp** |
 | `oceanbase` | Параметры кластера, OBD, auto-tune |
+| `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим htap/oltp |
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 
 ```yaml
@@ -215,6 +217,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 02-prepare-servers.sh    # sysctl, диски, chrony, пользователь
 │   ├── 03-generate-obd-config.py
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
+│   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── 06-recover-observer.sh   # замена погибшего observer
 │   ├── 07-recover-obproxy.sh    # замена погибшего obproxy

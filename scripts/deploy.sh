@@ -54,6 +54,9 @@ case "${STEP}" in
     run_step 02-prepare-servers.sh
     run_step 04-deploy-cluster.sh
     ;;
+  tenant)
+    run_step 08-create-tenant.sh
+    ;;
   ocp)
     run_cmd bash "${ROOT}/scripts/deploy-ocp.sh" "${2:-all}"
     ;;
@@ -83,6 +86,7 @@ case "${STEP}" in
   prepare    — подготовка серверов (диски, sysctl, chrony)
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
+  tenant     — создание user tenant, пользователя и БД (после deploy)
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
