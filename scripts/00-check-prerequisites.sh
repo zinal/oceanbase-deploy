@@ -32,7 +32,7 @@ if [[ -n "${ssh_user}" && "${ssh_user}" != "null" && -n "${deploy_user}" && "${d
   die "oceanbase.deploy_user (${deploy_user}) должен совпадать с yandex_cloud.ssh_user (${ssh_user})"
 fi
 
-info "Проверка профилей ВМ (OceanBase recommendations)..."
+info "Проверка профилей ВМ и секции oceanbase (ядра/память vs ВМ, рекомендации OceanBase)..."
 python3 "${LIB_DIR}/lib/vm_profiles.py" validate --config "${CONFIG_FILE}"
 
 image_spec="$(python3 "${LIB_DIR}/lib/vm_profiles.py" image-spec --config "${CONFIG_FILE}")"

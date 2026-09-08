@@ -78,7 +78,7 @@ case "${STEP}" in
 Использование: ./scripts/deploy.sh [команда]
 
 Команды:
-  check      — проверка зависимостей
+  check      — проверка зависимостей, профилей ВМ и секции oceanbase vs ВМ
   provision  — создание ВМ в Yandex Cloud
   prepare    — подготовка серверов (диски, sysctl)
   config     — генерация obd-cluster.yaml

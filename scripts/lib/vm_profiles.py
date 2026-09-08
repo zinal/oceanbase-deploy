@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -29,6 +30,22 @@ OCEANBASE_MIN = {
     "monitoring": {"cores": 4, "memory_gb": 8},
     "ocp": {"cores": 4, "memory_gb": 16},
 }
+
+# Официальные ориентиры:
+# https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_02_deploy_oceanbase_database/preparation_before_deployment
+# https://en.oceanbase.com/blog/2614861312
+# https://www.oceanbase.com/docs/common-obd-cn-1000000003892315
+# https://github.com/oceanbase/oceanbase-doc/blob/V4.3.5/en-US/800.FAQ/300.deployment-faq.md
+OB_MEMORY_LIMIT_PCT_LT_512 = 80
+OB_MEMORY_LIMIT_PCT_GE_512 = 90
+OB_LOG_DISK_FACTOR = 3
+OB_DATA_PLUS_LOG_FACTOR = 6
+OB_PROD_CPU_MIN = 4
+OB_PROD_CPU_RECOMMENDED = 32
+OB_PROD_MEMORY_MIN_GB = 16
+OB_PROD_MEMORY_LONG_TERM_GB = 32
+OB_OCP_SERVER_MEMORY_MIN_GB = 8
+_SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGT]I?B?)?$", re.IGNORECASE)
 
 ROLE_ALIASES = {
     "observers": "observer",
@@ -140,6 +157,377 @@ def observer_auto_tune(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_size_to_gb(value: Any) -> float | None:
+    """Разбор размеров OceanBase/OBD: 28G, 28GB, 28672M, 2.0, 8."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().upper().replace(" ", "")
+    match = _SIZE_RE.fullmatch(text)
+    if not match:
+        return None
+    amount = float(match.group(1))
+    unit = (match.group(2) or "G").replace("IB", "I").replace("B", "")
+    factors = {
+        "K": 1 / (1024 * 1024),
+        "M": 1 / 1024,
+        "G": 1.0,
+        "T": 1024.0,
+        "KI": 1 / (1024 * 1024),
+        "MI": 1 / 1024,
+        "GI": 1.0,
+        "TI": 1024.0,
+    }
+    if unit not in factors:
+        return None
+    return amount * factors[unit]
+
+
+def fmt_gb(n: float) -> str:
+    if abs(n - round(n)) < 1e-6:
+        return f"{int(round(n))}G"
+    return f"{n:.1f}G"
+
+
+def recommended_memory_limit_pct(memory_gb: int) -> int:
+    """memory_limit_percentage: 80% при RAM < 512 GB, иначе 90%."""
+    return OB_MEMORY_LIMIT_PCT_GE_512 if memory_gb >= 512 else OB_MEMORY_LIMIT_PCT_LT_512
+
+
+def recommended_system_memory_range(memory_limit_gb: float) -> tuple[float, float]:
+    """Официальный диапазон system_memory от memory_limit (preparations before deployment)."""
+    if memory_limit_gb > 64:
+        rec = 3 * (math.sqrt(memory_limit_gb) - 3)
+        rec = max(10.0, rec)
+        return rec * 0.8, rec * 1.2
+    if memory_limit_gb >= 32:
+        return 5.0, 10.0
+    if memory_limit_gb >= 16:
+        return 3.0, 5.0
+    if memory_limit_gb >= 8:
+        return 3.0, 3.0
+    return 2.0, 2.0
+
+
+def effective_oceanbase_resources(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Параметры, которые уйдут в OBD: auto_tune перекрывает секцию oceanbase."""
+    ob = dict(cfg.get("oceanbase") or {})
+    if ob.get("auto_tune", True):
+        ob.update(observer_auto_tune(cfg))
+    return ob
+
+
+def _issue_cpu_vs_vm(
+    label: str,
+    cpu_count: float | None,
+    cores: int,
+    *,
+    production: bool,
+    kinds: str = "all",
+) -> list[str]:
+    issues: list[str] = []
+
+    def emit(msg: str) -> None:
+        if kinds == "all" or (kinds == "error" and msg.startswith("ERROR")) or (
+            kinds == "warn" and msg.startswith("WARN")
+        ):
+            issues.append(msg)
+
+    if cpu_count is None:
+        return issues
+    if cpu_count < 0:
+        emit(f"ERROR: {label} cpu_count={cpu_count} — значение должно быть ≥ 0")
+        return issues
+    if cpu_count > cores:
+        emit(
+            f"ERROR: {label} cpu_count={cpu_count:g} превышает observer.cores={cores} "
+            "(ядра, выделенные OceanBase, не могут быть больше ВМ)"
+        )
+        return issues
+    if cpu_count == 0:
+        emit(
+            f"WARN: {label} cpu_count=0 — автодетект; процесс observer может занять все "
+            f"{cores} vCPU ВМ, без запаса на OS/obagent"
+        )
+        return issues
+    if production and cpu_count < OB_PROD_CPU_MIN:
+        emit(
+            f"WARN: {label} cpu_count={cpu_count:g} < {OB_PROD_CPU_MIN} — "
+            "для production нужно ≥ 4 ядра процессу observer"
+        )
+    if cores >= OB_PROD_CPU_RECOMMENDED and cpu_count < OB_PROD_CPU_RECOMMENDED:
+        emit(
+            f"WARN: {label} cpu_count={cpu_count:g} при observer.cores={cores} — "
+            f"для production рекомендуется ≥ {OB_PROD_CPU_RECOMMENDED} ядер OceanBase"
+        )
+    # OBD max occupancy: cpu_count = max(16, CPU-2); оставляем запас OS.
+    if cores >= 16 and cpu_count > cores - 2:
+        emit(
+            f"WARN: {label} cpu_count={cpu_count:g} почти равен observer.cores={cores} — "
+            "рекомендуется оставить ≥ 2 vCPU OS/irq (OBD: CPU−2)"
+        )
+    return issues
+
+
+def _issue_memory_vs_vm(
+    label: str,
+    memory_limit_gb: float | None,
+    memory_gb: int,
+    *,
+    production: bool,
+    kinds: str = "all",
+) -> list[str]:
+    issues: list[str] = []
+
+    def emit(msg: str) -> None:
+        if kinds == "all" or (kinds == "error" and msg.startswith("ERROR")) or (
+            kinds == "warn" and msg.startswith("WARN")
+        ):
+            issues.append(msg)
+
+    if memory_limit_gb is None:
+        return issues
+    if memory_limit_gb > memory_gb + 1e-6:
+        emit(
+            f"ERROR: {label} memory_limit={fmt_gb(memory_limit_gb)} превышает "
+            f"observer.memory_gb={memory_gb} (память процесса > RAM ВМ)"
+        )
+        return issues
+    pct = recommended_memory_limit_pct(memory_gb)
+    max_rec = memory_gb * pct / 100.0
+    if memory_limit_gb > max_rec + 0.5:
+        emit(
+            f"WARN: {label} memory_limit={fmt_gb(memory_limit_gb)} > {pct}% RAM ВМ "
+            f"({fmt_gb(max_rec)}) — запас OS/obagent; при RAM < 512G рекомендуется 80%, "
+            "при ≥ 512G — 90%"
+        )
+    if production and memory_limit_gb < OB_PROD_MEMORY_MIN_GB:
+        emit(
+            f"WARN: {label} memory_limit={fmt_gb(memory_limit_gb)} < {OB_PROD_MEMORY_MIN_GB}G — "
+            "минимум для production, выделяемый OceanBase (не total RAM сервера)"
+        )
+    elif production and memory_limit_gb < OB_PROD_MEMORY_LONG_TERM_GB:
+        emit(
+            f"WARN: {label} memory_limit={fmt_gb(memory_limit_gb)} < {OB_PROD_MEMORY_LONG_TERM_GB}G — "
+            "для длительной эксплуатации рекомендуется ≥ 32G процессу observer"
+        )
+    if memory_limit_gb > 1024:
+        emit(
+            f"WARN: {label} memory_limit={fmt_gb(memory_limit_gb)} > 1T — "
+            "официальный потолок настройки observer — 1024 GB"
+        )
+    return issues
+
+
+def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
+    """Сверка секции oceanbase (и ocp) с профилями ВМ.
+
+    ERROR — параметры OceanBase больше ресурсов ВМ.
+    WARN — отклонение от публичных рекомендаций OceanBase/OBD.
+    """
+    issues: list[str] = []
+    ob = cfg.get("oceanbase") or {}
+    if not ob:
+        issues.append("WARN: секция oceanbase отсутствует — сверка с ВМ пропущена")
+        return issues
+
+    try:
+        obs = resolve_profile(cfg, "observer")
+    except KeyError:
+        issues.append("WARN: нет vm_profiles.observer — сверка oceanbase с ВМ пропущена")
+        return issues
+
+    cores = int(obs["cores"])
+    memory_gb = int(obs["memory_gb"])
+    production = int(obs.get("count", 0)) >= 3
+    auto_tune = bool(ob.get("auto_tune", True))
+    yaml_cpu = parse_size_to_gb(ob.get("cpu_count"))
+    yaml_mem = parse_size_to_gb(ob.get("memory_limit"))
+    yaml_sys = parse_size_to_gb(ob.get("system_memory"))
+    yaml_data = parse_size_to_gb(ob.get("datafile_size"))
+    yaml_log = parse_size_to_gb(ob.get("log_disk_size"))
+
+    effective = effective_oceanbase_resources(cfg)
+    eff_cpu = parse_size_to_gb(effective.get("cpu_count"))
+    eff_mem = parse_size_to_gb(effective.get("memory_limit"))
+    eff_sys = parse_size_to_gb(effective.get("system_memory"))
+    eff_data = parse_size_to_gb(effective.get("datafile_size"))
+    eff_log = parse_size_to_gb(effective.get("log_disk_size"))
+
+    issues.append(
+        f"INFO: oceanbase vs observer: yaml cpu_count={ob.get('cpu_count')} "
+        f"memory_limit={ob.get('memory_limit')}; auto_tune={str(auto_tune).lower()} → "
+        f"OBD cpu_count={effective.get('cpu_count')} memory_limit={effective.get('memory_limit')}; "
+        f"ВМ {cores} vCPU / {memory_gb} GB"
+    )
+
+    # (а) превышение ресурсов ВМ — YAML всегда, auto_tune — если отличается
+    issues.extend(_issue_cpu_vs_vm("oceanbase", yaml_cpu, cores, production=production, kinds="error"))
+    issues.extend(_issue_memory_vs_vm("oceanbase", yaml_mem, memory_gb, production=production, kinds="error"))
+    if auto_tune:
+        if eff_cpu != yaml_cpu:
+            issues.extend(
+                _issue_cpu_vs_vm("auto_tune/OBD", eff_cpu, cores, production=production, kinds="error")
+            )
+        if eff_mem != yaml_mem:
+            issues.extend(
+                _issue_memory_vs_vm(
+                    "auto_tune/OBD", eff_mem, memory_gb, production=production, kinds="error"
+                )
+            )
+        yaml_cpu_s = None if yaml_cpu is None else f"{yaml_cpu:g}"
+        yaml_mem_s = None if yaml_mem is None else fmt_gb(yaml_mem)
+        eff_cpu_s = None if eff_cpu is None else f"{eff_cpu:g}"
+        eff_mem_s = None if eff_mem is None else fmt_gb(eff_mem)
+        if (yaml_cpu_s, yaml_mem_s) != (eff_cpu_s, eff_mem_s):
+            issues.append(
+                "WARN: oceanbase.auto_tune=true — cpu_count/memory_limit из YAML будут "
+                f"заменены при генерации OBD (yaml {ob.get('cpu_count')}/{ob.get('memory_limit')} → "
+                f"{effective.get('cpu_count')}/{effective.get('memory_limit')})"
+            )
+
+    # (б) рекомендации — по эффективным значениям (то, что реально попадёт в OBD)
+    warn_cpu = eff_cpu if auto_tune else yaml_cpu
+    warn_mem = eff_mem if auto_tune else yaml_mem
+    issues.extend(_issue_cpu_vs_vm("oceanbase", warn_cpu, cores, production=production, kinds="warn"))
+    issues.extend(
+        _issue_memory_vs_vm("oceanbase", warn_mem, memory_gb, production=production, kinds="warn")
+    )
+
+    mem_for_sys = yaml_mem if not auto_tune else eff_mem
+    sys_for_check = yaml_sys if not auto_tune else eff_sys
+    if mem_for_sys is not None and sys_for_check is not None:
+        if sys_for_check >= mem_for_sys:
+            issues.append(
+                f"ERROR: oceanbase.system_memory={fmt_gb(sys_for_check)} ≥ "
+                f"memory_limit={fmt_gb(mem_for_sys)} — system_memory — часть memory_limit "
+                "(tenant 500)"
+            )
+        else:
+            low, high = recommended_system_memory_range(mem_for_sys)
+            if sys_for_check < low - 0.25 or sys_for_check > high + 0.25:
+                issues.append(
+                    f"WARN: oceanbase.system_memory={fmt_gb(sys_for_check)} вне диапазона "
+                    f"{fmt_gb(low)}–{fmt_gb(high)} для memory_limit={fmt_gb(mem_for_sys)} "
+                    "(формула доки: [16G,32G]→3–5G, [32G,64G]→5–10G, >64G → "
+                    "3×(√memory_limit−3G))"
+                )
+
+    data_disk_gb = int(obs["data_disk"].get("size_gb", 0) or 0) if obs["data_disk"].get("enabled") else 0
+    log_disk_gb = int(obs["log_disk"].get("size_gb", 0) or 0) if obs["log_disk"].get("enabled") else 0
+    datafile = yaml_data if not auto_tune else eff_data
+    log_size = yaml_log if not auto_tune else eff_log
+    mem_for_disk = yaml_mem if not auto_tune else eff_mem
+
+    if datafile is not None and data_disk_gb > 0 and datafile > data_disk_gb + 1e-6:
+        issues.append(
+            f"ERROR: oceanbase.datafile_size={fmt_gb(datafile)} превышает "
+            f"observer data_disk={data_disk_gb}G"
+        )
+    if log_size is not None and log_disk_gb > 0 and log_size > log_disk_gb + 1e-6:
+        issues.append(
+            f"ERROR: oceanbase.log_disk_size={fmt_gb(log_size)} превышает "
+            f"observer log_disk={log_disk_gb}G"
+        )
+    if mem_for_disk is not None:
+        if log_size is not None and log_size + 1e-6 < mem_for_disk * OB_LOG_DISK_FACTOR:
+            issues.append(
+                f"WARN: oceanbase.log_disk_size={fmt_gb(log_size)} < "
+                f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_LOG_DISK_FACTOR)}) — "
+                "официально log_disk_size ≥ memory_limit × 3"
+            )
+        elif log_disk_gb > 0 and log_disk_gb + 1e-6 < mem_for_disk * OB_LOG_DISK_FACTOR:
+            issues.append(
+                f"WARN: observer log_disk={log_disk_gb}G < "
+                f"{OB_LOG_DISK_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_LOG_DISK_FACTOR)})"
+            )
+        total_disk = data_disk_gb + log_disk_gb
+        if total_disk > 0 and total_disk + 1e-6 < mem_for_disk * OB_DATA_PLUS_LOG_FACTOR:
+            issues.append(
+                f"WARN: data_disk+log_disk={total_disk}G < "
+                f"{OB_DATA_PLUS_LOG_FACTOR}× memory_limit ({fmt_gb(mem_for_disk * OB_DATA_PLUS_LOG_FACTOR)}) — "
+                "суммарно диск должен быть > 6× памяти OceanBase"
+            )
+
+    issues.extend(_validate_ocp_against_vms(cfg, cores, mem_for_sys, sys_for_check, production))
+    return issues
+
+
+def _validate_ocp_against_vms(
+    cfg: dict[str, Any],
+    observer_cores: int,
+    memory_limit_gb: float | None,
+    system_memory_gb: float | None,
+    production: bool,
+) -> list[str]:
+    issues: list[str] = []
+    ocp = cfg.get("ocp") or {}
+    profiles = cfg.get("vm_profiles", {})
+    ocp_vm = profiles.get("ocp") or {}
+    enabled = bool(ocp.get("enabled")) and bool(ocp_vm.get("enabled", False))
+    if not enabled:
+        return issues
+
+    try:
+        ocp_profile = resolve_profile(cfg, "ocp")
+    except KeyError:
+        return issues
+
+    ocp_mem_gb = int(ocp_profile["memory_gb"])
+    ocp_cores = int(ocp_profile["cores"])
+    heap = parse_size_to_gb(ocp.get("memory_size"))
+    if heap is not None and heap > ocp_mem_gb + 1e-6:
+        issues.append(
+            f"ERROR: ocp.memory_size={fmt_gb(heap)} превышает vm_profiles.ocp.memory_gb={ocp_mem_gb}"
+        )
+    elif heap is not None and heap < OB_OCP_SERVER_MEMORY_MIN_GB:
+        issues.append(
+            f"WARN: ocp.memory_size={fmt_gb(heap)} < {OB_OCP_SERVER_MEMORY_MIN_GB}G — "
+            "OCP-Server официально минимум 8 GB (4 vCPU / 8 GB)"
+        )
+    if ocp_cores < 4:
+        issues.append(
+            f"WARN: vm_profiles.ocp.cores={ocp_cores} < 4 — OCP-Server рекомендуется ≥ 4 vCPU"
+        )
+
+    tenant_cpu = 0.0
+    tenant_mem = 0.0
+    for key in ("meta_tenant", "monitor_tenant"):
+        tenant = ocp.get(key) or {}
+        max_cpu = parse_size_to_gb(tenant.get("max_cpu"))
+        tmem = parse_size_to_gb(tenant.get("memory_size"))
+        if max_cpu is not None:
+            tenant_cpu += max_cpu
+            if max_cpu > observer_cores:
+                issues.append(
+                    f"ERROR: ocp.{key}.max_cpu={max_cpu:g} превышает observer.cores={observer_cores}"
+                )
+        if tmem is not None:
+            tenant_mem += tmem
+
+    if tenant_cpu > observer_cores:
+        issues.append(
+            f"ERROR: сумма ocp meta+monitor max_cpu={tenant_cpu:g} превышает "
+            f"observer.cores={observer_cores}"
+        )
+    if memory_limit_gb is not None and tenant_mem > 0:
+        available = memory_limit_gb - (system_memory_gb or 0)
+        if tenant_mem > available + 1e-6:
+            issues.append(
+                f"ERROR: сумма ocp meta+monitor memory_size={fmt_gb(tenant_mem)} превышает "
+                f"доступную память observer (memory_limit−system_memory={fmt_gb(available)})"
+            )
+        elif production and tenant_mem > available * 0.5:
+            issues.append(
+                f"WARN: тенанты OCP meta+monitor занимают {fmt_gb(tenant_mem)} из "
+                f"{fmt_gb(available)} доступных на observer — оставьте запас user tenant"
+            )
+    return issues
+
+
 def validate_profiles(cfg: dict[str, Any]) -> list[str]:
     """Проверка соответствия профилей рекомендациям OceanBase."""
     issues: list[str] = []
@@ -234,9 +622,15 @@ def cmd_image_spec(args: argparse.Namespace) -> None:
 def cmd_validate(args: argparse.Namespace) -> None:
     cfg = load_config(Path(args.config))
     issues = validate_profiles(cfg)
+    issues.extend(validate_oceanbase_against_vms(cfg))
+    has_error = False
     for item in issues:
-        print(item, file=sys.stderr if item.startswith("ERROR") else sys.stdout)
-    if any(i.startswith("ERROR") for i in issues):
+        if item.startswith("ERROR"):
+            print(item, file=sys.stderr)
+            has_error = True
+        else:
+            print(item)
+    if has_error:
         sys.exit(1)
 
 
@@ -255,7 +649,10 @@ def main() -> None:
     p_image.add_argument("--config", default="config/deploy.yaml")
     p_image.set_defaults(func=cmd_image_spec)
 
-    p_validate = sub.add_parser("validate", help="Validate profiles vs OceanBase recommendations")
+    p_validate = sub.add_parser(
+        "validate",
+        help="Validate VM profiles and oceanbase/ocp resources vs VMs",
+    )
     p_validate.add_argument("--config", default="config/deploy.yaml")
     p_validate.set_defaults(func=cmd_validate)
 

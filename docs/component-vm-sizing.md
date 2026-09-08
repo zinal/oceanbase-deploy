@@ -45,6 +45,13 @@
 | OBProxy | Лёгкий компонент | 2 vCPU, 4 GB | OK |
 | Отдельные диски data/log | Рекомендуется (enterprise) | enabled | OK |
 
+`./scripts/deploy.sh check` дополнительно сверяет секцию `oceanbase` с профилем observer:
+
+- **ERROR**, если `cpu_count` / `memory_limit` (или `datafile_size` / `log_disk_size`) больше ресурсов ВМ;
+- **WARN**, если нет запаса OS (`memory_limit` > 80% RAM при RAM < 512 GB), `log_disk_size` < 3× `memory_limit`, `system_memory` вне диапазона доки, мало ядер/памяти для production.
+
+Источники: [Preparations before deployment](https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_02_deploy_oceanbase_database/preparation_before_deployment), [Manage memory](https://en.oceanbase.com/blog/2614861312), [OBD auto config](https://www.oceanbase.com/docs/common-obd-cn-1000000003892315).
+
 Проверка конфигурации:
 
 ```bash
