@@ -147,6 +147,50 @@ provision_async() {
   info "Provision завершён успешно"
 }
 
+delete_deployment_vms() {
+  local -a names=()
+  local -a labeled=()
+  local -a leftover=()
+  local n
+
+  yc_folder_cache_init
+  yc_op_log_reset
+
+  if [[ ! -f "${inventory}" ]]; then
+    warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
+  fi
+  collect_inventory_vm_names names "${inventory}"
+  yc_list_instances_by_deployment labeled "${deploy_name}"
+  if ((${#labeled[@]} > 0)); then
+    names+=("${labeled[@]}")
+  fi
+  uniq_names names
+
+  if ((${#names[@]} == 0)); then
+    info "ВМ для удаления не найдены (deployment=${deploy_name})"
+  else
+    info "К удалению ВМ: ${#names[@]} (слот операций YC + retry при rate limit)"
+    for n in "${names[@]}"; do
+      delete_instance "${n}"
+    done
+    wait_until_named_instances_absent "${names[@]}"
+  fi
+
+  # Осиротевшие secondary-диски (сбой create / ручное удаление инстанса).
+  delete_orphan_deployment_disks "${deploy_name}"
+
+  leftover=()
+  yc_list_instances_by_deployment leftover "${deploy_name}"
+  if ((${#leftover[@]} > 0)); then
+    warn "Остались ВМ: ${leftover[*]}"
+    warn "Инвентарь сохранён — повторите ./scripts/deploy.sh destroy"
+    die "Destroy не завершён: остались ВМ deployment=${deploy_name}"
+  fi
+
+  rm -f "${inventory}"
+  info "Все ВМ deployment=${deploy_name} удалены"
+}
+
 case "${ACTION}" in
   create)
     : > "${inventory}"
@@ -179,31 +223,7 @@ case "${ACTION}" in
     provision_async
     ;;
   delete)
-    if [[ -f "${inventory}" ]]; then
-      # shellcheck disable=SC1090
-      source "${inventory}"
-      for var in $(compgen -v | grep -E '_NAME$'); do
-        name="${!var}"
-        delete_instance "${name}"
-      done
-      rm -f "${inventory}"
-    else
-      warn "Инвентарь не найден, удаление по метке deployment=${deploy_name}"
-      yc_folder_cache_init
-      mapfile -t names < <(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json | python3 -c "
-import json,sys
-name='${deploy_name}'
-for i in json.load(sys.stdin):
-  if i.get('labels',{}).get('deployment')==name:
-    print(i['name'])
-")
-      for n in "${names[@]}"; do
-        delete_instance "$n"
-      done
-      # Осиротевшие secondary-диски (если ВМ удаляли вручную без auto-delete)
-      delete_orphan_deployment_disks "${deploy_name}"
-    fi
-    info "Удаление запущено (async)"
+    delete_deployment_vms
     ;;
   *)
     die "Использование: $0 [create|delete]"

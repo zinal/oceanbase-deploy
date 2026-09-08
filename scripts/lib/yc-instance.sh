@@ -251,12 +251,43 @@ print(pick_ip(d))
 "
 }
 
+# Имена ВМ из inventory.env (не трогаем DEPLOY_NAME и прочие скаляры).
+collect_inventory_vm_names() {
+  local -n _inv_names=$1
+  local inventory_file="$2"
+  local var
+  [[ -f "${inventory_file}" ]] || return 0
+  # shellcheck disable=SC1090
+  source "${inventory_file}"
+  for var in $(compgen -A variable | grep -E '_[0-9]+_NAME$'); do
+    [[ -n "${!var}" ]] || continue
+    _inv_names+=("${!var}")
+  done
+}
+
+uniq_names() {
+  local -n _arr=$1
+  local -A seen=()
+  local -a out=()
+  local x
+  if ((${#_arr[@]} == 0)); then
+    return 0
+  fi
+  for x in "${_arr[@]}"; do
+    [[ -n "${x}" ]] || continue
+    [[ -z "${seen[${x}]:-}" ]] || continue
+    seen["${x}"]=1
+    out+=("${x}")
+  done
+  _arr=("${out[@]}")
+}
+
 delete_instance() {
   local name="$1"
   yc_folder_cache_init
   info "Удаление ВМ ${name}..."
-  yc compute instance delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
-    || warn "Не удалось удалить ${name}"
+  yc_async_retry "удаление ВМ ${name}" --allow-gone \
+    yc compute instance delete "${YC_FOLDER_ARGS[@]}" --name "${name}"
 }
 
 delete_instance_disk() {
@@ -287,8 +318,8 @@ else:
   esac
 
   info "Удаление осиротевшего диска ${name}..."
-  yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "$name" --async \
-    || warn "Не удалось удалить диск ${name}"
+  yc_async_retry "удаление диска ${name}" --allow-gone \
+    yc compute disk delete "${YC_FOLDER_ARGS[@]}" --name "${name}"
 }
 
 # Только диски без привязки к ВМ (осиротевшие после сбоев или ручного удаления инстансов).
