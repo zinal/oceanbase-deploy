@@ -36,3 +36,20 @@ left="$(cat "${FAILS_LEFT}")"
 grep -q "fake-operation" "${YC_OP_LOG}" || { echo "FAIL: в логе нет успешного ответа"; exit 1; }
 
 echo "OK: yc_async_retry пережил rate limit при set -e"
+
+# leftover yc-op.log с прошлого rate limit не должен валить фазу «создание дисков»
+cat > "${YC_OP_LOG}" <<'EOF'
+ERROR: rpc error: code = ResourceExhausted desc = The limit on maximum number of active operations has exceeded.
+
+
+client-request-id: 0947991f-0148-426f-bea9-3a902978e392
+EOF
+yc_assert_last_op_ok "создание дисков"
+echo "OK: stale rate-limit log ignored by yc_assert_last_op_ok"
+
+echo "ERROR: quota exceeded for compute.instances.count" > "${YC_OP_LOG}"
+if ( yc_assert_last_op_ok "создание дисков" ); then
+  echo "FAIL: настоящий ERROR должен валить фазу"
+  exit 1
+fi
+echo "OK: non-rate-limit ERROR still fails the phase"
