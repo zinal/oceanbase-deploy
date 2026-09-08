@@ -37,6 +37,11 @@ yc_op_has_rate_limit() {
   grep -q "The limit on maximum number of active operations has exceeded" "${1}" 2>/dev/null
 }
 
+# Уже нет объекта (повторный destroy / гонка с параллельным delete).
+yc_op_is_gone() {
+  grep -qiE 'code = NotFound|[[:space:]]not found' "${1}" 2>/dev/null
+}
+
 yc_op_has_error() {
   # Rate limit обрабатывается в yc_async_retry; leftover в yc-op.log не фатален.
   if yc_op_has_rate_limit "${1}"; then
@@ -103,6 +108,11 @@ yc_wait_for_op_slot() {
 yc_async_retry() {
   local description="$1"
   shift
+  local allow_gone=0
+  if [[ "${1:-}" == "--allow-gone" ]]; then
+    allow_gone=1
+    shift
+  fi
   local attempt=0
 
   ensure_generated_dir
@@ -112,6 +122,8 @@ yc_async_retry() {
       if ! yc_op_has_rate_limit "${YC_OP_LOG}"; then
         return 0
       fi
+    elif (( allow_gone )) && yc_op_is_gone "${YC_OP_LOG}"; then
+      return 0
     elif ! yc_op_has_rate_limit "${YC_OP_LOG}"; then
       cat "${YC_OP_LOG}" >&2
       die "Ошибка при ${description}"
@@ -139,6 +151,29 @@ yc_assert_last_op_ok() {
 }
 
 # Одним запросом: множество имён instance -> существующие
+yc_list_instances_by_deployment() {
+  local -n _out=$1
+  local deploy="$2"
+  yc_folder_cache_init
+  mapfile -t _out < <(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
+import json, sys
+deploy = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+items = data if isinstance(data, list) else []
+for i in items:
+    if not isinstance(i, dict):
+        continue
+    if i.get('labels', {}).get('deployment') != deploy:
+        continue
+    name = i.get('name') or ''
+    if name:
+        print(name)
+" "${deploy}")
+}
+
 yc_list_existing_instances() {
   local -n _out=$1
   shift
@@ -324,18 +359,32 @@ wait_until_instance_status() {
 
 wait_until_instance_absent() {
   local name="$1"
+  wait_until_named_instances_absent "${name}"
+}
+
+wait_until_named_instances_absent() {
+  local -a names=("$@")
   local elapsed=0
+  local -a remaining=()
+
+  if ((${#names[@]} == 0)); then
+    return 0
+  fi
+
   yc_folder_cache_init
-  info "Ожидание удаления ВМ ${name}..."
+  info "Ожидание удаления ${#names[@]} ВМ..."
   while (( elapsed < YC_WAIT_TIMEOUT )); do
-    if ! instance_exists "${name}"; then
-      info "ВМ ${name} удалена"
+    remaining=()
+    yc_list_existing_instances remaining "${names[@]}"
+    if ((${#remaining[@]} == 0)); then
+      info "Указанные ВМ удалены"
       return 0
     fi
+    info "Ещё не удалены: ${#remaining[@]} ВМ (ожидание ${elapsed}/${YC_WAIT_TIMEOUT}с)..."
     sleep "${YC_WAIT_POLL}"
     elapsed=$((elapsed + YC_WAIT_POLL))
   done
-  die "ВМ ${name} всё ещё существует после ${YC_WAIT_TIMEOUT}с"
+  die "ВМ всё ещё существуют после ${YC_WAIT_TIMEOUT}с: ${remaining[*]}"
 }
 
 wait_until_disks_absent() {

@@ -288,6 +288,8 @@ npx skills add oceanbase/oceanbase-skills --skill oceanbase-deploy
 ./scripts/99-destroy.sh --destroy-obd
 ```
 
+Destroy ждёт свободный слот операций Compute (квота — 15 активных на каталог) и повторяет `delete` при `ResourceExhausted`. Если прервать (`^C`), `generated/inventory.env` не стирается — повторите ту же команду. Без инвентаря ВМ ищутся по метке `deployment=<name>`.
+
 ## Подключение к кластеру
 
 После развёртывания:

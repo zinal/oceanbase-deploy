@@ -53,3 +53,50 @@ if ( yc_assert_last_op_ok "создание дисков" ); then
   exit 1
 fi
 echo "OK: non-rate-limit ERROR still fails the phase"
+
+# --- destroy: NotFound = успех, rate limit = retry ---
+cat > "${YC_OP_LOG}" <<'EOF'
+ERROR: rpc error: code = NotFound desc = Instance not found
+EOF
+yc_op_is_gone "${YC_OP_LOG}" || { echo "FAIL: NotFound должен считаться gone"; exit 1; }
+
+cat > "${YC_OP_LOG}" <<'EOF'
+ERROR: rpc error: code = ResourceExhausted desc = The limit on maximum number of active operations has exceeded.
+EOF
+if yc_op_is_gone "${YC_OP_LOG}"; then
+  echo "FAIL: ResourceExhausted не должен считаться gone"
+  exit 1
+fi
+echo "OK: yc_op_is_gone отличает NotFound от rate limit"
+
+echo 1 > "${FAILS_LEFT}"
+fake_yc_delete_gone() {
+  echo "ERROR: rpc error: code = NotFound desc = Instance 'ob-yc-prod-observer-25' not found" >&2
+  return 1
+}
+yc_async_retry "удаление тестовой ВМ" --allow-gone fake_yc_delete_gone
+echo "OK: yc_async_retry --allow-gone принимает NotFound"
+
+echo 2 > "${FAILS_LEFT}"
+fake_yc_delete_retry() {
+  local left
+  left="$(cat "${FAILS_LEFT}")"
+  if (( left > 0 )); then
+    echo "$((left - 1))" > "${FAILS_LEFT}"
+    echo "ERROR: rpc error: code = ResourceExhausted desc = The limit on maximum number of active operations has exceeded" >&2
+    return 1
+  fi
+  echo "id: fake-delete-operation"
+  return 0
+}
+yc_async_retry "удаление тестовой ВМ" --allow-gone fake_yc_delete_retry
+left="$(cat "${FAILS_LEFT}")"
+[[ "${left}" == "0" ]] || { echo "FAIL: delete retry, осталось fails=${left}"; exit 1; }
+grep -q "fake-delete-operation" "${YC_OP_LOG}" || { echo "FAIL: нет успешного delete"; exit 1; }
+echo "OK: yc_async_retry --allow-gone пережил rate limit на delete"
+
+if ( yc_async_retry "удаление тестовой ВМ" fake_yc_delete_gone ); then
+  echo "FAIL: NotFound без --allow-gone должен валить команду"
+  exit 1
+fi
+echo "OK: NotFound без --allow-gone остаётся ошибкой"
