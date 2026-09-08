@@ -48,7 +48,9 @@
 `./scripts/deploy.sh check` дополнительно сверяет секцию `oceanbase` с профилем observer:
 
 - **ERROR**, если `cpu_count` / `memory_limit` / `datafile_size` / `log_disk_size` больше ядер, RAM или **реальных** data/log-дисков ВМ (после округления YC, шаг 93 GB);
-- **WARN**, если нет запаса OS (`memory_limit` > 80% RAM при RAM < 512 GB), prealloc занимает > 90% диска, `log_disk_size` < 3× `memory_limit`, `system_memory` вне диапазона доки, data и clog на одном диске в production.
+- **WARN** — по **явным** значениям YAML (не по результату `auto_tune`): нет запаса OS (`memory_limit` > 80% RAM при RAM < 512 GB), `cpu_count` занимает все ядра при ≥ 16 vCPU (нужно CPU−2), prealloc > 90% диска, `log_disk_size` < 3× `memory_limit`, `system_memory` вне диапазона доки, data и clog на одном диске в production.
+- `cpu_count = cores−2` на ВМ ≥ 16 vCPU (например 30 из 32) — норма, не предупреждение.
+- `auto_tune=true` перезаписывает ресурсы при генерации OBD по тем же правилам (80%/90% RAM, CPU−2, формула `system_memory`); если YAML уже совпадает, это **INFO**, не WARN.
 
 Источники: [Preparations before deployment](https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_02_deploy_oceanbase_database/preparation_before_deployment), [Manage memory](https://en.oceanbase.com/blog/2614861312), [OBD auto config](https://www.oceanbase.com/docs/common-obd-cn-1000000003892315).
 

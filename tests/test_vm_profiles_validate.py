@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from vm_profiles import (  # noqa: E402
+    observer_auto_tune,
     parse_size_to_gb,
+    recommended_system_memory_gb,
     recommended_system_memory_range,
     validate_oceanbase_against_vms,
     validate_profiles,
@@ -69,9 +71,15 @@ def test_system_memory_range() -> None:
     assert (low, high) == (3.0, 5.0)
     low, high = recommended_system_memory_range(48)
     assert (low, high) == (5.0, 10.0)
+    rec = recommended_system_memory_gb(100)
+    assert rec == 21.0
     low, high = recommended_system_memory_range(100)
-    rec = 3 * (100**0.5 - 3)
-    assert abs(low - rec * 0.8) < 1e-6
+    slack = max(2.0, rec * 0.15)
+    assert abs(low - (rec - slack)) < 1e-6
+    assert abs(high - (rec + slack)) < 1e-6
+    # gist: system_memory=19G при memory_limit=102G — в диапазоне доки
+    low, high = recommended_system_memory_range(102)
+    assert low <= 19.0 <= high
 
 
 def test_cpu_exceeds_vm_is_error() -> None:
@@ -163,13 +171,16 @@ def test_memory_over_80_percent_is_warn() -> None:
     assert any("80%" in i for i in warns), warns
 
 
-def test_auto_tune_yaml_mismatch_is_warn() -> None:
+def test_auto_tune_yaml_mismatch_is_info_not_warn() -> None:
     cfg = base_cfg()
     cfg["oceanbase"]["auto_tune"] = True
     cfg["oceanbase"]["cpu_count"] = 4
     cfg["oceanbase"]["memory_limit"] = "16G"
-    warns = kinds(validate_oceanbase_against_vms(cfg), "WARN")
-    assert any("auto_tune=true" in i and "заменены" in i for i in warns), warns
+    issues = validate_oceanbase_against_vms(cfg)
+    infos = kinds(issues, "INFO")
+    warns = kinds(issues, "WARN")
+    assert any("auto_tune=true" in i and "заменён" in i for i in infos), infos
+    assert not any("замен" in i for i in warns), warns
 
 
 def test_auto_tune_yaml_exceed_still_error() -> None:
@@ -201,6 +212,54 @@ def test_ocp_heap_exceeds_vm() -> None:
     assert any("ocp.memory_size=32G" in i for i in errors), errors
 
 
+def gist_like_32c_128g() -> dict:
+    """deploy.yaml из gist: 32 vCPU / 128 GB, yaml уже по best practice."""
+    cfg = base_cfg()
+    obs = cfg["vm_profiles"]["observer"]
+    obs["cores"] = 32
+    obs["memory_gb"] = 128
+    obs["count"] = 30
+    obs["data_disk"]["size_gb"] = 558
+    obs["log_disk"]["size_gb"] = 558
+    cfg["oceanbase"] = {
+        "auto_tune": True,
+        "cpu_count": 30,
+        "memory_limit": "102G",
+        "system_memory": "19G",
+        "datafile_size": "500G",
+        "log_disk_size": "500G",
+    }
+    return cfg
+
+
+def test_auto_tune_32c_128g_follows_docs() -> None:
+    tune = observer_auto_tune(gist_like_32c_128g())
+    assert tune["cpu_count"] == 30
+    assert tune["memory_limit"] == "102G"
+    assert tune["system_memory"] == "21G"
+
+
+def test_gist_like_yaml_has_no_false_warns() -> None:
+    """yaml 30/102G/19G/500G на 32c/128G не должен пугать auto_tune-выводом 32/112G/4G."""
+    issues = validate_oceanbase_against_vms(gist_like_32c_128g())
+    warns = kinds(issues, "WARN")
+    assert warns == [], warns
+    assert not any("cpu_count=32" in i for i in issues)
+    assert not any("112G" in i for i in issues)
+    assert not any("system_memory=4G" in i for i in issues)
+    infos = kinds(issues, "INFO")
+    assert not any("cpu_count 30→" in i or "memory_limit 102G→" in i for i in infos)
+    assert any("заменён" in i and "datafile_size" in i for i in infos), infos
+
+
+def test_cpu_using_all_cores_is_warn() -> None:
+    cfg = gist_like_32c_128g()
+    cfg["oceanbase"]["auto_tune"] = False
+    cfg["oceanbase"]["cpu_count"] = 32
+    warns = kinds(validate_oceanbase_against_vms(cfg), "WARN")
+    assert any("почти равен" in i and "cpu_count=32" in i for i in warns), warns
+
+
 def test_example_yaml_has_no_errors() -> None:
     example = ROOT / "config" / "deploy.yaml.example"
     import yaml
@@ -227,9 +286,12 @@ def main() -> None:
         test_yc_rounded_disk_is_used,
         test_balanced_config_has_no_errors,
         test_memory_over_80_percent_is_warn,
-        test_auto_tune_yaml_mismatch_is_warn,
+        test_auto_tune_yaml_mismatch_is_info_not_warn,
         test_auto_tune_yaml_exceed_still_error,
         test_ocp_heap_exceeds_vm,
+        test_auto_tune_32c_128g_follows_docs,
+        test_gist_like_yaml_has_no_false_warns,
+        test_cpu_using_all_cores_is_warn,
         test_example_yaml_has_no_errors,
     ]
     for fn in tests:

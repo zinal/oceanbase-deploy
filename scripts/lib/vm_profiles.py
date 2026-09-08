@@ -41,7 +41,6 @@ OB_MEMORY_LIMIT_PCT_GE_512 = 90
 OB_LOG_DISK_FACTOR = 3
 OB_DATA_PLUS_LOG_FACTOR = 6
 OB_PROD_CPU_MIN = 4
-OB_PROD_CPU_RECOMMENDED = 32
 OB_PROD_MEMORY_MIN_GB = 16
 OB_PROD_MEMORY_LONG_TERM_GB = 32
 OB_OCP_SERVER_MEMORY_MIN_GB = 8
@@ -135,15 +134,25 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
 
 
 def observer_auto_tune(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Auto-tune OceanBase от профиля observer."""
+    """Auto-tune OceanBase от профиля observer (официальные доли CPU/RAM/system_memory)."""
     obs = resolve_profile(cfg, "observer")
     cores = obs["cores"]
     memory_gb = obs["memory_gb"]
     data_gb = int(obs["data_disk"].get("size_gb", 100))
     log_gb = int(obs["log_disk"].get("size_gb", 0)) if obs["log_disk"].get("enabled") else 0
 
-    memory_limit_gb = max(4, memory_gb - max(4, memory_gb // 8))
-    system_memory_gb = min(4, max(2, memory_gb // 8))
+    pct = recommended_memory_limit_pct(memory_gb)
+    memory_limit_gb = max(4, int(memory_gb * pct / 100.0))
+    if memory_limit_gb >= memory_gb:
+        memory_limit_gb = max(4, memory_gb - 4)
+    # OBD max occupancy: cpu_count = max(16, CPU−2); на малых ВМ отдаём все ядра.
+    if cores >= 16:
+        cpu_count = max(OB_PROD_CPU_MIN, cores - 2)
+    else:
+        cpu_count = cores
+    system_memory_gb = max(2, int(recommended_system_memory_gb(float(memory_limit_gb))))
+    if system_memory_gb >= memory_limit_gb:
+        system_memory_gb = max(2, memory_limit_gb // 4)
     datafile_gb = max(20, int(data_gb * 0.85))
     if log_gb:
         log_disk_gb = max(15, int(log_gb * 0.9))
@@ -158,7 +167,7 @@ def observer_auto_tune(cfg: dict[str, Any]) -> dict[str, Any]:
         "system_memory": gb(system_memory_gb),
         "datafile_size": gb(datafile_gb),
         "log_disk_size": gb(log_disk_gb),
-        "cpu_count": cores,
+        "cpu_count": cpu_count,
     }
 
 
@@ -197,17 +206,47 @@ def fmt_gb(n: float) -> str:
     return f"{n:.1f}G"
 
 
+def _auto_tune_field_diffs(
+    fields: list[tuple[str, float | None, float | None, Any, Any]],
+) -> list[str]:
+    """Только реально изменившиеся поля (cpu/mem могут совпасть с YAML)."""
+    diffs: list[str] = []
+    for name, yaml_val, eff_val, yaml_raw, eff_raw in fields:
+        if eff_val is None:
+            continue
+        if yaml_val is None:
+            diffs.append(f"{name} → {eff_raw}")
+            continue
+        tol = 0.01 if name == "cpu_count" else 0.5
+        if abs(yaml_val - eff_val) >= tol:
+            diffs.append(f"{name} {yaml_raw}→{eff_raw}")
+    return diffs
+
+
 def recommended_memory_limit_pct(memory_gb: int) -> int:
     """memory_limit_percentage: 80% при RAM < 512 GB, иначе 90%."""
     return OB_MEMORY_LIMIT_PCT_GE_512 if memory_gb >= 512 else OB_MEMORY_LIMIT_PCT_LT_512
 
 
+def recommended_system_memory_gb(memory_limit_gb: float) -> float:
+    """Рекомендуемое system_memory: диапазоны доки и floor(3×(√ml−3)) при ml>64G."""
+    if memory_limit_gb > 64:
+        return max(10.0, math.floor(3 * (math.sqrt(memory_limit_gb) - 3)))
+    if memory_limit_gb >= 32:
+        return 7.0
+    if memory_limit_gb >= 16:
+        return 4.0
+    if memory_limit_gb >= 8:
+        return 3.0
+    return 2.0
+
+
 def recommended_system_memory_range(memory_limit_gb: float) -> tuple[float, float]:
     """Официальный диапазон system_memory от memory_limit (preparations before deployment)."""
     if memory_limit_gb > 64:
-        rec = 3 * (math.sqrt(memory_limit_gb) - 3)
-        rec = max(10.0, rec)
-        return rec * 0.8, rec * 1.2
+        rec = recommended_system_memory_gb(memory_limit_gb)
+        slack = max(2.0, rec * 0.15)
+        return rec - slack, rec + slack
     if memory_limit_gb >= 32:
         return 5.0, 10.0
     if memory_limit_gb >= 16:
@@ -263,12 +302,8 @@ def _issue_cpu_vs_vm(
             f"WARN: {label} cpu_count={cpu_count:g} < {OB_PROD_CPU_MIN} — "
             "для production нужно ≥ 4 ядра процессу observer"
         )
-    if cores >= OB_PROD_CPU_RECOMMENDED and cpu_count < OB_PROD_CPU_RECOMMENDED:
-        emit(
-            f"WARN: {label} cpu_count={cpu_count:g} при observer.cores={cores} — "
-            f"для production рекомендуется ≥ {OB_PROD_CPU_RECOMMENDED} ядер OceanBase"
-        )
-    # OBD max occupancy: cpu_count = max(16, CPU-2); оставляем запас OS.
+    # OBD max occupancy: cpu_count = max(16, CPU-2). Не требовать cpu_count=cores:
+    # на 32 vCPU как раз нужно оставить 2 ядра OS (yaml 30 при cores=32 — норма).
     if cores >= 16 and cpu_count > cores - 2:
         emit(
             f"WARN: {label} cpu_count={cpu_count:g} почти равен observer.cores={cores} — "
@@ -563,40 +598,57 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
                     kinds="error",
                 )
             )
-        yaml_sig = (
-            None if yaml_cpu is None else f"{yaml_cpu:g}",
-            None if yaml_mem is None else fmt_gb(yaml_mem),
-            None if yaml_data is None else fmt_gb(yaml_data),
-            None if yaml_log is None else fmt_gb(yaml_log),
+        diffs = _auto_tune_field_diffs(
+            [
+                ("cpu_count", yaml_cpu, eff_cpu, ob.get("cpu_count"), effective.get("cpu_count")),
+                (
+                    "memory_limit",
+                    yaml_mem,
+                    eff_mem,
+                    ob.get("memory_limit"),
+                    effective.get("memory_limit"),
+                ),
+                (
+                    "system_memory",
+                    yaml_sys,
+                    eff_sys,
+                    ob.get("system_memory"),
+                    effective.get("system_memory"),
+                ),
+                (
+                    "datafile_size",
+                    yaml_data,
+                    eff_data,
+                    ob.get("datafile_size"),
+                    effective.get("datafile_size"),
+                ),
+                (
+                    "log_disk_size",
+                    yaml_log,
+                    eff_log,
+                    ob.get("log_disk_size"),
+                    effective.get("log_disk_size"),
+                ),
+            ]
         )
-        eff_sig = (
-            None if eff_cpu is None else f"{eff_cpu:g}",
-            None if eff_mem is None else fmt_gb(eff_mem),
-            None if eff_data is None else fmt_gb(eff_data),
-            None if eff_log is None else fmt_gb(eff_log),
-        )
-        if yaml_sig != eff_sig:
+        if diffs:
             issues.append(
-                "WARN: oceanbase.auto_tune=true — cpu_count/memory_limit/datafile_size/log_disk_size "
-                "из YAML будут заменены при генерации OBD "
-                f"(yaml {ob.get('cpu_count')}/{ob.get('memory_limit')}/"
-                f"{ob.get('datafile_size')}/{ob.get('log_disk_size')} → "
-                f"{effective.get('cpu_count')}/{effective.get('memory_limit')}/"
-                f"{effective.get('datafile_size')}/{effective.get('log_disk_size')})"
+                "INFO: oceanbase.auto_tune=true — при генерации OBD yaml будет заменён "
+                f"({', '.join(diffs)})"
             )
 
-    # (б) рекомендации — по эффективным значениям (то, что реально попадёт в OBD)
-    warn_cpu = eff_cpu if auto_tune else yaml_cpu
-    warn_mem = eff_mem if auto_tune else yaml_mem
-    warn_data = eff_data if auto_tune else yaml_data
-    warn_log = eff_log if auto_tune else yaml_log
+    # (б) рекомендации — по явным значениям YAML; если поле не задано, берём auto_tune.
+    warn_cpu = yaml_cpu if yaml_cpu is not None else eff_cpu
+    warn_mem = yaml_mem if yaml_mem is not None else eff_mem
+    warn_data = yaml_data if yaml_data is not None else eff_data
+    warn_log = yaml_log if yaml_log is not None else eff_log
     issues.extend(_issue_cpu_vs_vm("oceanbase", warn_cpu, cores, production=production, kinds="warn"))
     issues.extend(
         _issue_memory_vs_vm("oceanbase", warn_mem, memory_gb, production=production, kinds="warn")
     )
 
-    mem_for_sys = yaml_mem if not auto_tune else eff_mem
-    sys_for_check = yaml_sys if not auto_tune else eff_sys
+    mem_for_sys = yaml_mem if yaml_mem is not None else eff_mem
+    sys_for_check = yaml_sys if yaml_sys is not None else eff_sys
     if mem_for_sys is not None and sys_for_check is not None:
         if sys_for_check >= mem_for_sys:
             issues.append(
@@ -607,11 +659,12 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
         else:
             low, high = recommended_system_memory_range(mem_for_sys)
             if sys_for_check < low - 0.25 or sys_for_check > high + 0.25:
+                rec = recommended_system_memory_gb(mem_for_sys)
                 issues.append(
                     f"WARN: oceanbase.system_memory={fmt_gb(sys_for_check)} вне диапазона "
                     f"{fmt_gb(low)}–{fmt_gb(high)} для memory_limit={fmt_gb(mem_for_sys)} "
-                    "(формула доки: [16G,32G]→3–5G, [32G,64G]→5–10G, >64G → "
-                    "3×(√memory_limit−3G))"
+                    f"(рекомендуется ~{fmt_gb(rec)}; дока: [16G,32G]→3–5G, [32G,64G]→5–10G, "
+                    ">64G → floor(3×(√memory_limit−3G)))"
                 )
 
     issues.extend(
@@ -625,7 +678,9 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
         )
     )
 
-    issues.extend(_validate_ocp_against_vms(cfg, cores, mem_for_sys, sys_for_check, production))
+    ocp_mem = eff_mem if auto_tune else yaml_mem
+    ocp_sys = eff_sys if auto_tune else yaml_sys
+    issues.extend(_validate_ocp_against_vms(cfg, cores, ocp_mem, ocp_sys, production))
     return issues
 
 
