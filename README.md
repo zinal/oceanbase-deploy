@@ -84,7 +84,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 Пошаговый режим:
 
 ```bash
-./scripts/deploy.sh check       # проверка
+./scripts/deploy.sh check       # зависимости, профили ВМ, сверка oceanbase с ресурсами ВМ
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
