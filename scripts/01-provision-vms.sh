@@ -77,6 +77,7 @@ provision_async() {
   done
 
   info "Проверка существующих ВМ (${#all_names[@]})..."
+  yc_op_log_reset
   yc_list_existing_instances existing_names "${all_names[@]}"
 
   for entry in "${VM_QUEUE[@]}"; do
@@ -113,8 +114,10 @@ provision_async() {
 
       if ((${#disks_created[@]} > 0)); then
         wait_for_disks_ready "${disks_created[@]}"
+        yc_assert_last_op_ok "создание дисков"
+      else
+        info "Новых дисков создавать не нужно"
       fi
-      yc_assert_last_op_ok "создание дисков"
     fi
 
     info "=== Фаза 2: создание ВМ ==="

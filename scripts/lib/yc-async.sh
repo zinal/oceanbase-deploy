@@ -38,7 +38,16 @@ yc_op_has_rate_limit() {
 }
 
 yc_op_has_error() {
+  # Rate limit обрабатывается в yc_async_retry; leftover в yc-op.log не фатален.
+  if yc_op_has_rate_limit "${1}"; then
+    return 1
+  fi
   grep -q "ERROR:" "${1}" 2>/dev/null
+}
+
+yc_op_log_reset() {
+  ensure_generated_dir
+  : > "${YC_OP_LOG}"
 }
 
 # Число незавершённых операций в каталоге. -1 — не удалось определить.
@@ -117,7 +126,13 @@ yc_async_retry() {
 
 yc_assert_last_op_ok() {
   local phase="$1"
-  if [[ -f "${YC_OP_LOG}" ]] && yc_op_has_error "${YC_OP_LOG}"; then
+  if [[ ! -f "${YC_OP_LOG}" ]]; then
+    return 0
+  fi
+  if yc_op_has_rate_limit "${YC_OP_LOG}"; then
+    return 0
+  fi
+  if yc_op_has_error "${YC_OP_LOG}"; then
     cat "${YC_OP_LOG}" >&2
     die "Ошибка на этапе: ${phase}"
   fi
