@@ -30,10 +30,34 @@ DEFAULTS: dict[str, str] = {
     "mode": "htap",
 }
 
-MODE_TO_OPTIMIZE = {
-    "htap": "htap",
+# Значения `obd cluster tenant create -o` / `--optimize` (OceanBase ≥ 4.3).
+TENANT_OPTIMIZE_MODES = frozenset(
+    {
+        "express_oltp",  # простой OLTP, высокая конкуренция, короткие запросы
+        "complex_oltp",  # сложные транзакции, join, PL, длинные транзакции
+        "olap",          # аналитика / real-time DW, колоночное хранение
+        "htap",          # смешанные OLTP и OLAP
+        "kv",            # key-value и wide-column нагрузки
+    }
+)
+
+# Краткие алиасы (не передаются в OBD как есть).
+TENANT_MODE_ALIASES = {
     "oltp": "express_oltp",
 }
+
+ALLOWED_TENANT_MODES = TENANT_OPTIMIZE_MODES | frozenset(TENANT_MODE_ALIASES)
+
+
+def resolve_optimize(mode: str) -> str:
+    """Преобразовать tenant.mode в значение для `obd -o`."""
+    return TENANT_MODE_ALIASES.get(mode, mode)
+
+
+def allowed_modes_help() -> str:
+    modes = ", ".join(sorted(TENANT_OPTIMIZE_MODES))
+    aliases = ", ".join(f"{k}={v}" for k, v in sorted(TENANT_MODE_ALIASES.items()))
+    return f"{modes} ({aliases})"
 
 
 def _load_ob_sys() -> Any:
@@ -60,8 +84,10 @@ def resolve_tenant_cfg(cfg: dict[str, Any]) -> dict[str, str]:
 def validate_tenant_cfg(tenant_cfg: dict[str, str]) -> list[str]:
     issues: list[str] = []
     mode = tenant_cfg.get("mode", "")
-    if mode not in MODE_TO_OPTIMIZE:
-        issues.append(f"ERROR: tenant.mode={mode!r} — допустимо: htap, oltp")
+    if mode not in ALLOWED_TENANT_MODES:
+        issues.append(
+            f"ERROR: tenant.mode={mode!r} — допустимо: {allowed_modes_help()}"
+        )
     for label, key in (
         ("tenant_name", "tenant_name"),
         ("username", "username"),
@@ -133,7 +159,7 @@ def build_tenant_endpoint(
 
 
 def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
-    optimize = MODE_TO_OPTIMIZE[tenant_cfg["mode"]]
+    optimize = resolve_optimize(tenant_cfg["mode"])
     cmd = [
         "obd",
         "cluster",
@@ -239,7 +265,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     print()
     print("Тенант готов.")
     print(f"  Tenant:   {tenant_name}")
-    print(f"  Mode:     {tenant_cfg['mode']} ({MODE_TO_OPTIMIZE[tenant_cfg['mode']]})")
+    print(f"  Mode:     {tenant_cfg['mode']} (obd -o {resolve_optimize(tenant_cfg['mode'])})")
     print(f"  Database: {tenant_cfg['database']}")
     print(f"  User:     {tenant_cfg['username']}")
     print()
@@ -268,15 +294,18 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
 
 def cmd_self_test(_args: argparse.Namespace) -> None:
-    cfg = {"tenant": {"mode": "oltp", "tenant_name": "tpcc"}}
+    cfg = {"tenant": {"mode": "express_oltp", "tenant_name": "tpcc"}}
     resolved = resolve_tenant_cfg(cfg)
-    assert resolved["mode"] == "oltp"
+    assert resolved["mode"] == "express_oltp"
     assert resolved["username"] == "tpcc"
-    assert MODE_TO_OPTIMIZE["oltp"] == "express_oltp"
+    assert resolve_optimize("oltp") == "express_oltp"
+    assert resolve_optimize("htap") == "htap"
     assert sql_identifier("tpcc") == "`tpcc`"
     assert sql_literal("a'b") == "'a''b'"
     issues = validate_tenant_cfg({"mode": "bad", **{k: v for k, v in DEFAULTS.items() if k != "mode"}})
     assert any("tenant.mode" in i for i in issues)
+    for mode in TENANT_OPTIMIZE_MODES:
+        assert validate_tenant_cfg({**DEFAULTS, "mode": mode}) == []
     print("self-test ok")
 
 

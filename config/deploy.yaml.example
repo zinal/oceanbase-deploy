@@ -194,7 +194,14 @@ tenant:
   database: tpcc
   root_password: ChangeMe!       # пароль root@<tenant_name>
   user_password: ChangeMe!       # пароль application user
-  mode: htap                     # htap | oltp (express_oltp через obd -o)
+  # Режим нагрузки → obd cluster tenant create -o / --optimize (OceanBase ≥ 4.3):
+  #   express_oltp — простой OLTP (высокая конкуренция, короткие запросы)
+  #   complex_oltp — сложный OLTP (join, PL, длинные/большие транзакции)
+  #   olap         — аналитика / real-time DW
+  #   htap         — смешанные OLTP и OLAP (по умолчанию)
+  #   kv           — key-value и wide-column нагрузки
+  # Алиас: oltp = express_oltp
+  mode: htap
 
 oceanbase:
   cluster_name: obcluster

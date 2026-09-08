@@ -111,7 +111,19 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
 | `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp** |
 | `oceanbase` | Параметры кластера, OBD, auto-tune |
-| `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим htap/oltp |
+| `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`) |
+
+`tenant.mode` — сценарий оптимизации OBD (`obd cluster tenant create -o`, OceanBase ≥ 4.3):
+
+| `mode` | Назначение |
+|--------|------------|
+| `express_oltp` | Простой OLTP: высокая конкуренция, короткие запросы (платежи, заказы) |
+| `complex_oltp` | Сложный OLTP: join, подзапросы, PL, длинные транзакции |
+| `olap` | Аналитика / real-time DW, колоночное хранение |
+| `htap` | Смешанные OLTP и OLAP (значение по умолчанию) |
+| `kv` | Key-value и wide-column нагрузки |
+
+Алиас: `oltp` = `express_oltp`.
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 
 ```yaml

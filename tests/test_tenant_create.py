@@ -33,18 +33,27 @@ def test_defaults() -> None:
 
 
 def test_mode_mapping() -> None:
-    assert tenant_create.MODE_TO_OPTIMIZE["htap"] == "htap"
-    assert tenant_create.MODE_TO_OPTIMIZE["oltp"] == "express_oltp"
+    assert tenant_create.resolve_optimize("htap") == "htap"
+    assert tenant_create.resolve_optimize("oltp") == "express_oltp"
+    assert tenant_create.resolve_optimize("olap") == "olap"
+    assert tenant_create.resolve_optimize("kv") == "kv"
 
 
-def test_validate_ok() -> None:
+def test_validate_all_obd_modes() -> None:
+    for mode in tenant_create.TENANT_OPTIMIZE_MODES:
+        cfg = {"tenant": {"mode": mode}}
+        issues = tenant_create.validate_tenant_cfg(tenant_create.resolve_tenant_cfg(cfg))
+        assert issues == [], mode
+
+
+def test_validate_oltp_alias() -> None:
     cfg = {"tenant": {"mode": "oltp"}}
     issues = tenant_create.validate_tenant_cfg(tenant_create.resolve_tenant_cfg(cfg))
     assert issues == []
 
 
 def test_validate_bad_mode() -> None:
-    cfg = {"tenant": {"mode": "olap"}}
+    cfg = {"tenant": {"mode": "mysql"}}
     issues = tenant_create.validate_tenant_cfg(tenant_create.resolve_tenant_cfg(cfg))
     assert any("tenant.mode" in i for i in issues)
 
@@ -56,7 +65,7 @@ def test_validate_bad_name() -> None:
 
 
 def test_vm_profiles_integration() -> None:
-    cfg = {"tenant": {"mode": "htap"}}
+    cfg = {"tenant": {"mode": "complex_oltp"}}
     assert validate_tenant_section(cfg) == []
 
 
@@ -68,7 +77,8 @@ def test_sql_helpers() -> None:
 if __name__ == "__main__":
     test_defaults()
     test_mode_mapping()
-    test_validate_ok()
+    test_validate_all_obd_modes()
+    test_validate_oltp_alias()
     test_validate_bad_mode()
     test_validate_bad_name()
     test_vm_profiles_integration()
