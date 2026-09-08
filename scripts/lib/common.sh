@@ -178,6 +178,40 @@ else:
 PY
 }
 
+yaml_get_list() {
+  # Список YAML → слова через пробел (для передачи в remote env).
+  local key="$1"
+  python3 - "${CONFIG_FILE}" "$key" <<'PY'
+import sys
+
+path, dotted = sys.argv[1], sys.argv[2]
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("PyYAML не установлен. Выполните: pip install pyyaml\n")
+    sys.exit(1)
+
+with open(path, encoding="utf-8") as f:
+    data = yaml.safe_load(f) or {}
+
+node = data
+for part in dotted.split("."):
+    if part == "":
+        continue
+    if not isinstance(node, dict) or part not in node:
+        print("")
+        sys.exit(0)
+    node = node[part]
+
+if node is None:
+    print("")
+elif isinstance(node, list):
+    print(" ".join(str(x).strip() for x in node if x is not None and str(x).strip()))
+else:
+    print(str(node).strip())
+PY
+}
+
 ssh_opts() {
   local key
   key="$(ssh_private_key_path)"

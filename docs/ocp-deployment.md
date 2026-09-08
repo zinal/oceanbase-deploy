@@ -36,6 +36,7 @@ OCP использует мета-тенанты `ocp_meta` и `ocp_monitor` в 
 | Отдельная ВМ OCP | 4+ vCPU, 16+ GB RAM (по умолчанию в `vm_profiles.ocp`) |
 | Java 8+ в `/usr/bin/java` | Устанавливается скриптом `prepare-ocp-host.sh` |
 | `clockdiff` | Пакет `iputils-clockdiff` (Ubuntu) |
+| chrony | Ставится на шаге `prepare` (`prepare-chrony.sh`) |
 | Кластер OceanBase | Минимум 3 observer + obproxy (как в основном сценарии) |
 | OBD | Развёртывание `ocp-server-ce` |
 
@@ -82,7 +83,7 @@ ocp:
 ```bash
 ./scripts/deploy-ocp.sh check       # проверка профиля и зависимостей
 ./scripts/deploy-ocp.sh provision   # создание OCP-ВМ в YC
-./scripts/deploy-ocp.sh prepare     # Java, clockdiff, диски
+./scripts/deploy-ocp.sh prepare     # chrony, Java, clockdiff, диски
 ./scripts/deploy-ocp.sh config      # obd-cluster.yaml с ocp-server-ce
 ./scripts/deploy-ocp.sh deploy      # obd cluster deploy + start
 ```

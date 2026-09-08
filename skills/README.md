@@ -27,7 +27,7 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 
 | Скрипт | Skill / reference |
 |--------|-------------------|
-| `02-prepare-servers.sh` | prepare-servers, configure-sysctl-conf |
+| `02-prepare-servers.sh` | prepare-servers, configure-sysctl-conf, chrony |
 | `03-generate-obd-config.py` | config-deployment.md |
 | `04-deploy-cluster.sh` | cluster lifecycle (deploy, start, display) |
 | `05-scale-out.sh` | scale_out |

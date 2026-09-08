@@ -356,7 +356,7 @@ KB: 2PC = **1 задержка лога + 2 RPC**, плюс GTS на strong-cons
 
 ### 7.4. Что ещё ломает «укладываемся в 2 мс»
 
-1. **Часы.** Election считает просроченным сообщение при **до 100 мс** рассинхрона часов **и до 200 мс** RPC. NTP/chrony на все `observer` обязателен.
+1. **Часы.** Election считает просроченным сообщение при **до 100 мс** рассинхрона часов **и до 200 мс** RPC. NTP/chrony на все `observer` обязателен. `./scripts/deploy.sh prepare` ставит chrony (`scripts/lib/prepare-chrony.sh`): DHCP NTP Yandex Cloud (option 42), иначе `yandex_cloud.ntp_servers` или публичные серверы из [документации Compute Cloud](https://yandex.cloud/en/docs/compute/tutorials/ntp).
 2. **Полоса.** Clog, миграции реплик и compaction едут по тем же линкам. Нехватка межДЦ-bandwidth даёт отставание follower.
 3. **Не мерить только ping.** ICMP ≠ RPC 2882. Смотреть `CLOG_SYNC` / `TRANS_COMMIT_LOG_SYNC_RT` в OCP и `EVENT` в `v$sql_audit` (`sync rpc`).
 4. **Не класть majority на публичный интернет** и не через NAT с большим conntrack.

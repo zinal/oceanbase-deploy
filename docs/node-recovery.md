@@ -100,7 +100,7 @@ HAProxy не трогаем: IP тот же.
    Локальные data/clog на погибшем хосте нечитаемы. Скрипт ждёт исчезновения instance и дисков `{name}-data`, `{name}-log`, `{name}-boot`.
 
 4. **Создание замены и prepare**  
-   Те же профили, что при первом provision: диски, cloud-init, `02-prepare-servers.sh` (sysctl, limits, mount data/log). Каталоги `data_dir` / `redo_dir` пустые — так и должно быть для нового observer.
+   Те же профили, что при первом provision: диски, cloud-init, `02-prepare-servers.sh` (sysctl, limits, chrony, mount data/log). Каталоги `data_dir` / `redo_dir` пустые — так и должно быть для нового observer.
 
 5. **`obd cluster scale_out` только нового узла**  
    OBD ставит пакет, стартует процесс и выполняет эквивалент `ALTER SYSTEM ADD SERVER ... ZONE 'zoneN'`.  

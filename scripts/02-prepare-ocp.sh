@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Подготовка только OCP-ВМ: диски, sysctl, Java, clockdiff.
+# Подготовка только OCP-ВМ: диски, chrony, Java, clockdiff.
 # Хосты готовятся параллельно; подробные логи — в generated/prepare-logs/.
 
 set -euo pipefail
@@ -31,6 +31,7 @@ read -r OCP_DATA_MOUNT OCP_DATA_ENABLED < <(
 OCP_HOME="$(yaml_get ocp.home_path)"
 OCP_SOFT_DIR="$(yaml_get ocp.soft_dir)"
 OCP_LOG_DIR="$(yaml_get ocp.log_dir)"
+NTP_SERVERS="$(yaml_get_list yandex_cloud.ntp_servers)"
 
 declare -a PREPARE_PIDS=()
 declare -a PREPARE_LABELS=()
@@ -74,6 +75,12 @@ sed -i.bak '/ swap / s/^/#/' /etc/fstab 2>/dev/null || true
 REMOTE
   then
     die "Ошибка базовой подготовки ${host}"
+  fi
+
+  info "Установка chrony на ${host} (OCP)..."
+  if ! run_remote "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
+  then
+    die "Ошибка установки chrony на ${host}"
   fi
 
   if ! run_remote "${host}" "sudo env \

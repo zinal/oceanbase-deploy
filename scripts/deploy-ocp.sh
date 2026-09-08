@@ -98,7 +98,7 @@ OceanBase Cloud Platform (OCP) — веб-консоль управления к
 Команды:
   check      — проверка зависимостей и профиля OCP
   provision  — создание отдельной OCP-ВМ в Yandex Cloud
-  prepare    — подготовка OCP-ВМ (диски, Java, clockdiff)
+  prepare    — подготовка OCP-ВМ (диски, chrony, Java, clockdiff)
   config     — генерация obd-cluster.yaml с ocp-server-ce
   deploy     — развёртывание через OBD (включая OCP)
   all        — полный цикл OCP (provision → prepare → config → deploy)
