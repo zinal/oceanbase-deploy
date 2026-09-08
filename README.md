@@ -125,7 +125,7 @@ vm_defaults:
 
 vm_profiles:
   observer:                    # oceanbase-ce + obagent
-    count: 3
+    count: 3                   # кратно 3: узлы раскладываются по трём zone
     cores: 8                   # мин. 4
     memory_gb: 32              # мин. 16
     boot_disk:
@@ -156,6 +156,8 @@ vm_profiles:
     cores: 4
     memory_gb: 16
 ```
+
+Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
 
 При `vm_profiles.ocp.enabled: true` и `ocp.enabled: true` разворачивается веб-консоль OCP на отдельной ВМ. См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 

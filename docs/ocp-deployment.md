@@ -137,7 +137,7 @@ IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP
 - **Integrated deploy** — OCP разворачивается вместе с OceanBase через один `obd cluster deploy`. Добавление OCP к уже работающему кластеру может потребовать `obd cluster redeploy` или ручного добавления компонента.
 - **Сеть** — OCP-ВМ должна иметь доступ к observer и obproxy по внутренней сети YC.
 - **Пароли** — `ocp.admin_password` должен удовлетворять OBD-1025. `ocp.root_password` / `proxyro_password` — не слабее 8 символов и 2 классов: иначе после `oceanbase bootstrap ok` будет `OBD-5000 ALTER USER` и `obd cluster start` может «зависнуть».
-- **OBD-5000 `set idc = %s`** — `%s` это плейсхолдер лога OBD, не буквальное значение. Если bootstrap уже прошёл, observer'ы живы; destroy не нужен. Проверьте `mysql` на observer:2881 и `obd display-trace`.
+- **OBD-5000 `set idc = %s`** — `%s` это плейсхолдер лога OBD, не буквальное значение. Пачка таких ошибок сразу по всем zone плюс `alter user "root"` означает, что упал сам `alter system bootstrap` (OBD печатает его ошибку только в verbose-лог), а не отдельные `modify zone`. Диагностика — `obd display-trace` и `observer.log`. Разбор частого случая (больше трёх zone) — [«Zone и bootstrap»](large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
 
 ## Ссылки
 
