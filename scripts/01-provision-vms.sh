@@ -94,43 +94,40 @@ provision_async() {
 
   if ((${#new_vms[@]} == 0)); then
     info "Новых ВМ для создания нет"
-    build_inventory_from_queue
-    return 0
-  fi
+  else
+    info "Будет создано ВМ: ${#new_vms[@]}"
 
-  info "Будет создано ВМ: ${#new_vms[@]}"
+    if [[ "${disks_needed}" == "true" ]]; then
+      info "=== Фаза 1: создание дисков ==="
+      if [[ -n "${YC_FOLDER_ID}" && "${YC_FOLDER_ID}" != "null" ]]; then
+        info "Каталог Yandex Cloud: ${YC_FOLDER_ID}"
+      else
+        info "Каталог Yandex Cloud: из профиля yc (folder_id не задан в config)"
+      fi
+      local -a disks_created=()
 
-  if [[ "${disks_needed}" == "true" ]]; then
-    info "=== Фаза 1: создание дисков ==="
-    if [[ -n "${YC_FOLDER_ID}" && "${YC_FOLDER_ID}" != "null" ]]; then
-      info "Каталог Yandex Cloud: ${YC_FOLDER_ID}"
-    else
-      info "Каталог Yandex Cloud: из профиля yc (folder_id не задан в config)"
+      for entry in "${new_vms[@]}"; do
+        IFS=: read -r role prefix idx name <<< "${entry}"
+        create_instance_disks_async "${name}" "${role}" disks_created
+      done
+
+      if ((${#disks_created[@]} > 0)); then
+        wait_for_disks_ready "${disks_created[@]}"
+      fi
+      yc_assert_last_op_ok "создание дисков"
     fi
-    local -a disks_created=()
 
+    info "=== Фаза 2: создание ВМ ==="
     for entry in "${new_vms[@]}"; do
       IFS=: read -r role prefix idx name <<< "${entry}"
-      create_instance_disks_async "${name}" "${role}" disks_created
+      create_instance_async "${name}" "${role}"
     done
-
-    if ((${#disks_created[@]} > 0)); then
-      wait_for_disks_ready "${disks_created[@]}"
-    fi
-    yc_assert_last_op_ok "создание дисков"
+    yc_assert_last_op_ok "создание ВМ"
   fi
 
-  info "=== Фаза 2: создание ВМ ==="
-  local -a new_vm_names=()
-  for entry in "${new_vms[@]}"; do
-    IFS=: read -r role prefix idx name <<< "${entry}"
-    new_vm_names+=("${name}")
-    create_instance_async "${name}" "${role}"
-  done
-  yc_assert_last_op_ok "создание ВМ"
-
   info "=== Фаза 3: ожидание готовности ВМ ==="
-  wait_for_instances_ready "${deploy_name}" "${new_vm_names[@]}"
+  # Все запланированные ВМ, включая уже существующие (повтор после сбоя).
+  wait_for_instances_ready "${deploy_name}" "${all_names[@]}"
 
   build_inventory_from_queue
 

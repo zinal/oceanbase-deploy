@@ -12,6 +12,9 @@ YC_RATE_LIMIT_SLEEP="${YC_RATE_LIMIT_SLEEP:-10}"
 YC_ASYNC_MAX_RETRIES="${YC_ASYNC_MAX_RETRIES:-60}"
 YC_WAIT_TIMEOUT="${YC_WAIT_TIMEOUT:-3600}"
 YC_WAIT_POLL="${YC_WAIT_POLL:-5}"
+# Квота Compute Cloud: 15 одновременных операций на каталог.
+# Держим запас, 0 — не ждать слот (только retry после ошибки).
+YC_MAX_INFLIGHT="${YC_MAX_INFLIGHT:-10}"
 
 # Кеш folder-id (yaml_get на каждый yc-вызов тормозит provision)
 YC_FOLDER_ID=""
@@ -38,6 +41,56 @@ yc_op_has_error() {
   grep -q "ERROR:" "${1}" 2>/dev/null
 }
 
+# Число незавершённых операций в каталоге. -1 — не удалось определить.
+yc_count_active_ops() {
+  command -v yc >/dev/null 2>&1 || { echo -1; return 0; }
+  yc_folder_cache_init
+  local out
+  out="$(yc operation list "${YC_FOLDER_ARGS[@]}" --format json --limit 100 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(-1)
+    raise SystemExit
+if isinstance(data, dict):
+    ops = data.get('operations') or data.get('items') or []
+elif isinstance(data, list):
+    ops = data
+else:
+    print(-1)
+    raise SystemExit
+print(sum(1 for o in ops if isinstance(o, dict) and not o.get('done', True)))
+" 2>/dev/null || true)"
+  if [[ "${out}" =~ ^-?[0-9]+$ ]]; then
+    printf '%s\n' "${out}"
+  else
+    echo -1
+  fi
+}
+
+yc_wait_for_op_slot() {
+  local max="${YC_MAX_INFLIGHT:-10}"
+  if ! [[ "${max}" =~ ^[0-9]+$ ]] || (( max == 0 )); then
+    return 0
+  fi
+  local elapsed=0 active
+  while (( elapsed < YC_WAIT_TIMEOUT )); do
+    active="$(yc_count_active_ops)"
+    active="${active//$'\n'/}"
+    if ! [[ "${active}" =~ ^-?[0-9]+$ ]] || (( active < 0 )); then
+      return 0
+    fi
+    if (( active < max )); then
+      return 0
+    fi
+    info "Активных операций YC: ${active} (лимит ${max}), ожидание слота..."
+    sleep "${YC_WAIT_POLL}"
+    elapsed=$((elapsed + YC_WAIT_POLL))
+  done
+  die "Таймаут ожидания слота операций YC (${YC_WAIT_TIMEOUT}с)"
+}
+
 yc_async_retry() {
   local description="$1"
   shift
@@ -45,23 +98,19 @@ yc_async_retry() {
 
   ensure_generated_dir
   while (( attempt < YC_ASYNC_MAX_RETRIES )); do
+    yc_wait_for_op_slot
     if "$@" --async >"${YC_OP_LOG}" 2>&1; then
-      if yc_op_has_rate_limit "${YC_OP_LOG}"; then
-        warn "Rate limit при ${description}, повтор через ${YC_RATE_LIMIT_SLEEP}с..."
-        sleep "${YC_RATE_LIMIT_SLEEP}"
-        ((attempt++))
-        continue
+      if ! yc_op_has_rate_limit "${YC_OP_LOG}"; then
+        return 0
       fi
-      return 0
+    elif ! yc_op_has_rate_limit "${YC_OP_LOG}"; then
+      cat "${YC_OP_LOG}" >&2
+      die "Ошибка при ${description}"
     fi
-    if yc_op_has_rate_limit "${YC_OP_LOG}"; then
-      warn "Rate limit при ${description}, повтор через ${YC_RATE_LIMIT_SLEEP}с..."
-      sleep "${YC_RATE_LIMIT_SLEEP}"
-      ((attempt++))
-      continue
-    fi
-    cat "${YC_OP_LOG}" >&2
-    die "Ошибка при ${description}"
+    warn "Rate limit при ${description}, повтор через ${YC_RATE_LIMIT_SLEEP}с (попытка $((attempt + 1))/${YC_ASYNC_MAX_RETRIES})..."
+    sleep "${YC_RATE_LIMIT_SLEEP}"
+    # Не ((attempt++)): при attempt=0 и set -e это завершает скрипт (значение выражения 0).
+    attempt=$((attempt + 1))
   done
   die "Превышен лимит повторов при ${description}"
 }
@@ -89,8 +138,10 @@ yc_list_existing_instances() {
   mapfile -t _out < <(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
 import json, sys
 want = set(sys.argv[1:])
-existing = [i['name'] for i in json.load(sys.stdin) if i.get('name') in want]
-print('\n'.join(existing))
+for i in json.load(sys.stdin):
+    name = i.get('name')
+    if name in want:
+        print(name)
 " "${names[@]}")
 }
 
@@ -109,11 +160,10 @@ yc_list_existing_disks() {
 import json, sys
 want = set(sys.argv[1:])
 skip = {'DELETING'}
-existing = [
-    d['name'] for d in json.load(sys.stdin)
-    if d.get('name') in want and d.get('status') not in skip
-]
-print('\n'.join(existing))
+for d in json.load(sys.stdin):
+    name = d.get('name')
+    if name in want and d.get('status') not in skip:
+        print(name)
 " "${names[@]}")
 }
 
@@ -203,16 +253,21 @@ wait_for_instances_ready() {
     pending="$(yc compute instance list "${YC_FOLDER_ARGS[@]}" --format json 2>/dev/null | python3 -c "
 import json, sys
 deploy, *expect = sys.argv[1:]
-expect_set = set(expect) if expect else None
 ready = {'RUNNING', 'STOPPED'}
-pending = 0
-for i in json.load(sys.stdin):
+try:
+    instances = json.load(sys.stdin)
+except Exception:
+    print(-1)
+    raise SystemExit
+by_name = {}
+for i in instances:
     if i.get('labels', {}).get('deployment') != deploy:
         continue
-    if expect_set is not None and i.get('name') not in expect_set:
-        continue
-    if i.get('status') not in ready:
-        pending += 1
+    by_name[i.get('name')] = i.get('status')
+if expect:
+    pending = sum(1 for name in expect if by_name.get(name) not in ready)
+else:
+    pending = sum(1 for status in by_name.values() if status not in ready)
 print(pending)
 " "${deploy_name}" "${expect_names[@]}")"
 
