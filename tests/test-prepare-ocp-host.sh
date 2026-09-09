@@ -12,6 +12,7 @@ fi
 
 grep -q "setcap cap_net_raw,cap_sys_nice+ep" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
 grep -q "CLOCKDIFF_ONLY" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
+grep -q "/usr/sbin/clockdiff" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
 grep -q "/usr/bin/clockdiff" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
 
 tmp="$(mktemp -d)"

@@ -165,21 +165,21 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 |-----------|----------|----------------|
 | `The current user must be the admin user` | OBD без `-V` считает OCP 3.1.1 | да, `-V 4.4.2`; **не** менять SSH на `admin` |
 | `Failed to install repository oceanbase-ce-utils …` | … | нет, не блокирует. Если есть `takeover task successfully submitted to ocp` — задача уже в UI |
-| `Pre check for create host` / `Execute clock diff failed` / `diffWithIcmpTimestamp` / `args=[<ip>]` без `-o` | OCP mode 0: ICMP TIMESTAMP. SSH при этом ок. `setcap` снимает Operation not permitted, но YC часто режет ICMP TIMESTAMP → exit 1. | да: `./scripts/deploy.sh ocp-clockdiff` ставит wrapper `/usr/bin/clockdiff` → `clockdiff.real -o`. Затем Retry той же задачи. |
+| `Pre check for create host` / `Execute clock diff failed` / `diffWithIcmpTimestamp` / `args=[<ip>]` без `-o` | OCP mode 0 + Ubuntu PATH: JVM берёт `/usr/sbin/clockdiff` (ELF), а не wrapper в `/usr/bin`. Даже `-o` на YC часто exit 1. | да: `./scripts/deploy.sh ocp-clockdiff` ставит wrapper в **sbin и bin** и пишет `ocp.host.check.clock-diff.enable=false`. Затем Retry той же задачи. |
 | `abnormal Cgroup configuration` | Ubuntu 22.04 — cgroup v2, OceanBase изоляция CPU — cgroup v1. Баннер, не причина падения pre-check. | не reboot всего кластера. Позже: GRUB `systemd.unified_cgroup_hierarchy=0` или `ALTER SYSTEM SET enable_cgroup=false` |
 | `do takeover … You must specify the value of the given parameter` | OCP `POST /api/v2/ob/clusters/takeOver` получил пустое поле. Типично `"port": null`: OBD берёт `mysql_port` **только из** `oceanbase-ce.global`, а генератор раньше писал порт лишь в `serverN`. Пустой `--host_type` на свежем OCP создаёт тип хоста с `name=""` — та же ошибка | да: `mysql_port` в global + `--host_type yandex-cloud` |
 
-`Configurations of the oceanbase-ce can be taken over by OCP` после WARN utils — precheck прошёл. Кластер при этом уже развёрнут; пустой список в UI — пока takeover не принят. Если задача takeover зависла в **Taking over** и subtask «Pre check for create host» FAILED с `Execute clock diff failed` — это не SSH: OCP с `10.130.0.22` запускает локально `clockdiff <observer>`. Исправление:
+`Configurations of the oceanbase-ce can be taken over by OCP` после WARN utils — precheck прошёл. Кластер при этом уже развёрнут; пустой список в UI — пока takeover не принят. Если задача takeover зависла в **Taking over** и subtask «Pre check for create host» FAILED с `Execute clock diff failed` — это не SSH: OCP с JVM-хоста запускает локально `clockdiff <observer>` (часто `/usr/sbin`, mode 0, ICMP TIMESTAMP). Yandex Cloud это режет. Исправление:
 
 ```bash
 ./scripts/deploy.sh ocp-clockdiff
 ```
 
-Затем в UI Retry задачи (например `/task/22`). Баннер про Cgroup на Ubuntu 22.04 — отдельно, не этот FAIL.
+Затем в UI Retry **той же** задачи (не второй takeover). Баннер про Cgroup на Ubuntu 22.04 — отдельно, не этот FAIL.
 
-`ERROR: Expecting value: line 1 column 1` после `OCP clockdiff ready` — HTML логина вместо JSON API, не сбой clockdiff.
+Если API не достучалась до System Parameters — вручную: `ocp.host.check.clock-diff.enable=false` (или `clock-diff.mode=1`). Chrony на ВМ уже есть.
 
-Если Retry после одного `setcap` всё ещё `diffWithIcmpTimestamp` / `args=[10.130.0.21]` (без `-o`) — YC режет ICMP TIMESTAMP. Повторно `./scripts/deploy.sh ocp-clockdiff` (wrapper добавляет `-o`), затем Retry task 22.
+`ERROR: Expecting value: line 1 column 1` после `OCP clockdiff ready` — HTML логина вместо JSON API, не сбой clockdiff. В этом случае параметр задайте в UI, затем Retry.
 
 Запасной путь — ручной Take over в UI (таблица ниже).
 

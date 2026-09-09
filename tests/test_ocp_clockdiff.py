@@ -183,6 +183,7 @@ def test_apply_sets_mode_one() -> None:
     try:
         rc = ocp_clockdiff.apply_clockdiff_workaround(url, "admin", "secret", mode="1")
         assert rc == 0
+        assert Handler.store["ocp.host.check.clock-diff.enable"] == "false"
         assert Handler.store["ocp.host.check.clock-diff.mode"] == "1"
         assert Handler.puts
     finally:
@@ -210,6 +211,7 @@ def test_login_cookie_then_put() -> None:
     try:
         rc = ocp_clockdiff.apply_clockdiff_workaround(url, "admin", "secret", mode="1")
         assert rc == 0
+        assert LoginHandler.store["ocp.host.check.clock-diff.enable"] == "false"
         assert LoginHandler.store["ocp.host.check.clock-diff.mode"] == "1"
         assert LoginHandler.puts
     finally:
@@ -233,19 +235,24 @@ def test_prepare_script_has_setcap() -> None:
     assert "/usr/lib/oceanbase/clockdiff.real" in text
     assert 'exec "$REAL" -o "$@"' in text
     assert "-ef" in text
+    assert "/usr/sbin/clockdiff" in text
+    assert 'install -m 0755 "${wrap}" "${dest}"' in text or " /usr/sbin/clockdiff" in text
     register = (ROOT / "scripts" / "09-ocp-register.sh").read_text(encoding="utf-8")
     assert "--clockdiff-only" in register
-    assert "CLOCKDIFF_TEST_IP" not in register
+    assert "--clockdiff" in register
+    assert "CLOCKDIFF_TEST_IP" in register
     only_idx = register.find('CLOCKDIFF_ONLY_CMD}" == "true"')
+    only_exit = register.find("exit 0", only_idx)
     tenants_idx = register.find("DBA_OB_TENANTS")
-    assert only_idx != -1 and tenants_idx != -1
-    assert only_idx < tenants_idx
-    only_block = register[only_idx:tenants_idx]
-    assert "exit 0" in only_block
+    assert only_idx != -1 and only_exit != -1 and tenants_idx != -1
+    assert only_idx < only_exit < tenants_idx
+    only_block = register[only_idx:only_exit]
     assert "ocp_clockdiff.py" not in only_block
     assert "install_ocp_clockdiff_wrapper" in only_block
+    assert "apply_ocp_clockdiff_params" in register
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "ocp-clockdiff" in deploy
+    assert "--clockdiff" in deploy
     deploy_case = deploy.split("\n  deploy)")[1].split("\n  tenant)")[0]
     assert "run_ocp_clockdiff_if_enabled" in deploy_case
     all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]

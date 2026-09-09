@@ -43,7 +43,7 @@ LOGIN_PATHS = (
 
 UI_HINT = (
     "В UI OCP: Системные параметры → "
-    f"{CLOCK_DIFF_MODE_KEY}=1 или {CLOCK_DIFF_ENABLE_KEY}=false"
+    f"{CLOCK_DIFF_ENABLE_KEY}=false (предпочтительно на YC) или {CLOCK_DIFF_MODE_KEY}=1"
 )
 
 
@@ -250,9 +250,11 @@ def put_parameter(
 
 
 def apply_clockdiff_workaround(base: str, user: str, password: str, mode: str = DEFAULT_MODE) -> int:
-    """Set clock-diff.mode (and disable the check if mode cannot be written). Return 0 on success.
+    """Disable host clock-diff precheck (and set mode as fallback). Return 0 on success.
 
-    Never raises: HTML login/SPA pages must not abort `ocp-clockdiff` after setcap.
+    Yandex Cloud drops ICMP TIMESTAMP (mode 0) and often IP timestamps (mode 1 / -o).
+    Chrony already syncs the VMs; the takeover Pre check should not block on clockdiff.
+    Never raises: HTML login/SPA pages must not abort after setcap.
     """
     try:
         client = OcpClient(base, user, password)
@@ -261,25 +263,44 @@ def apply_clockdiff_workaround(base: str, user: str, password: str, mode: str = 
         by_key = {_item_key(item): item for item in items if _item_key(item)}
         mode_item = by_key.get(CLOCK_DIFF_MODE_KEY)
         enable_item = by_key.get(CLOCK_DIFF_ENABLE_KEY)
+        disabled = False
+        mode_ok = False
+
+        if enable_item is not None:
+            current_en = _item_value(enable_item).strip().lower()
+            print(f"{CLOCK_DIFF_ENABLE_KEY}={current_en or _item_value(enable_item)}")
+            if current_en in {"false", "0", "no", "off"}:
+                print(f"ok {CLOCK_DIFF_ENABLE_KEY} already false")
+                disabled = True
+            else:
+                status, payload = put_parameter(
+                    client, CLOCK_DIFF_ENABLE_KEY, "false", enable_item
+                )
+                if 200 <= status < 300:
+                    print(f"set {CLOCK_DIFF_ENABLE_KEY}=false (YC blocks ICMP/IP timestamp)")
+                    disabled = True
+                else:
+                    print(
+                        f"WARN: PUT {CLOCK_DIFF_ENABLE_KEY} -> {status} {payload}",
+                        file=sys.stderr,
+                    )
 
         if mode_item is not None:
             current = _item_value(mode_item)
             print(f"{CLOCK_DIFF_MODE_KEY}={current}")
             if current == mode:
                 print(f"ok {CLOCK_DIFF_MODE_KEY} already {mode}")
-                return 0
-            status, payload = put_parameter(client, CLOCK_DIFF_MODE_KEY, mode, mode_item)
-            if 200 <= status < 300:
-                print(f"set {CLOCK_DIFF_MODE_KEY}={mode}")
-                return 0
-            print(f"WARN: PUT {CLOCK_DIFF_MODE_KEY} -> {status} {payload}", file=sys.stderr)
+                mode_ok = True
+            else:
+                status, payload = put_parameter(client, CLOCK_DIFF_MODE_KEY, mode, mode_item)
+                if 200 <= status < 300:
+                    print(f"set {CLOCK_DIFF_MODE_KEY}={mode}")
+                    mode_ok = True
+                else:
+                    print(f"WARN: PUT {CLOCK_DIFF_MODE_KEY} -> {status} {payload}", file=sys.stderr)
 
-        if enable_item is not None:
-            status, payload = put_parameter(client, CLOCK_DIFF_ENABLE_KEY, "false", enable_item)
-            if 200 <= status < 300:
-                print(f"set {CLOCK_DIFF_ENABLE_KEY}=false (ICMP clockdiff unavailable)")
-                return 0
-            print(f"WARN: PUT {CLOCK_DIFF_ENABLE_KEY} -> {status} {payload}", file=sys.stderr)
+        if disabled or mode_ok:
+            return 0
 
         print(
             "WARN: OCP API не отдала JSON системных параметров (часто SPA/login HTML). "

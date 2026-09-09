@@ -443,11 +443,12 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 
 `Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. Если в логе есть `takeover task successfully submitted to ocp` (задача в UI, например `/task/22`), `ocp-register` считает это успехом, даже если OBD вернул ненулевой код из‑за utils RPM.
 
-`./scripts/deploy.sh deploy` и `all` при включённом OCP сами вызывают `ocp-clockdiff` (wrapper `-o` на OCP-ВМ) до `export-to-ocp`. Отдельная команда нужна, если takeover уже ушёл в UI без wrapper:
+`./scripts/deploy.sh deploy` и `all` при включённом OCP ставят wrapper clockdiff до `export-to-ocp`. Если takeover уже в UI и «Pre check for create host» FAILED (`diffWithIcmpTimestamp`, `args=[ip]` без `-o`):
 
 ```bash
 ./scripts/deploy.sh ocp-clockdiff
-# затем Retry задачи в UI OCP (не второй takeover)
+# wrapper в /usr/sbin и /usr/bin + ocp.host.check.clock-diff.enable=false
+# затем Retry той же задачи в UI (не второй takeover)
 ```
 
 Баннер `abnormal Cgroup configuration` на Ubuntu 22.04 (cgroup v2) — не этот FAIL. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).

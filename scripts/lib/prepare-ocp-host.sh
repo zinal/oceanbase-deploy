@@ -69,13 +69,15 @@ install_clockdiff() {
   fi
 
   # OCP JVM вызывает `clockdiff <ip>` (mode 0, ICMP TIMESTAMP) без sudo.
-  # CAP_NET_RAW снимает Operation not permitted, но Yandex Cloud часто режет
-  # ICMP TIMESTAMP → exit 1 всё равно. Wrapper в /usr/bin добавляет `-o`
-  # (IP timestamps = OCP mode 1), пока параметр в UI не сменён.
-  local dest="/usr/bin/clockdiff" real="/usr/lib/oceanbase/clockdiff.real" src="" cand
+  # Ubuntu кладёт ELF в /usr/sbin; PATH ocp-server обычно /usr/sbin:/usr/bin —
+  # wrapper только в /usr/bin OCP не видит (лог: args=[ip] без -o, exit 1).
+  # CAP_NET_RAW снимает Operation not permitted, но Yandex Cloud режет и
+  # ICMP TIMESTAMP, и часто IP timestamps (`-o`). Wrapper всё равно ставим;
+  # takeover ещё требует ocp.host.check.clock-diff.enable=false в UI/API.
+  local real="/usr/lib/oceanbase/clockdiff.real" wrap="/usr/lib/oceanbase/clockdiff.wrap"
+  local src="" cand dest
 
-  # После прошлого прогона /usr/bin — скрипт, /usr/sbin может быть symlink на него.
-  # Единственный ELF тогда уже clockdiff.real — не копировать файл сам в себя.
+  # После прошлого прогона /usr/bin и /usr/sbin — скрипты. ELF только в real.
   for cand in "${real}" /usr/sbin/clockdiff /usr/bin/clockdiff /bin/clockdiff; do
     if is_elf "${cand}"; then
       src="${cand}"
@@ -103,19 +105,16 @@ install_clockdiff() {
     fi
   fi
   if command -v setcap >/dev/null 2>&1; then
-    for bin in "${real}" /usr/sbin/clockdiff; do
-      [[ -f "${bin}" ]] && is_elf "${bin}" || continue
-      setcap cap_net_raw,cap_sys_nice+ep "${bin}" || {
-        echo "WARN: setcap ${bin} не применился" >&2
-      }
-      getcap "${bin}" || true
-    done
+    setcap cap_net_raw,cap_sys_nice+ep "${real}" || {
+      echo "WARN: setcap ${real} не применился" >&2
+    }
+    getcap "${real}" || true
   else
     echo "WARN: нет setcap — установите libcap2-bin" >&2
   fi
 
   # Не setcap на скрипт: capability нужна ELF, которую exec'ает wrapper.
-  cat > "${dest}" <<'WRAP'
+  cat > "${wrap}" <<'WRAP'
 #!/bin/sh
 REAL=/usr/lib/oceanbase/clockdiff.real
 need_o=1
@@ -129,20 +128,23 @@ if [ "$need_o" = 1 ]; then
 fi
 exec "$REAL" "$@"
 WRAP
-  chmod 0755 "${dest}"
-  echo "clockdiff wrapper ${dest} → ${real} -o (если нет -o/-o1)"
+  chmod 0755 "${wrap}"
+  for dest in /usr/bin/clockdiff /usr/sbin/clockdiff; do
+    install -m 0755 "${wrap}" "${dest}"
+    echo "clockdiff wrapper ${dest} → ${real} -o (если нет -o/-o1)"
+  done
 
   if [[ -n "${DEPLOY_USER}" ]]; then
-    if sudo -u "${DEPLOY_USER}" test -x "${dest}" && sudo -u "${DEPLOY_USER}" test -x "${real}"; then
-      echo "clockdiff доступен ${DEPLOY_USER}: ${dest} → ${real}"
+    if sudo -u "${DEPLOY_USER}" test -x /usr/sbin/clockdiff && sudo -u "${DEPLOY_USER}" test -x "${real}"; then
+      echo "clockdiff доступен ${DEPLOY_USER}: /usr/sbin + /usr/bin → ${real}"
     else
-      echo "WARN: ${DEPLOY_USER} не может выполнить ${dest} / ${real}" >&2
+      echo "WARN: ${DEPLOY_USER} не может выполнить wrapper / ${real}" >&2
     fi
     local probe="${CLOCKDIFF_TEST_IP:-127.0.0.1}"
-    if sudo -u "${DEPLOY_USER}" "${dest}" "${probe}"; then
-      echo "clockdiff wrapper ok ${DEPLOY_USER} → ${probe} (как OCP: без -o в argv)"
+    if sudo -u "${DEPLOY_USER}" /usr/sbin/clockdiff "${probe}"; then
+      echo "clockdiff wrapper ok ${DEPLOY_USER} /usr/sbin → ${probe} (как OCP: без -o в argv)"
     else
-      echo "WARN: clockdiff wrapper к ${probe} exit $? — ICMP/IP timestamp, проверьте сеть" >&2
+      echo "WARN: clockdiff wrapper к ${probe} exit $? — YC режет ICMP/IP timestamp; выключите ocp.host.check.clock-diff.enable" >&2
     fi
   fi
 }

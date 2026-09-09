@@ -21,8 +21,10 @@ usage() {
 его в OCP: obd cluster check4ocp -V <ocp.version|установленная> + export-to-ocp.
 Без -V OBD считает OCP 3.1.1 и ошибочно требует OS-пользователя admin.
 
-  --clockdiff-only  только wrapper clockdiff -o + CAP_NET_RAW на OCP-ВМ
-                    (без SQL/API к кластеру; для deploy до start и для retry takeover)
+  --clockdiff-only  только wrapper clockdiff на /usr/sbin и /usr/bin OCP-ВМ
+                    (без SQL/API; для deploy до start JVM)
+  --clockdiff       wrapper + System Parameters (enable=false / mode=1), затем
+                    Retry takeover в UI. Нужен живой OCP :8080.
 
 OCP-ВМ (ocp-server-ce) не содержит oceanbase-ce. Пустой список кластеров в UI
 после start ocp-server-ce — нормально, пока не выполнен export-to-ocp.
@@ -35,8 +37,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 CLOCKDIFF_ONLY_CMD=false
+CLOCKDIFF_WITH_PARAM=false
 if [[ "${1:-}" == "--clockdiff-only" ]]; then
   CLOCKDIFF_ONLY_CMD=true
+elif [[ "${1:-}" == "--clockdiff" ]]; then
+  CLOCKDIFF_WITH_PARAM=true
 fi
 
 require_file "${CONFIG_FILE}"
@@ -51,7 +56,7 @@ if [[ "$(yaml_get ocp.enabled)" != "true" || "$(yaml_get vm_profiles.ocp.enabled
 fi
 
 [[ "${OCP_COUNT:-0}" -ge 1 ]] || die "Нет OCP_1_IP — выполните ./scripts/deploy.sh provision"
-if [[ "${CLOCKDIFF_ONLY_CMD}" != "true" ]]; then
+if [[ "${CLOCKDIFF_ONLY_CMD}" != "true" && "${CLOCKDIFF_WITH_PARAM}" != "true" ]]; then
   command -v obd >/dev/null 2>&1 || die "obd не в PATH"
   obd_cluster_registered "${CLUSTER_NAME}" || die "Кластер OBD ${CLUSTER_NAME} не зарегистрирован"
 fi
@@ -61,17 +66,46 @@ DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
 [[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER=obadmin
 
 install_ocp_clockdiff_wrapper() {
-  info "clockdiff на OCP-ВМ ${OCP_1_IP}: wrapper -o + CAP_NET_RAW"
+  info "clockdiff на OCP-ВМ ${OCP_1_IP}: wrapper в /usr/sbin и /usr/bin (-o + CAP_NET_RAW)"
   if ! run_remote "${OCP_1_IP}" \
-    "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true bash -s" \
+    "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true CLOCKDIFF_TEST_IP='${OBSERVER_1_IP:-127.0.0.1}' bash -s" \
     < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
     die "не удалось установить clockdiff wrapper на ${OCP_1_IP}"
   fi
 }
 
+load_ocp_login() {
+  OCP_PORT="$(yaml_get ocp.port)"
+  [[ -z "${OCP_PORT}" || "${OCP_PORT}" == "null" ]] && OCP_PORT=8080
+  OCP_USER="$(yaml_get ocp.admin_username)"
+  [[ -z "${OCP_USER}" || "${OCP_USER}" == "null" ]] && OCP_USER=admin
+  OCP_PASSWORD="$(yaml_get ocp.admin_password)"
+  [[ -n "${OCP_PASSWORD}" && "${OCP_PASSWORD}" != "null" ]] || die "Пустой ocp.admin_password"
+  OCP_URL="http://${OCP_1_IP}:${OCP_PORT}"
+}
+
+apply_ocp_clockdiff_params() {
+  load_ocp_login
+  info "OCP System Parameters на ${OCP_URL}: выключить clock-diff precheck (YC режет ICMP TIMESTAMP)"
+  if python3 "${LIB_DIR}/lib/ocp_clockdiff.py" apply \
+    --url "${OCP_URL}" --user "${OCP_USER}" --password "${OCP_PASSWORD}"; then
+    info "OCP clock-diff precheck отключён или mode=1. В UI: Retry той же задачи takeover."
+    return 0
+  fi
+  warn "API не сменила параметры. В UI: Системные параметры → ocp.host.check.clock-diff.enable=false"
+  warn "затем Retry «Pre check for create host». Не запускайте второй takeover."
+  return 1
+}
+
 # До obd cluster start нет observer/OCP API — только OS-wrapper на OCP-ВМ.
 if [[ "${CLOCKDIFF_ONLY_CMD}" == "true" ]]; then
   install_ocp_clockdiff_wrapper
+  exit 0
+fi
+
+if [[ "${CLOCKDIFF_WITH_PARAM}" == "true" ]]; then
+  install_ocp_clockdiff_wrapper
+  apply_ocp_clockdiff_params || true
   exit 0
 fi
 
@@ -140,6 +174,7 @@ else
 fi
 
 install_ocp_clockdiff_wrapper
+apply_ocp_clockdiff_params || true
 
 OCP_VERSION="$(resolve_ocp_check_version "${CLUSTER_NAME}")"
 info "obd cluster check4ocp ${CLUSTER_NAME} -V ${OCP_VERSION}"
@@ -211,7 +246,9 @@ cat <<EOF
 должен появиться ${APPNAME} (cluster_id=1), а не отдельный кластер на ${OCP_1_IP}.
 
 Если задача зависла в Taking over и «Pre check for create host» FAILED
-(Execute clock diff failed): ./scripts/deploy.sh ocp-clockdiff, затем Retry в UI.
+(Execute clock diff failed / diffWithIcmpTimestamp): 
+  ./scripts/deploy.sh ocp-clockdiff
+(wrapper в /usr/sbin + ocp.host.check.clock-diff.enable=false), затем Retry в UI.
 Баннер abnormal Cgroup на Ubuntu 22.04 (cgroup v2) — не этот FAIL.
 
 Если export-to-ocp недоступен, вручную в UI OCP: Take over cluster

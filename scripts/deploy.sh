@@ -84,7 +84,7 @@ case "${STEP}" in
     run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" "${@:2}"
     ;;
   ocp-clockdiff)
-    run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" --clockdiff-only
+    run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" --clockdiff
     ;;
   diagnose)
     run_cmd bash "${ROOT}/scripts/diagnose-obd-start.sh" "${@:2}"
@@ -127,7 +127,7 @@ case "${STEP}" in
   join-observer — leftover observer / ERROR 4179: wipe одного IP и ADD SERVER
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   ocp-register — зарегистрировать oceanbase-ce в UI OCP (export-to-ocp)
-  ocp-clockdiff — wrapper clockdiff -o на OCP-ВМ (входит в deploy/all при OCP)
+  ocp-clockdiff — wrapper /usr/sbin/clockdiff + выключить precheck в OCP (Retry takeover)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
   all        — полный цикл (по умолчанию)
