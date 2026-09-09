@@ -106,11 +106,7 @@ while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
   fi
   if [[ "${obagent_yaml}" != "-" ]]; then
     obd cluster scale_out "${deploy_name}" -c "${obagent_yaml}"
-    while read -r agent_ip; do
-      [[ -n "${agent_ip}" ]] || continue
-      info "Запуск obagent на ${agent_ip}: OBD scale_out его не стартует"
-      start_obagent_node "${deploy_name}" "${agent_ip}"
-    done < <(obd_yaml_component_ips "${obagent_yaml}" obagent)
+    start_obagent_yaml "${deploy_name}" "${obagent_yaml}"
   fi
 done < "${PLAN_MANIFEST}"
 

@@ -176,7 +176,7 @@ vm_profiles:
 
 1. `obd cluster deploy/start` получает `generated/obd-seed.yaml` только с `observer-1..3` — по одному на `zone1..3`.
 2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д. Один вызов OBD получает YAML **до трёх** новых observer (по одному на zone1/2/3).
-3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Перед стартом создаётся `home_path/{run,bin,lib,conf,log}` (это делает `init` при первом `obd cluster start`, но не при `scale_out`), затем `obd cluster start -c obagent -s <ip>`. Без каталога `run/` агент падает с `fetch_admin_lock_failed`. Повторный запуск сначала поднимает уже зарегистрированные агенты и продолжает с отсутствующих компонентов.
+3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Перед стартом на **всех IP пакета** создаётся `home_path/{run,bin,lib,conf,log}` (это делает `init` при первом `obd cluster start`, но не при `scale_out`), затем один `obd cluster start -c obagent` без `-s`. Поштучный `start -s <ip>` ненадёжен: OBD может поднять другой не-running агент (например `-s 10.130.0.8` → `server8` / `10.130.0.18`) без `run/` → `fetch_admin_lock_failed`. Повторный запуск сначала поднимает уже зарегистрированные агенты и продолжает с отсутствующих компонентов.
 
 В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`.
 

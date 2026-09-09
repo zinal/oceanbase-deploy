@@ -190,7 +190,7 @@ recover_observer_temporary() {
   fi
 
   if [[ "${OBAGENT_ON}" == "true" ]]; then
-    obd_start_component "${DEPLOY_NAME_CLUSTER}" "obagent" "${OLD_IP}" \
+    start_obagent_node "${DEPLOY_NAME_CLUSTER}" "${OLD_IP}" \
       || warn "obagent не стартовал — метрики узла могут отсутствовать"
   fi
   if [[ "${INDEX}" -eq 1 && "${CS_DEDICATED}" != "true" ]]; then
