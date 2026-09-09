@@ -501,9 +501,17 @@ obshell bootstrap -
 3. Оставшиеся узлы добавляются `obd cluster scale_out` раундами по три: один в `zone1`, один в `zone2`, один в `zone3`. Каждый вызов OBD получает YAML только одного нового observer; три вызова выполняются последовательно.
 4. Для каждого пакета сначала добавляется `oceanbase-ce`, затем отдельным вызовом — `obagent`. Перед `obd cluster start <deploy> -c obagent -s <ip>` создаются каталоги `home_path/{run,bin,lib,conf,log}`: OBD не вызывает `init` при scale-out obagent, и без `run/` старт заканчивается `fetch_admin_lock_failed`. Без этого следующего `scale_out` падает на `status_check` (`obagent is not running`).
 
-YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. В named-настройки нового observer добавляется `rootservice_list` трёх seed-узлов. Это необходимо для OBD 3.5.3 с плагином OceanBase 4.6: `start_pre.py` добавляет вычисленный `obconfig_url` только при `need_bootstrap=True`, хотя для scale-out выставляется `need_bootstrap=False`. Без явного списка новый observer запускается без источника RootService (`server_list=[]`), а `ALTER SYSTEM ADD SERVER` ждёт его регистрации и завершается таймаутом.
+YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. В named-настройки нового observer добавляется `rootservice_list` трёх seed-узлов. Это необходимо для OBD 3.5.3 с плагином OceanBase 4.6: `start_pre.py` добавляет вычисленный `obconfig_url` только при `need_bootstrap=True`, хотя для scale-out выставляется `need_bootstrap=False`. Без явного списка новый observer запускается без источника RootService (`server_list=[]`).
 
-Перед `scale_out` целевой observer очищается (процессы, `home_path`, data/redo). Seed-узлы не трогаются. Это нужно, потому что неудачный `ADD SERVER` оставляет запущенный observer без членства в кластере: следующий `scale_out` видит pid и не стартует процесс заново.
+Перед `scale_out` целевой observer очищается (процессы, `home_path`, data/redo). Seed-узлы не трогаются. Неудачный `ADD SERVER` оставляет запущенный observer: следующий `scale_out` без очистки видит pid и не подставляет `rootservice_list`.
+
+`ALTER SYSTEM ADD SERVER` в OBD идёт с дефолтным `ob_query_timeout=10s`. На 6-м и последующих узлах SQL часто не укладывается: `OBD-5000` ровно через ~10 с (`ERROR 4012 … 10000000(us)`), хотя `Start observer ok` и `Connect to observer <new>:2881 ok` уже были. Скрипт ставит `SET GLOBAL ob_query_timeout` на sys и при ошибке OBD повторяет `ADD SERVER` с timeout 3600 с. Если OBD уже упал, **не** делайте wipe — повторите SQL к seed:
+
+```sql
+SET SESSION ob_query_timeout = 3600000000;
+ALTER SYSTEM ADD SERVER '10.130.0.37:2882' ZONE zone3;
+SELECT SVR_IP, SVR_PORT, STATUS FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='10.130.0.37';
+```
 
 План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
 

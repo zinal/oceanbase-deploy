@@ -431,6 +431,118 @@ mkdir -p "\${DATA_DIR}" "\${REDO_DIR}"
 REMOTE
 }
 
+# OBD Cursor не ставит ob_query_timeout: ALTER SYSTEM ADD SERVER падает за 10s (ERROR 4012).
+OB_ADD_SERVER_TIMEOUT_US="${OB_ADD_SERVER_TIMEOUT_US:-3600000000}"
+
+sql_client_bin() {
+  if command -v mysql >/dev/null 2>&1; then
+    printf '%s' mysql
+  elif command -v obclient >/dev/null 2>&1; then
+    printf '%s' obclient
+  else
+    printf ''
+  fi
+}
+
+observer_sys_sql() {
+  local sql="$1"
+  local client ip port pass
+  client="$(sql_client_bin)"
+  [[ -n "${client}" ]] || return 1
+  port="$(yaml_get oceanbase.ports.mysql)"
+  [[ -n "${port}" && "${port}" != "null" ]] || port=2881
+  pass="$(yaml_get ocp.root_password)"
+  [[ "${pass}" == "null" ]] && pass=""
+  for ip in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
+    [[ -n "${ip}" ]] || continue
+    if "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=8 -Nse "${sql}" 2>/dev/null; then
+      return 0
+    fi
+    if [[ -n "${pass}" ]] && MYSQL_PWD="${pass}" "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=8 -Nse "${sql}" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+raise_sys_query_timeout() {
+  info "sys.ob_query_timeout=${OB_ADD_SERVER_TIMEOUT_US} мкс (иначе OBD ADD SERVER = 10s / ERROR 4012)"
+  observer_sys_sql "SET GLOBAL ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}" \
+    || warn "SET GLOBAL ob_query_timeout не прошёл — будет SQL-повтор ADD SERVER"
+}
+
+observer_cluster_status() {
+  local ip="$1"
+  observer_sys_sql "SELECT STATUS FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='${ip}' LIMIT 1"
+}
+
+wait_observer_active() {
+  local ip="$1"
+  local timeout="${2:-300}"
+  local elapsed=0 status
+  while (( elapsed < timeout )); do
+    status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+    if grep -qi ACTIVE <<<"${status}"; then
+      info "${ip} в DBA_OB_SERVERS: ACTIVE"
+      return 0
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  warn "${ip} не стал ACTIVE за ${timeout}с (статус: ${status:-нет строки})"
+  return 1
+}
+
+add_observer_server_sql() {
+  local ip="$1" rpc="$2" zone="$3"
+  info "ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone} (ob_query_timeout=${OB_ADD_SERVER_TIMEOUT_US})"
+  observer_sys_sql "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}"
+}
+
+obd_yaml_observer_spec() {
+  python3 "${SCRIPT_DIR}/ob_deploy_plan.py" spec --input "$1"
+}
+
+# OBD scale_out: start observer, затем ADD SERVER с дефолтным ob_query_timeout=10s.
+# При 6+ узлах SQL часто не укладывается — OBD-5000, хотя узел уже слушает 2881.
+scale_out_observer() {
+  local deploy="$1" yaml="$2"
+  local ip rpc mysql_port zone status
+  [[ -f "${yaml}" ]] || die "нет YAML scale-out: ${yaml}"
+  read -r ip rpc mysql_port zone < <(obd_yaml_observer_spec "${yaml}")
+  [[ -n "${ip}" && -n "${rpc}" && -n "${zone}" ]] || die "не разобрать observer spec из ${yaml}"
+  raise_sys_query_timeout || true
+  reset_observer_for_scale_out "${ip}"
+  info "Очистка ${ip} и добавление observer из ${yaml}"
+  if command -v stdbuf >/dev/null 2>&1; then
+    if stdbuf -oL -eL obd cluster scale_out "${deploy}" -c "${yaml}"; then
+      return 0
+    fi
+  else
+    if obd cluster scale_out "${deploy}" -c "${yaml}"; then
+      return 0
+    fi
+  fi
+  warn "obd cluster scale_out ${ip} вернул ошибку. Часто это ob_query_timeout=10s на ADD SERVER, а не «битый» узел."
+  sleep 5
+  status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+  if grep -qi ACTIVE <<<"${status}"; then
+    info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
+    return 0
+  fi
+  if add_observer_server_sql "${ip}" "${rpc}" "${zone}"; then
+    wait_observer_active "${ip}"
+    return 0
+  fi
+  status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+  if grep -qiE 'ACTIVE|INACTIVE' <<<"${status}"; then
+    info "${ip} появился в DBA_OB_SERVERS (${status}) — ждём ACTIVE"
+    wait_observer_active "${ip}"
+    return 0
+  fi
+  die "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}. Проверьте rootservice_list и observer.log на ${ip}"
+}
+
 obagent_home_path() {
   printf '/home/%s/obagent' "$(observer_deploy_user)"
 }

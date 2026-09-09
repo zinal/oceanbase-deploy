@@ -349,7 +349,7 @@ else:
 PY
 
 info "OBD scale_out oceanbase-ce (${NEW_IP}, ${ZONE})..."
-obd cluster scale_out "${DEPLOY_NAME_CLUSTER}" -c "${SCALE_OUT_OB}"
+scale_out_observer "${DEPLOY_NAME_CLUSTER}" "${SCALE_OUT_OB}"
 
 if [[ -s "${SCALE_OUT_AGENT}" ]]; then
   info "OBD scale_out obagent (${NEW_IP})..."

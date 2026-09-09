@@ -233,6 +233,48 @@ def test_scale_out_cli_writes_resumable_manifest() -> None:
         assert ips(PLAN.load_yaml(Path(second_agent))["obagent"]) == ["10.0.0.5"]
 
 
+def test_observer_scale_out_spec_reads_named_node() -> None:
+    plan = PLAN.build_scale_out_plan(
+        full_config(count=6),
+        registered_config([1, 2, 3], [1, 2, 3]),
+    )
+    node = PLAN.selected_component(
+        plan[0]["oceanbase"]["oceanbase-ce"],
+        {"10.0.0.4"},
+        keep_settings=False,
+    )
+    spec = PLAN.observer_scale_out_spec({"oceanbase-ce": node})
+    assert spec["ip"] == "10.0.0.4"
+    assert spec["rpc_port"] == 2882
+    assert spec["mysql_port"] == 2881
+    assert spec["zone"] == "zone1"
+    assert spec["rootservice_list"].startswith("10.0.0.1:2882:2881")
+
+
+def test_spec_cli_prints_fields() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "server6.yaml"
+        path.write_text(
+            "oceanbase-ce:\n"
+            "  servers:\n"
+            "    - name: server6\n"
+            "      ip: 10.130.0.37\n"
+            "  server6:\n"
+            "    mysql_port: 2881\n"
+            "    rpc_port: 2882\n"
+            "    zone: zone3\n"
+            "    rootservice_list: 10.130.0.34:2882:2881;10.130.0.21:2882:2881\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            ["python3", str(ROOT / "scripts/lib/ob_deploy_plan.py"), "spec", "--input", str(path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc.stdout.strip() == "10.130.0.37 2882 2881 zone3"
+
+
 def test_malformed_registered_config_fails_closed() -> None:
     registered = registered_config([1, 2, 3], [1, 2, 3])
     registered["oceanbase-ce"]["servers"].append({"name": "broken"})
@@ -253,5 +295,7 @@ if __name__ == "__main__":
     test_seed_rejects_invalid_layout()
     test_without_obagent_does_not_create_agent_batches()
     test_scale_out_cli_writes_resumable_manifest()
+    test_observer_scale_out_spec_reads_named_node()
+    test_spec_cli_prints_fields()
     test_malformed_registered_config_fails_closed()
     print("ok")

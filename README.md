@@ -178,9 +178,11 @@ vm_profiles:
 2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д.; внутри раунда OBD получает три последовательных одноузловых YAML.
 3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Перед стартом создаётся `home_path/{run,bin,lib,conf,log}` (это делает `init` при первом `obd cluster start`, но не при `scale_out`), затем `obd cluster start -c obagent -s <ip>`. Без каталога `run/` агент падает с `fetch_admin_lock_failed`. Повторный запуск сначала поднимает уже зарегистрированные агенты и продолжает с отсутствующих компонентов.
 
-В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`, а `ALTER SYSTEM ADD SERVER` завершается таймаутом.
+В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`.
 
-Перед каждым observer `scale_out` узел очищается: останавливаются leftover `observer`/`obshell` и удаляются `home_path`, содержимое `data_dir` и `redo_dir`. Иначе процесс с прошлого неудачного `ADD SERVER` (или с первой попытки старта всех 30 узлов) остаётся живым, OBD не перезапускает его с `rootservice_list`, и SQL снова таймаутится за ~10 с.
+Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`.
+
+OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Скрипт перед scale-out ставит `SET GLOBAL ob_query_timeout=3600s` и при сбое OBD повторяет `ADD SERVER` сам. Не стирайте уже запущенный новый observer — достаточно длинного timeout.
 
 Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
 
