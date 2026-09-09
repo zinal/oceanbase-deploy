@@ -335,13 +335,73 @@ print(ip)
 PY
 }
 
-obagent_home_path() {
+observer_deploy_user() {
   local user
   user="$(yaml_get oceanbase.deploy_user)"
   if [[ -z "${user}" || "${user}" == "null" ]]; then
     user="$(ssh_connect_user)"
   fi
-  printf '/home/%s/obagent' "${user}"
+  printf '%s' "${user}"
+}
+
+observer_home_path() {
+  local path
+  path="$(yaml_get oceanbase.home_path)"
+  if [[ -n "${path}" && "${path}" != "null" ]]; then
+    printf '%s' "${path}"
+    return
+  fi
+  printf '/home/%s/observer' "$(observer_deploy_user)"
+}
+
+observer_is_seed_ip() {
+  local ip="$1"
+  [[ -n "${ip}" ]] || return 1
+  [[ "${ip}" == "${OBSERVER_1_IP:-}" || "${ip}" == "${OBSERVER_2_IP:-}" || "${ip}" == "${OBSERVER_3_IP:-}" ]]
+}
+
+# Nodes from a failed all-at-once start keep local clog/config. OBD scale_out
+# then either skips start (pid still alive) or ADD SERVER times out / 4179.
+reset_observer_for_scale_out() {
+  local host="$1"
+  local home data redo
+  [[ -n "${host}" ]] || die "reset_observer_for_scale_out: empty host"
+  if observer_is_seed_ip "${host}"; then
+    die "Отказ очищать seed observer ${host}"
+  fi
+  home="$(observer_home_path)"
+  data="$(yaml_get oceanbase.data_dir)"
+  redo="$(yaml_get oceanbase.redo_dir)"
+  [[ -n "${data}" && "${data}" != "null" ]] || data="/ob-data/1"
+  [[ -n "${redo}" && "${redo}" != "null" ]] || redo="/ob-log/1"
+  info "Очистка leftover observer на ${host} перед scale_out..."
+  run_remote "${host}" "bash -s" <<REMOTE
+set -euo pipefail
+HOME_PATH="${home}"
+DATA_DIR="${data}"
+REDO_DIR="${redo}"
+pkill -TERM -u "\$(whoami)" -f "\${HOME_PATH}/bin/observer" 2>/dev/null || true
+pkill -TERM -u "\$(whoami)" -f "\${HOME_PATH}/bin/obshell" 2>/dev/null || true
+sleep 2
+pkill -KILL -u "\$(whoami)" -f "\${HOME_PATH}/bin/observer" 2>/dev/null || true
+pkill -KILL -u "\$(whoami)" -f "\${HOME_PATH}/bin/obshell" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pgrep -u "\$(whoami)" -f "\${HOME_PATH}/bin/observer" >/dev/null 2>&1 || break
+  sleep 1
+done
+rm -rf "\${HOME_PATH}"
+if [[ -d "\${DATA_DIR}" ]]; then
+  find "\${DATA_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+fi
+if [[ -d "\${REDO_DIR}" ]]; then
+  find "\${REDO_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+fi
+mkdir -p "\${DATA_DIR}" "\${REDO_DIR}"
+REMOTE
+}
+
+obagent_home_path() {
+  printf '/home/%s/obagent' "$(observer_deploy_user)"
 }
 
 obd_yaml_component_ips() {

@@ -180,6 +180,8 @@ vm_profiles:
 
 В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`, а `ALTER SYSTEM ADD SERVER` завершается таймаутом.
 
+Перед каждым observer `scale_out` узел очищается: останавливаются leftover `observer`/`obshell` и удаляются `home_path`, содержимое `data_dir` и `redo_dir`. Иначе процесс с прошлого неудачного `ADD SERVER` (или с первой попытки старта всех 30 узлов) остаётся живым, OBD не перезапускает его с `rootservice_list`, и SQL снова таймаутится за ~10 с.
+
 Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
 
 Если `obd cluster start` завис на `obshell bootstrap -` после `oceanbase bootstrap ok`, сначала `./scripts/deploy.sh diagnose`: это либо неудачный SQL bootstrap (>7 zone), либо уже живой кластер — take-over obshell без master (`TAKE OVER FOLLOWER`, нет БД `ocs`) либо master есть и OBD висит в `wait_dag_succeed`. Destroy в двух последних случаях не нужен. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).

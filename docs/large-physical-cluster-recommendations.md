@@ -503,6 +503,8 @@ obshell bootstrap -
 
 YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. В named-настройки нового observer добавляется `rootservice_list` трёх seed-узлов. Это необходимо для OBD 3.5.3 с плагином OceanBase 4.6: `start_pre.py` добавляет вычисленный `obconfig_url` только при `need_bootstrap=True`, хотя для scale-out выставляется `need_bootstrap=False`. Без явного списка новый observer запускается без источника RootService (`server_list=[]`), а `ALTER SYSTEM ADD SERVER` ждёт его регистрации и завершается таймаутом.
 
+Перед `scale_out` целевой observer очищается (процессы, `home_path`, data/redo). Seed-узлы не трогаются. Это нужно, потому что неудачный `ADD SERVER` оставляет запущенный observer без членства в кластере: следующий `scale_out` видит pid и не стартует процесс заново.
+
 План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
 
 Причина staged-порядка — дефект ExecutorPool OBShell 4.2.5.0–4.5.1.0: локальный take-over DAG крупного уже работающего кластера создаёт десятки READY-подзадач, а bounded-очередь и mutex могут взаимно заблокировать producer и workers. Это не ограничение OceanBase на число observer. После take-over штатные cluster DAG хранятся и координируются иначе, поэтому дальнейший `scale_out` является поддерживаемым способом собрать крупный кластер.
