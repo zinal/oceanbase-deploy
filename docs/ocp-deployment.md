@@ -164,10 +164,20 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 | Сообщение | Значение | Нужен ли фикс |
 |-----------|----------|----------------|
 | `The current user must be the admin user` | OBD без `-V` считает OCP 3.1.1 | да, `-V 4.4.2`; **не** менять SSH на `admin` |
-| `Failed to install repository oceanbase-ce-utils … to /home/obadmin/observer` / `Failed to install utils to servers` | OBD пытается доложить RPM `oceanbase-ce-utils` (сборка `.el7`) в `home_path` observer. Для takeover это необязательно: сам OBD пишет WARN и продолжает. Часто срыв на узле, где каталог observer ещё пустой после staged scale-out | нет, не блокирует. Если есть `takeover task successfully submitted to ocp` — задача уже в UI |
+| `Failed to install repository oceanbase-ce-utils …` | … | нет, не блокирует. Если есть `takeover task successfully submitted to ocp` — задача уже в UI |
+| `Pre check for create host` / `Execute clock diff failed` / кластер в **Taking over** | OCP JVM на ocp-1 вызывает `clockdiff <observer-ip>` (ICMP TIMESTAMP). SSH при этом уже ок. На Ubuntu `clockdiff` часто в `/usr/sbin` и без `CAP_NET_RAW`; в YC ICMP timestamp часто режется. | да: `./scripts/deploy.sh ocp-clockdiff`, затем Retry задачи в UI. Режим `ocp.host.check.clock-diff.mode=1` (`clockdiff -o`). |
+| `abnormal Cgroup configuration` | Ubuntu 22.04 — cgroup v2, OceanBase изоляция CPU — cgroup v1. Баннер, не причина падения pre-check. | не reboot всего кластера. Позже: GRUB `systemd.unified_cgroup_hierarchy=0` или `ALTER SYSTEM SET enable_cgroup=false` |
 | `do takeover … You must specify the value of the given parameter` | OCP `POST /api/v2/ob/clusters/takeOver` получил пустое поле. Типично `"port": null`: OBD берёт `mysql_port` **только из** `oceanbase-ce.global`, а генератор раньше писал порт лишь в `serverN`. Пустой `--host_type` на свежем OCP создаёт тип хоста с `name=""` — та же ошибка | да: `mysql_port` в global + `--host_type yandex-cloud` |
 
-`Configurations of the oceanbase-ce can be taken over by OCP` после WARN utils — precheck прошёл. Кластер при этом уже развёрнут; пустой список в UI — пока takeover не принят. Запасной путь — ручной Take over в UI (таблица ниже).
+`Configurations of the oceanbase-ce can be taken over by OCP` после WARN utils — precheck прошёл. Кластер при этом уже развёрнут; пустой список в UI — пока takeover не принят. Если задача takeover зависла в **Taking over** и subtask «Pre check for create host» FAILED с `Execute clock diff failed` — это не SSH: OCP с `10.130.0.22` запускает локально `clockdiff <observer>`. Исправление:
+
+```bash
+./scripts/deploy.sh ocp-clockdiff
+```
+
+Затем в UI Retry задачи (например `/task/22`). Баннер про Cgroup на Ubuntu 22.04 — отдельно, не этот FAIL.
+
+Запасной путь — ручной Take over в UI (таблица ниже).
 
 Если export-to-ocp недоступен — в UI «Take over cluster»:
 

@@ -21,6 +21,9 @@ usage() {
 его в OCP: obd cluster check4ocp -V <ocp.version|установленная> + export-to-ocp.
 Без -V OBD считает OCP 3.1.1 и ошибочно требует OS-пользователя admin.
 
+  --clockdiff-only  только clockdiff CAP_NET_RAW + ocp.host.check.clock-diff.mode=1
+                    (для retry задачи takeover «Pre check for create host»)
+
 OCP-ВМ (ocp-server-ce) не содержит oceanbase-ce. Пустой список кластеров в UI
 после start ocp-server-ce — нормально, пока не выполнен export-to-ocp.
 EOF
@@ -29,6 +32,11 @@ EOF
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
+fi
+
+CLOCKDIFF_ONLY_CMD=false
+if [[ "${1:-}" == "--clockdiff-only" ]]; then
+  CLOCKDIFF_ONLY_CMD=true
 fi
 
 require_file "${CONFIG_FILE}"
@@ -43,8 +51,10 @@ if [[ "$(yaml_get ocp.enabled)" != "true" || "$(yaml_get vm_profiles.ocp.enabled
 fi
 
 [[ "${OCP_COUNT:-0}" -ge 1 ]] || die "Нет OCP_1_IP — выполните ./scripts/deploy.sh provision"
-command -v obd >/dev/null 2>&1 || die "obd не в PATH"
-obd_cluster_registered "${CLUSTER_NAME}" || die "Кластер OBD ${CLUSTER_NAME} не зарегистрирован"
+if [[ "${CLOCKDIFF_ONLY_CMD}" != "true" ]]; then
+  command -v obd >/dev/null 2>&1 || die "obd не в PATH"
+  obd_cluster_registered "${CLUSTER_NAME}" || die "Кластер OBD ${CLUSTER_NAME} не зарегистрирован"
+fi
 
 OCP_PORT="$(yaml_get ocp.port)"
 [[ -z "${OCP_PORT}" || "${OCP_PORT}" == "null" ]] && OCP_PORT=8080
@@ -113,6 +123,36 @@ fi
 DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
 [[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER="$(yaml_get yandex_cloud.ssh_user)"
 [[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER=obadmin
+
+info "clockdiff на OCP-ВМ ${OCP_1_IP}: /usr/bin + CAP_NET_RAW (иначе Pre check for create host = ICMP exit 1)"
+if ! run_remote "${OCP_1_IP}" "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true bash -s" \
+  < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
+  warn "не удалось починить clockdiff на ${OCP_1_IP} — takeover может упасть на Pre check for create host"
+fi
+if ! python3 "${LIB_DIR}/lib/ocp_clockdiff.py" apply \
+  --url "${OCP_URL}" --user "${OCP_USER}" --password "${OCP_PASSWORD}"; then
+  warn "Задайте в UI OCP: ocp.host.check.clock-diff.mode=1 (clockdiff -o) или ocp.host.check.clock-diff.enable=false"
+fi
+
+if [[ "${CLOCKDIFF_ONLY_CMD}" == "true" ]]; then
+  cat <<EOF
+
+clockdiff на ${OCP_1_IP} обновлён. Дальше в UI OCP откройте задачу takeover
+(например /task/22) и Retry / повтор failed subtask «Pre check for create host».
+
+Если ICMP TIMESTAMP в YC по-прежнему blocked:
+  Системные параметры → ocp.host.check.clock-diff.mode = 1
+  или ocp.host.check.clock-diff.enable = false
+
+Баннер «abnormal Cgroup configuration» на Ubuntu 22.04 (cgroup v2) —
+не причина падения pre-check. Изоляция CPU тенантов на v2 не работает;
+переключение на cgroup v1 требует GRUB systemd.unified_cgroup_hierarchy=0
+и reboot observer, не делайте это на живом кластере без окна.
+
+EOF
+  exit 0
+fi
+
 OCP_VERSION="$(resolve_ocp_check_version "${CLUSTER_NAME}")"
 info "obd cluster check4ocp ${CLUSTER_NAME} -V ${OCP_VERSION}"
 info "user.username=${DEPLOY_USER} — OS/SSH, не admin консоли OCP. Для OCP ≥ 4.2.0 это нормально; не меняйте его на admin."
@@ -181,6 +221,10 @@ cat <<EOF
 
 Задача takeover уходит в OCP (меню «Задачи»). Когда она SUCCEED, в «Кластеры»
 должен появиться ${APPNAME} (cluster_id=1), а не отдельный кластер на ${OCP_1_IP}.
+
+Если задача зависла в Taking over и «Pre check for create host» FAILED
+(Execute clock diff failed): ./scripts/deploy.sh ocp-clockdiff, затем Retry в UI.
+Баннер abnormal Cgroup на Ubuntu 22.04 (cgroup v2) — не этот FAIL.
 
 Если export-to-ocp недоступен, вручную в UI OCP: Take over cluster
   адрес:     <OBPROXY_1_IP>   порт: 2883   режим: proxy

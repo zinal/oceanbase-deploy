@@ -10,6 +10,10 @@ if grep -E 'test -w "\$\{OCP_HOME\}" "\$\{OCP_SOFT_DIR\}"' "${ROOT}/scripts/lib/
   exit 1
 fi
 
+grep -q "setcap cap_net_raw,cap_sys_nice+ep" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
+grep -q "CLOCKDIFF_ONLY" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
+grep -q "/usr/bin/clockdiff" "${ROOT}/scripts/lib/prepare-ocp-host.sh"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 mkdir -p "${tmp}/home" "${tmp}/software" "${tmp}/logs"

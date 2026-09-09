@@ -441,7 +441,16 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 
 `[ERROR] The current user must be the admin user` на `check4ocp` — ложная сработка OBD без `-V` (дефолт 3.1.1). SSH-пользователь остаётся `obadmin`; не делайте `edit-config user.username=admin`.
 
-`Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. Если в логе есть `takeover task successfully submitted to ocp` (задача в UI, например `/task/22`), `ocp-register` считает это успехом, даже если OBD вернул ненулевой код из‑за utils RPM. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
+`Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. Если в логе есть `takeover task successfully submitted to ocp` (задача в UI, например `/task/22`), `ocp-register` считает это успехом, даже если OBD вернул ненулевой код из‑за utils RPM.
+
+Задача в статусе **Taking over** и subtask «Pre check for create host» FAILED (`Execute clock diff failed`) — OCP с ocp-1 запускает `clockdiff <observer>` (ICMP). SSH к узлам при этом уже ок:
+
+```bash
+./scripts/deploy.sh ocp-clockdiff
+# затем Retry задачи в UI OCP
+```
+
+Баннер `abnormal Cgroup configuration` на Ubuntu 22.04 (cgroup v2) — не этот FAIL. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Прогресс — в OCP «Задачи». Имя кластера в UI — `oceanbase.cluster_name` (`obcluster`), не hostname ocp-1.
 
