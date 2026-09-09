@@ -188,10 +188,41 @@ def test_diagnose_script_help() -> None:
     assert script.is_file()
     out = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True, check=True)
     assert "obshell bootstrap" in out.stdout
+    assert "DAG" in out.stdout
+    text = script.read_text(encoding="utf-8")
+    assert "wait_dag_succeed" in text
+    assert "TAKE OVER MASTER" in text
+    assert "Не убивайте obshell на всех" in text
+    assert "dump_obshell_dag" in text
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
     assert "diagnose-obd-start.sh" in deploy
     assert "03-generate-obd-config.py" in deploy_case
+
+
+def test_dump_obshell_dag_maps_numeric_state() -> None:
+    script = ROOT / "scripts" / "diagnose-obd-start.sh"
+    snippet = ""
+    inside = False
+    for line in script.read_text(encoding="utf-8").splitlines():
+        if line.startswith("dump_obshell_dag()"):
+            inside = True
+        if inside:
+            snippet += line + "\n"
+            if line == "}":
+                break
+    assert "STATES=" in snippet
+    assert snippet.strip().startswith("dump_obshell_dag()")
+    payload = '{"data":{"name":"TakeOver","state":2,"stage":1,"max_stage":4,"operator":1,"id":"d1","nodes":[{"name":"n1","state":4}]}}'
+    proc = subprocess.run(
+        ["bash", "-c", snippet.strip() + "\nprintf '%s' \"$1\" | dump_obshell_dag", "_", payload],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "DAG_STATE=RUNNING" in proc.stdout
+    assert "name=TakeOver" in proc.stdout
+    assert "node n1  state=SUCCEED" in proc.stdout
 
 
 def main() -> None:
@@ -206,6 +237,7 @@ def main() -> None:
         test_too_many_zones_detected_in_obd_yaml,
         test_check_obd_cli_rejects_thirty_zones,
         test_diagnose_script_help,
+        test_dump_obshell_dag_maps_numeric_state,
     ]
     for fn in tests:
         fn()
