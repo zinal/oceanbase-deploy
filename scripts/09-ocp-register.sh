@@ -153,12 +153,29 @@ python3 "${LIB_DIR}/lib/ocp_takeover.py" patch-config \
 
 info "obd cluster export-to-ocp ${CLUSTER_NAME} → ${OCP_URL} (user ${OCP_USER}, host_type ${HOST_TYPE})"
 info "Сбой oceanbase-ce-utils при export — предупреждение OBD, takeover всё равно идёт."
+export_log="$(mktemp)"
+export_rc=0
+set +e
+set +o pipefail
 obd cluster export-to-ocp "${CLUSTER_NAME}" \
   -a "${OCP_URL}" \
   -u "${OCP_USER}" \
   -p "${OCP_PASSWORD}" \
   --host_type "${HOST_TYPE}" \
-  --credential_name "${CRED_NAME}"
+  --credential_name "${CRED_NAME}" 2>&1 | tee "${export_log}"
+export_rc="${PIPESTATUS[0]}"
+set -e
+set -o pipefail
+if [[ "${export_rc}" -ne 0 ]]; then
+  if python3 "${LIB_DIR}/lib/ocp_takeover.py" log-ok --log-file "${export_log}"; then
+    warn "export-to-ocp вернул ${export_rc}, но takeover уже в OCP — считаем успехом (utils RPM / WARN)."
+  else
+    cat "${export_log}" >&2 || true
+    rm -f "${export_log}"
+    die "obd cluster export-to-ocp ${CLUSTER_NAME} не прошёл"
+  fi
+fi
+rm -f "${export_log}"
 
 cat <<EOF
 

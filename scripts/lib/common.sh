@@ -488,6 +488,47 @@ observer_cluster_status() {
   observer_sys_sql "SELECT STATUS FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='${ip}' LIMIT 1"
 }
 
+observer_active_ips() {
+  observer_sys_sql "SELECT SVR_IP FROM oceanbase.DBA_OB_SERVERS WHERE UPPER(STATUS)='ACTIVE'"
+}
+
+seed_observers_active() {
+  local ip status
+  for ip in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
+    [[ -n "${ip}" ]] || return 1
+    status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+    grep -qi ACTIVE <<<"${status}" || return 1
+  done
+  return 0
+}
+
+missing_observer_ips() {
+  local yaml="$1"
+  local active ip
+  [[ -f "${yaml}" ]] || return 0
+  active="$(observer_active_ips 2>/dev/null || true)"
+  while read -r ip; do
+    [[ -n "${ip}" ]] || continue
+    if ! grep -Fxq "${ip}" <<<"${active}"; then
+      printf '%s\n' "${ip}"
+    fi
+  done < <(python3 "${SCRIPT_DIR}/ob_deploy_plan.py" ips --input "${yaml}")
+}
+
+scale_out_joined_ips_args() {
+  local joined
+  if joined="$(observer_active_ips)"; then
+    if [[ -n "${joined}" ]]; then
+      info "ACTIVE в DBA_OB_SERVERS: $(printf '%s' "${joined}" | tr '\n' ' ')"
+      JOINED_IPS_ARGS=(--joined-ips "${joined}")
+      return 0
+    fi
+  fi
+  warn "DBA_OB_SERVERS недоступен или пуст — план scale-out только по метаданным OBD"
+  JOINED_IPS_ARGS=()
+  return 1
+}
+
 wait_observer_active() {
   local ip="$1"
   local timeout="${2:-300}"
@@ -579,14 +620,18 @@ scale_out_observer() {
   reset_observer_for_scale_out "${ip}"
   info "Очистка ${ip} и добавление observer из ${yaml}"
   if obd_scale_out_yaml "${deploy}" "${yaml}"; then
-    return 0
+    if wait_observer_active "${ip}" 90; then
+      return 0
+    fi
+    warn "obd cluster scale_out ${ip} вернул 0, но в DBA_OB_SERVERS нет ACTIVE — leftover в метаданных OBD"
+  else
+    status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+    if grep -qi ACTIVE <<<"${status}"; then
+      info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
+      return 0
+    fi
+    warn "obd cluster scale_out ${ip} не прошёл. Не делайте ADD SERVER по уже запущенному узлу — будет ERROR 4179 (non-empty)."
   fi
-  status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-  if grep -qi ACTIVE <<<"${status}"; then
-    info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
-    return 0
-  fi
-  warn "obd cluster scale_out ${ip} не прошёл. Не делайте ADD SERVER по уже запущенному узлу — будет ERROR 4179 (non-empty)."
   info "Повтор: wipe ${ip}, start, ADD SERVER с ob_query_timeout=3600s"
   reset_observer_for_scale_out "${ip}"
   if join_empty_observer "${deploy}" "${ip}" "${rpc}" "${zone}" "${mysql_port}"; then
@@ -594,7 +639,7 @@ scale_out_observer() {
   fi
   reset_observer_for_scale_out "${ip}"
   if obd_scale_out_yaml "${deploy}" "${yaml}"; then
-    return 0
+    wait_observer_active "${ip}" 90 && return 0
   fi
   status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
   if grep -qi ACTIVE <<<"${status}"; then

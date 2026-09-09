@@ -121,14 +121,27 @@ def patch_obd_cluster_dir(cluster_dir: Path, mysql_port: int = 2881) -> list[Pat
     return changed
 
 
+def export_to_ocp_log_ok(text: str) -> bool:
+    """OBD may exit non-zero after utils RPM ERROR even when takeover was submitted."""
+    lowered = text.lower()
+    markers = (
+        "takeover task successfully submitted",
+        "successfully submitted to ocp",
+        "already been taken over",
+        "cluster has been taken over",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("patch-config",))
-    parser.add_argument("--cluster-dir", type=Path, required=True)
+    parser.add_argument("command", choices=("patch-config", "log-ok"))
+    parser.add_argument("--cluster-dir", type=Path, default=None)
     parser.add_argument("--mysql-port", type=int, default=2881)
+    parser.add_argument("--log-file", type=Path, default=None)
     args = parser.parse_args()
     if args.command == "patch-config":
-        if not args.cluster_dir.is_dir():
+        if args.cluster_dir is None or not args.cluster_dir.is_dir():
             print(f"WARN: нет каталога OBD {args.cluster_dir}", file=sys.stderr)
             return
         changed = patch_obd_cluster_dir(args.cluster_dir, mysql_port=args.mysql_port)
@@ -137,6 +150,10 @@ def main() -> None:
                 print(f"patched {path}")
         else:
             print("ok mysql_port already in oceanbase-ce.global")
+        return
+    if args.command == "log-ok":
+        text = args.log_file.read_text(encoding="utf-8") if args.log_file else sys.stdin.read()
+        sys.exit(0 if export_to_ocp_log_ok(text) else 1)
 
 
 if __name__ == "__main__":

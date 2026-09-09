@@ -172,6 +172,34 @@ def test_scale_out_plan_is_empty_when_cluster_is_complete() -> None:
     ) == []
 
 
+def test_scale_out_plan_uses_joined_ips_not_obd_leftover() -> None:
+    """OBD metadata can list a node that never passed ADD SERVER (ERROR 4179)."""
+    plan = PLAN.build_scale_out_plan(
+        full_config(count=6),
+        registered_config([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]),
+        joined_ob_ips={"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"},
+    )
+    assert len(plan) == 1
+    assert ips(plan[0]["oceanbase"]["oceanbase-ce"]) == ["10.0.0.6"]
+    assert plan[0]["obagent"] is None
+    assert (
+        plan[0]["oceanbase"]["oceanbase-ce"]["server6"]["rootservice_list"].startswith(
+            "10.0.0.1:2882:2881"
+        )
+    )
+
+
+def test_parse_joined_ips_and_observer_ips() -> None:
+    assert PLAN.parse_joined_ips(None) is None
+    assert PLAN.parse_joined_ips("  ") is None
+    assert PLAN.parse_joined_ips("10.0.0.1, 10.0.0.5\n10.0.0.3") == {
+        "10.0.0.1",
+        "10.0.0.3",
+        "10.0.0.5",
+    }
+    assert PLAN.observer_ips(full_config(count=6))[-1] == "10.0.0.6"
+
+
 def test_seed_rejects_invalid_layout() -> None:
     cfg = full_config(count=3)
     cfg["oceanbase-ce"]["server3"]["zone"] = "zone2"
@@ -231,6 +259,41 @@ def test_scale_out_cli_writes_resumable_manifest() -> None:
         assert second_label == "server4-server6/server5"
         assert ips(PLAN.load_yaml(Path(second_ob))["oceanbase-ce"]) == ["10.0.0.5"]
         assert ips(PLAN.load_yaml(Path(second_agent))["obagent"]) == ["10.0.0.5"]
+
+
+def test_scale_out_cli_joined_ips_keeps_leftover_observer() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        full_path = root / "full.yaml"
+        registered_path = root / "registered.yaml"
+        manifest = root / "plan" / "manifest.txt"
+        PLAN.dump_yaml(full_config(count=6), full_path)
+        PLAN.dump_yaml(registered_config([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]), registered_path)
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "lib" / "ob_deploy_plan.py"),
+                "scale-out",
+                "--input",
+                str(full_path),
+                "--registered-config",
+                str(registered_path),
+                "--output-dir",
+                str(root / "plan"),
+                "--manifest",
+                str(manifest),
+                "--joined-ips",
+                "10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.5",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        _, ob_path, agent_path = lines[0].split("|")
+        assert ips(PLAN.load_yaml(Path(ob_path))["oceanbase-ce"]) == ["10.0.0.6"]
+        assert agent_path == "-"
 
 
 def test_observer_scale_out_spec_reads_named_node() -> None:
@@ -324,9 +387,12 @@ if __name__ == "__main__":
     test_scale_out_plan_resumes_components_independently()
     test_rootservice_list_uses_one_registered_server_per_zone()
     test_scale_out_plan_is_empty_when_cluster_is_complete()
+    test_scale_out_plan_uses_joined_ips_not_obd_leftover()
+    test_parse_joined_ips_and_observer_ips()
     test_seed_rejects_invalid_layout()
     test_without_obagent_does_not_create_agent_batches()
     test_scale_out_cli_writes_resumable_manifest()
+    test_scale_out_cli_joined_ips_keeps_leftover_observer()
     test_observer_scale_out_spec_reads_named_node()
     test_spec_cli_prints_fields()
     test_one_node_cli_sets_seed_rootservice_list()
