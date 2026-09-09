@@ -11,6 +11,9 @@ require_file "${CONFIG_FILE}"
 load_inventory
 
 OBD_CONFIG="${GENERATED_DIR}/obd-cluster.yaml"
+OBD_SEED_CONFIG="${GENERATED_DIR}/obd-seed.yaml"
+SCALE_OUT_DIR="${GENERATED_DIR}/staged-scale-out"
+SCALE_OUT_MANIFEST="${SCALE_OUT_DIR}/manifest.txt"
 CLUSTER_NAME="${DEPLOY_NAME}"
 
 run_obd() {
@@ -45,6 +48,11 @@ install_obd_if_needed
 
 verify_all_observer_storage
 
+info "Формирование seed-конфигурации (3 observer, по одному на zone)..."
+python3 "${LIB_DIR}/lib/ob_deploy_plan.py" seed \
+  --input "${OBD_CONFIG}" \
+  --output "${OBD_SEED_CONFIG}"
+
 check_obd_zone_layout() {
   local yaml_path="$1" label="$2"
   [[ -f "${yaml_path}" ]] || return 0
@@ -54,6 +62,7 @@ check_obd_zone_layout() {
 
 info "Проверка числа OceanBase zone (не больше 7)..."
 check_obd_zone_layout "${OBD_CONFIG}" "generated/obd-cluster.yaml"
+check_obd_zone_layout "${OBD_SEED_CONFIG}" "generated/obd-seed.yaml"
 if [[ -d "${HOME}/.obd/cluster/${CLUSTER_NAME}" ]]; then
   shopt -s nullglob
   registered_yamls=("${HOME}/.obd/cluster/${CLUSTER_NAME}"/*.yaml "${HOME}/.obd/cluster/${CLUSTER_NAME}"/*.yml)
@@ -89,15 +98,15 @@ if obd_cluster_registered "${CLUSTER_NAME}"; then
   warn "Кластер ${CLUSTER_NAME} уже развёрнут в OBD — пропуск obd cluster deploy"
   warn "Для пересоздания: obd cluster destroy ${CLUSTER_NAME} -f (удалит данные) или obd cluster redeploy ${CLUSTER_NAME}"
 else
-  info "Развёртывание кластера ${CLUSTER_NAME}..."
+  info "Развёртывание seed-кластера ${CLUSTER_NAME}: 3 observer (zone1/zone2/zone3)..."
   if [[ -n "${ob_version}" && "${ob_version}" != "null" ]]; then
-    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_CONFIG}" -V "${ob_version}"
+    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_SEED_CONFIG}" -V "${ob_version}"
   else
-    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_CONFIG}"
+    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_SEED_CONFIG}"
   fi
 fi
 
-info "Запуск кластера..."
+info "Запуск seed-кластера и ожидание завершения OBShell take-over..."
 if ! run_obd cluster start "${CLUSTER_NAME}"; then
   warn "obd cluster start не завершился (ошибка или зависание/Ctrl+C)."
   warn "«oceanbase bootstrap ok» — надпись спиннера, не факт что SQL прошёл."
@@ -115,6 +124,45 @@ if ! run_obd cluster start "${CLUSTER_NAME}"; then
   fi
   die "obd cluster start ${CLUSTER_NAME} не завершился успешно"
 fi
+
+registered_obd_config() {
+  local cluster_dir="${HOME}/.obd/cluster/${CLUSTER_NAME}"
+  local candidate
+  for candidate in \
+    "${cluster_dir}/config.yaml" \
+    "${cluster_dir}/config.yml" \
+    "${cluster_dir}/inner_config.yaml" \
+    "${cluster_dir}/inner_config.yml"; do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+registered_config="$(registered_obd_config)" \
+  || die "OBD не сохранил конфигурацию ${CLUSTER_NAME} после start"
+
+mkdir -p "${SCALE_OUT_DIR}"
+python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
+  --input "${OBD_CONFIG}" \
+  --registered-config "${registered_config}" \
+  --output-dir "${SCALE_OUT_DIR}" \
+  --manifest "${SCALE_OUT_MANIFEST}"
+
+while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
+  [[ -n "${batch_label}" ]] || continue
+  info "Пакетный scale-out ${batch_label}..."
+  if [[ "${observer_yaml}" != "-" ]]; then
+    info "Добавление observer из ${observer_yaml}"
+    run_obd cluster scale_out "${CLUSTER_NAME}" -c "${observer_yaml}"
+  fi
+  if [[ "${obagent_yaml}" != "-" ]]; then
+    info "Добавление obagent из ${obagent_yaml}"
+    run_obd cluster scale_out "${CLUSTER_NAME}" -c "${obagent_yaml}"
+  fi
+done < "${SCALE_OUT_MANIFEST}"
 
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"

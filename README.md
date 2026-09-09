@@ -7,7 +7,7 @@
 - Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring)
 - Оптимальные типы дисков YC: non-replicated для реплицируемых data, io-m3 для log/boot
 - Подготовка серверов по best practices (sysctl, limits, chrony, монтирование дисков)
-- Генерация конфигурации OBD и развёртывание кластера
+- Генерация конфигурации OBD и безопасное staged-развёртывание: 3 seed observer → scale-out по 3
 - Горизонтальное масштабирование (`scale_out`)
 - Восстановление после полной потери одного хоста **observer** или **obproxy**
 - **OceanBase Cloud Platform (OCP)** — отдельная ВМ и автоматическая установка через OBD
@@ -88,7 +88,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # prepare + перегенерация yaml + obd cluster deploy/start
+./scripts/deploy.sh deploy      # prepare + 3 seed observer + scale-out остальных по 3
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ```
@@ -138,7 +138,7 @@ vm_defaults:
 
 vm_profiles:
   observer:                    # oceanbase-ce + obagent
-    count: 3                   # кратно 3: узлы раскладываются по трём zone
+    count: 3                   # все ВМ создаются сразу; OceanBase стартует с 3 seed-узлов
     cores: 8                   # мин. 4
     memory_gb: 32              # мин. 16
     boot_disk:
@@ -170,7 +170,17 @@ vm_profiles:
     memory_gb: 16
 ```
 
-Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится. Если `obd cluster start` завис на `obshell bootstrap -` после `oceanbase bootstrap ok`, сначала `./scripts/deploy.sh diagnose`: это либо неудачный SQL bootstrap (>7 zone), либо уже живой кластер — take-over obshell без master (`TAKE OVER FOLLOWER`, нет БД `ocs`) либо master есть и OBD висит в `wait_dag_succeed`. Destroy в двух последних случаях не нужен. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
+Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится.
+
+Для любого значения `vm_profiles.observer.count > 3` инфраструктурный шаг по-прежнему создаёт и подготавливает **все ВМ сразу**, но OceanBase разворачивается поэтапно:
+
+1. `obd cluster deploy/start` получает `generated/obd-seed.yaml` только с `observer-1..3` — по одному на `zone1..3`.
+2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` пакетами `4..6`, `7..9` и т. д.
+3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Повторный запуск строит план относительно зарегистрированного OBD-конфига и продолжает с отсутствующих компонентов.
+
+Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
+
+Если `obd cluster start` завис на `obshell bootstrap -` после `oceanbase bootstrap ok`, сначала `./scripts/deploy.sh diagnose`: это либо неудачный SQL bootstrap (>7 zone), либо уже живой кластер — take-over obshell без master (`TAKE OVER FOLLOWER`, нет БД `ocs`) либо master есть и OBD висит в `wait_dag_succeed`. Destroy в двух последних случаях не нужен. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
 
 При `vm_profiles.ocp.enabled: true` и `ocp.enabled: true` разворачивается веб-консоль OCP на отдельной ВМ. См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
@@ -229,7 +239,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 01-provision-vms.sh      # yc compute instance create
 │   ├── 02-prepare-servers.sh    # sysctl, диски, chrony, пользователь
 │   ├── 03-generate-obd-config.py
-│   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
+│   ├── lib/ob_deploy_plan.py    # 3-node seed и идемпотентные scale-out пакеты
+│   ├── 04-deploy-cluster.sh     # seed deploy/start → staged scale-out
 │   ├── diagnose-obd-start.sh    # зависание start: zone, display-trace, obshell
 │   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
@@ -254,7 +265,9 @@ SSH и подготовка серверов используют **внутре
 ./scripts/05-scale-out.sh 2
 ```
 
-Скрипт создаёт ВМ, подготавливает серверы и выполняет `obd cluster scale_out`.
+Скрипт создаёт ВМ, подготавливает серверы и выполняет `obd cluster scale_out`
+конфигурациями только для новых узлов. Observer и OBAgent добавляются раздельно;
+при добавлении нескольких узлов план делится на пакеты до трёх observer.
 
 ## Восстановление узла
 

@@ -492,6 +492,19 @@ obshell bootstrap -
 
 Раскладка в этом репозитории (`scripts/lib/ob_zones.py`): ровно три Zone, observer распределяются по кругу — `1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`. Тем же правилом пользуются `scripts/05-scale-out.sh` и `scripts/06-recover-observer.sh`, поэтому расширение и замена узла попадают в правильную Zone. Число observer стоит держать кратным трём: `UNIT_NUM` тенанта одинаков для всех Zone, и «лишние» узлы в перекошенной Zone останутся без unit — генератор конфигурации предупреждает об этом. `./scripts/deploy.sh deploy` заново генерирует yaml; `04-deploy-cluster.sh` отказывается стартовать, если уникальных zone больше семи.
 
+### Staged-развёртывание крупных кластеров
+
+Подготовка инфраструктуры не меняется: `provision` и `prepare` создают диски, ВМ и каталоги сразу для всех observer. Меняется только порядок OBD:
+
+1. Из полного `generated/obd-cluster.yaml` строится `generated/obd-seed.yaml` с `server1..server3`, по одному observer в каждой Zone.
+2. OBD выполняет `cluster deploy/start` seed-кластера и дожидается успешного OBShell take-over.
+3. Оставшиеся узлы добавляются `obd cluster scale_out` пакетами по три: один в `zone1`, один в `zone2`, один в `zone3`.
+4. Для каждого пакета сначала добавляется `oceanbase-ce`, затем отдельным вызовом — `obagent`.
+
+YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
+
+Причина staged-порядка — дефект ExecutorPool OBShell 4.2.5.0–4.5.1.0: локальный take-over DAG крупного уже работающего кластера создаёт десятки READY-подзадач, а bounded-очередь и mutex могут взаимно заблокировать producer и workers. Это не ограничение OceanBase на число observer. После take-over штатные cluster DAG хранятся и координируются иначе, поэтому дальнейший `scale_out` является поддерживаемым способом собрать крупный кластер.
+
 Кластер, уже развёрнутый со схемой «Zone на observer», починить правкой конфигурации нельзя: locality sys-тенанта фиксируется на bootstrap. Нужен `obd cluster destroy <deploy> -f` и повторный `deploy` (данных там всё равно нет — bootstrap не прошёл).
 
 ### Если SQL уже жив, а спиннер на `obshell bootstrap -`
