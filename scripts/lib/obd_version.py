@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,7 +35,19 @@ _PLUGIN_DIR_RE = re.compile(r"^\d+(?:\.\d+)*$")
 PLUGIN_SEARCH_PATHS = (
     Path.home() / ".obd" / "plugins" / OCEANBASE_CE,
     Path.home() / ".oceanbase-all-in-one" / "obd" / "usr" / "obd" / "plugins" / OCEANBASE_CE,
+    Path("/usr/obd/plugins") / OCEANBASE_CE,
 )
+
+YUM_STABLE = "https://mirrors.oceanbase.com/community/stable"
+GITHUB_CE_RELEASE = "https://github.com/oceanbase/oceanbase/releases/download/v5.0.1_CE"
+# RPM на GitHub / yum (не путать с номером в release notes 100000012026072916).
+RPM_SPECS: dict[str, dict[str, Any]] = {
+    "5.0.1.0": {
+        "release": "100000042026072912",
+        "packages": ("oceanbase-ce", "oceanbase-ce-libs"),
+        "ob_deploy": "ob-deploy-4.6.0-16",
+    },
+}
 
 
 def normalize_ob_version(value: Any) -> str:
@@ -172,6 +186,45 @@ def remote_mirrors_enabled(rows: Iterable[dict[str, str]]) -> bool:
     return False
 
 
+_EL_RE = re.compile(r"\.el(\d+)\b")
+
+
+def local_rpm_platforms(
+    rows: Iterable[dict[str, str]],
+    *,
+    component: str = OCEANBASE_CE,
+) -> list[tuple[str, str]]:
+    """Семейство RPM из local: release `….el7` и arch `x86_64`.
+
+    All-in-One на Ubuntu всё равно кладёт el7, поэтому нельзя брать el8 с хоста.
+    """
+    seen: list[tuple[str, str]] = []
+    for row in rows:
+        if (row.get("name") or "").strip() != component:
+            continue
+        match = _EL_RE.search(row.get("release") or "")
+        el = match.group(1) if match else ""
+        arch = (row.get("arch") or "").strip()
+        if not el or not arch:
+            continue
+        pair = (el, arch)
+        if pair not in seen:
+            seen.append(pair)
+    return seen
+
+
+def resolve_rpm_platforms(
+    rows: Iterable[dict[str, str]],
+    *,
+    fallback_arch: str = "x86_64",
+) -> list[tuple[str, str]]:
+    found = local_rpm_platforms(rows)
+    if found:
+        return found
+    # Пустой local: All-in-One чаще el7, yum/GitHub есть и el7, и el8.
+    return [("7", fallback_arch), ("8", fallback_arch)]
+
+
 def plugin_versions_in(path: Path) -> list[str]:
     if not path.is_dir():
         return []
@@ -182,9 +235,24 @@ def plugin_versions_in(path: Path) -> list[str]:
     return versions
 
 
+def obd_plugin_roots() -> list[Path]:
+    roots = list(PLUGIN_SEARCH_PATHS)
+    obd_bin = shutil.which("obd")
+    if obd_bin:
+        parent = Path(obd_bin).resolve().parent
+        for cand in (
+            parent.parent / "obd" / "plugins" / OCEANBASE_CE,
+            parent.parent / "usr" / "obd" / "plugins" / OCEANBASE_CE,
+            parent / "plugins" / OCEANBASE_CE,
+        ):
+            if cand not in roots:
+                roots.append(cand)
+    return roots
+
+
 def discover_plugin_versions(extra_roots: Iterable[Path] | None = None) -> list[str]:
     seen: list[str] = []
-    roots = list(PLUGIN_SEARCH_PATHS)
+    roots = obd_plugin_roots()
     if extra_roots:
         roots.extend(extra_roots)
     for path in roots:
@@ -192,6 +260,50 @@ def discover_plugin_versions(extra_roots: Iterable[Path] | None = None) -> list[
             if ver not in seen:
                 seen.append(ver)
     return seen
+
+
+def preferred_plugin_dest() -> Path:
+    for path in obd_plugin_roots():
+        if path.is_dir() and os.access(path, os.W_OK):
+            return path
+    dest = Path.home() / ".obd" / "plugins" / OCEANBASE_CE
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def rpm_spec_for(version: str) -> dict[str, Any] | None:
+    return RPM_SPECS.get(normalize_ob_version(version))
+
+
+def yum_rpm_url(package: str, version: str, release: str, el: str, arch: str) -> str:
+    filename = f"{package}-{version}-{release}.el{el}.{arch}.rpm"
+    return f"{YUM_STABLE}/el/{el}/{arch}/{filename}"
+
+
+def github_rpm_url(package: str, version: str, release: str, el: str, arch: str) -> str:
+    filename = f"{package}-{version}-{release}.el{el}.{arch}.rpm"
+    return f"{GITHUB_CE_RELEASE}/{filename}"
+
+
+def package_rpm_urls(version: str, *, el: str = "8", arch: str = "x86_64") -> list[str]:
+    spec = rpm_spec_for(version)
+    if not spec:
+        return []
+    ver = normalize_ob_version(version)
+    release = str(spec["release"])
+    urls: list[str] = []
+    for package in spec["packages"]:
+        urls.append(yum_rpm_url(str(package), ver, release, el, arch))
+        urls.append(github_rpm_url(str(package), ver, release, el, arch))
+    return urls
+
+
+def ob_deploy_rpm_url(*, el: str = "8", arch: str = "x86_64", version: str = "") -> str:
+    spec = rpm_spec_for(version or DEFAULT_NEW_CLUSTER_VERSION)
+    if not spec:
+        return ""
+    name = str(spec["ob_deploy"])
+    return f"{YUM_STABLE}/el/{el}/{arch}/{name}.el{el}.{arch}.rpm"
 
 
 def plugin_covers_version(plugin_versions: Iterable[str], requested: str) -> bool:
@@ -208,29 +320,22 @@ def plugin_covers_version(plugin_versions: Iterable[str], requested: str) -> boo
 
 def missing_package_hint(requested: str) -> str:
     ver = normalize_ob_version(requested) or DEFAULT_NEW_CLUSTER_VERSION
-    return f"""Пакет {OCEANBASE_CE} {ver} не найден в зеркалах OBD.
+    return f"""Не удалось получить {OCEANBASE_CE} {ver} в зеркалах OBD.
 
-All-in-One после установки отключает remote и кладёт только свои RPM.
-На хосте с All-in-One 4.6.x `obd cluster deploy` без явной версии ставит 4.6.0.
+`./scripts/deploy.sh obd-mirror` должен сам:
+  1. включить remote (`obd mirror enable remote && obd mirror update`);
+  2. скачать RPM с mirrors.oceanbase.com / GitHub и сделать `obd mirror clone`;
+  3. при отсутствии плагина 5.x — `obd update` и, если нужно, плагины из ob-deploy RPM.
 
-Как получить {ver} для новых кластеров:
+Проверьте доступ с инсталляционного хоста к:
+  {YUM_STABLE}
+  {GITHUB_CE_RELEASE}
 
-1. Обновить All-in-One до 5.0.1 на инсталляционном хосте (OBD 4.5.0 + RPM 5.0.1):
-     bash -c "$(curl -s {ALL_IN_ONE_INSTALLER})"
-     source ~/.oceanbase-all-in-one/bin/env.sh
-     obd mirror list local | grep {OCEANBASE_CE}
-   Примечания: {ALL_IN_ONE_501_NOTES}
-
-2. Либо включить удалённые зеркала (нужен доступ к mirrors.oceanbase.com):
-     obd mirror enable remote
-     obd mirror update
-     obd mirror list oceanbase.community.stable | grep {OCEANBASE_CE}
-
-3. Либо скачать RPM 5.0.1 и добавить в local:
-     obd mirror clone oceanbase-ce-*.rpm
-
-Уже развёрнутые кластера 4.6.0 не меняются. В config/deploy.yaml:
-  oceanbase.version: "{ver}"
+Если хост офлайн: скачайте All-in-One 5.0.1 ({ALL_IN_ONE_501_NOTES}) и:
+  tar -xzf oceanbase-all-in-one-5.0.1_*.tar.gz
+  cd oceanbase-all-in-one/bin && ./install.sh
+  source ~/.oceanbase-all-in-one/bin/env.sh
+  obd mirror clone ../rpms/*.rpm
 """
 
 
@@ -290,6 +395,36 @@ def cmd_hint(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rpm_urls(args: argparse.Namespace) -> int:
+    urls = package_rpm_urls(args.version, el=args.el, arch=args.arch)
+    if not urls:
+        return 1
+    for url in urls:
+        _print(url)
+    return 0
+
+
+def cmd_ob_deploy_url(args: argparse.Namespace) -> int:
+    url = ob_deploy_rpm_url(el=args.el, arch=args.arch, version=args.version)
+    if not url:
+        return 1
+    _print(url)
+    return 0
+
+
+def cmd_plugin_dest(args: argparse.Namespace) -> int:
+    _print(str(preferred_plugin_dest()))
+    return 0
+
+
+def cmd_rpm_platform(args: argparse.Namespace) -> int:
+    text = Path(args.mirror_file).read_text(encoding="utf-8") if args.mirror_file else sys.stdin.read()
+    rows = parse_obd_table_rows(text)
+    for el, arch in resolve_rpm_platforms(rows, fallback_arch=args.arch):
+        _print(f"{el} {arch}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -325,6 +460,26 @@ def build_parser() -> argparse.ArgumentParser:
     hint = sub.add_parser("hint")
     hint.add_argument("--version", default=DEFAULT_NEW_CLUSTER_VERSION)
     hint.set_defaults(func=cmd_hint)
+
+    rpms = sub.add_parser("rpm-urls")
+    rpms.add_argument("--version", default=DEFAULT_NEW_CLUSTER_VERSION)
+    rpms.add_argument("--el", default="8")
+    rpms.add_argument("--arch", default="x86_64")
+    rpms.set_defaults(func=cmd_rpm_urls)
+
+    dep = sub.add_parser("ob-deploy-url")
+    dep.add_argument("--version", default=DEFAULT_NEW_CLUSTER_VERSION)
+    dep.add_argument("--el", default="8")
+    dep.add_argument("--arch", default="x86_64")
+    dep.set_defaults(func=cmd_ob_deploy_url)
+
+    pdest = sub.add_parser("plugin-dest")
+    pdest.set_defaults(func=cmd_plugin_dest)
+
+    plat = sub.add_parser("rpm-platform", help="el/arch из obd mirror list local")
+    plat.add_argument("--mirror-file")
+    plat.add_argument("--arch", default="x86_64")
+    plat.set_defaults(func=cmd_rpm_platform)
     return parser
 
 

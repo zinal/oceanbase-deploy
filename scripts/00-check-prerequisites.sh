@@ -58,8 +58,8 @@ if command -v yc >/dev/null 2>&1; then
 fi
 
 source_obd_env || true
-if [[ -f "${LIB_DIR}/lib/prepare-obd-mirror.sh" ]]; then
-  bash "${LIB_DIR}/lib/prepare-obd-mirror.sh" --check-only
+if [[ -f "${LIB_DIR}/lib/prepare-obd-mirror.sh" ]] && command -v obd >/dev/null 2>&1; then
+  bash "${LIB_DIR}/lib/prepare-obd-mirror.sh" --ensure
 elif command -v obd >/dev/null 2>&1; then
   info "OBD установлен: $(obd --version 2>/dev/null || obd -V 2>/dev/null || echo 'unknown')"
 else
