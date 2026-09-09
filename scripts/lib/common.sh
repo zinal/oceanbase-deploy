@@ -309,3 +309,48 @@ wait_for_ssh() {
     "${user}@${host}" "echo ok" 2>&1 | tail -1 || true)"
   die "SSH недоступен на ${user}@${host}:${port} (ключ ${key}) после ${timeout}с. Проверьте: yandex_cloud.ssh_user + ssh.private_key_file совпадают с рабочим ssh (например demo@host), security group tcp/${port}, пара ssh_public_key_file/ssh.private_key_file.${err:+ Последняя ошибка: ${err}}"
 }
+
+obd_yaml_first_ip() {
+  local yaml_path="$1"
+  python3 - "${yaml_path}" <<'PY'
+import sys
+import yaml
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    data = yaml.safe_load(fh)
+if not isinstance(data, dict) or not data:
+    raise SystemExit(f"{path}: expected an OBD component mapping")
+component = next(iter(data.values()))
+if not isinstance(component, dict):
+    raise SystemExit(f"{path}: missing component body")
+servers = component.get("servers") or []
+if not servers:
+    raise SystemExit(f"{path}: no servers")
+entry = servers[0]
+ip = entry if isinstance(entry, str) else (entry or {}).get("ip")
+if not ip:
+    raise SystemExit(f"{path}: server has no ip")
+print(ip)
+PY
+}
+
+# Официально: obd cluster start <deploy> -c <component> [-s <ip>]
+obd_start_component() {
+  local deploy="$1" component="$2" ip="${3:-}"
+  if [[ -n "${ip}" ]]; then
+    info "obd cluster start ${deploy} -c ${component} -s ${ip}"
+    if command -v stdbuf >/dev/null 2>&1; then
+      stdbuf -oL -eL obd cluster start "${deploy}" -c "${component}" -s "${ip}"
+    else
+      obd cluster start "${deploy}" -c "${component}" -s "${ip}"
+    fi
+  else
+    info "obd cluster start ${deploy} -c ${component}"
+    if command -v stdbuf >/dev/null 2>&1; then
+      stdbuf -oL -eL obd cluster start "${deploy}" -c "${component}"
+    else
+      obd cluster start "${deploy}" -c "${component}"
+    fi
+  fi
+}

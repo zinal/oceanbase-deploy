@@ -151,6 +151,11 @@ python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
   --output-dir "${SCALE_OUT_DIR}" \
   --manifest "${SCALE_OUT_MANIFEST}"
 
+# OBD scale_out for obagent only installs/registers the node. The next
+# scale_out then fails status_check if that agent was never started.
+info "Запуск уже зарегистрированных obagent, если они ещё не работают..."
+obd_start_component "${CLUSTER_NAME}" "obagent"
+
 while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
   [[ -n "${batch_label}" ]] || continue
   info "Пакетный scale-out ${batch_label}..."
@@ -161,6 +166,9 @@ while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
   if [[ "${obagent_yaml}" != "-" ]]; then
     info "Добавление obagent из ${obagent_yaml}"
     run_obd cluster scale_out "${CLUSTER_NAME}" -c "${obagent_yaml}"
+    agent_ip="$(obd_yaml_first_ip "${obagent_yaml}")"
+    info "Запуск obagent на ${agent_ip}: OBD scale_out его не стартует"
+    obd_start_component "${CLUSTER_NAME}" "obagent" "${agent_ip}"
   fi
 done < "${SCALE_OUT_MANIFEST}"
 

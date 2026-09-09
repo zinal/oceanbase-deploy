@@ -99,13 +99,6 @@ ensure_instance_running() {
   wait_for_instances_ssh "${ip}"
 }
 
-# Официально: obd cluster start <deploy> -c <component> -s <ip>
-obd_start_component() {
-  local deploy="$1" component="$2" ip="$3"
-  info "obd cluster start ${deploy} -c ${component} -s ${ip}"
-  obd cluster start "${deploy}" -c "${component}" -s "${ip}"
-}
-
 # Аварийный handbook: ./bin/observer (или obproxy) только из home_path.
 start_binary_from_home() {
   local host="$1" home_path="$2" binary="$3"

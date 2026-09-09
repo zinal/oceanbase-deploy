@@ -176,7 +176,7 @@ vm_profiles:
 
 1. `obd cluster deploy/start` получает `generated/obd-seed.yaml` только с `observer-1..3` — по одному на `zone1..3`.
 2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д.; внутри раунда OBD получает три последовательных одноузловых YAML.
-3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Повторный запуск строит план относительно зарегистрированного OBD-конфига и продолжает с отсутствующих компонентов.
+3. OBAgent добавляется отдельным `scale_out` после observer того же пакета, затем сразу `obd cluster start -c obagent -s <ip>`. У OBD нет `scale_out`-workflow для obagent: команда только регистрирует узел, и следующий `scale_out` падает с `obagent is not running`. Повторный запуск сначала поднимает уже зарегистрированные агенты и продолжает с отсутствующих компонентов.
 
 В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`, а `ALTER SYSTEM ADD SERVER` завершается таймаутом.
 
