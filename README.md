@@ -182,7 +182,7 @@ vm_profiles:
 
 Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`.
 
-OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Скрипт перед scale-out ставит `SET GLOBAL ob_query_timeout=3600s` и при сбое OBD повторяет `ADD SERVER` сам. Не стирайте уже запущенный новый observer — достаточно длинного timeout.
+OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Повторный `ADD SERVER` по уже запущенному узлу даёт **ERROR 4179** (non-empty): процесс записал clog, в `DBA_OB_SERVERS` его нет. Нужен wipe **только этого IP**, затем start и сразу ADD SERVER с timeout 3600 с. Seed не трогать.
 
 Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
 

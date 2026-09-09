@@ -495,8 +495,75 @@ wait_observer_active() {
 
 add_observer_server_sql() {
   local ip="$1" rpc="$2" zone="$3"
+  local client port pass seed out
+  client="$(sql_client_bin)"
+  [[ -n "${client}" ]] || return 1
+  port="$(yaml_get oceanbase.ports.mysql)"
+  [[ -n "${port}" && "${port}" != "null" ]] || port=2881
+  pass="$(yaml_get ocp.root_password)"
+  [[ "${pass}" == "null" ]] && pass=""
   info "ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone} (ob_query_timeout=${OB_ADD_SERVER_TIMEOUT_US})"
-  observer_sys_sql "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}"
+  for seed in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
+    [[ -n "${seed}" ]] || continue
+    out=""
+    if [[ -n "${pass}" ]]; then
+      out="$(MYSQL_PWD="${pass}" "${client}" -h"${seed}" -P"${port}" -uroot --connect-timeout=8 -e "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}" 2>&1)" && return 0
+    else
+      out="$("${client}" -h"${seed}" -P"${port}" -uroot --connect-timeout=8 -e "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}" 2>&1)" && return 0
+    fi
+    if grep -qiE 'already exist|duplicate' <<<"${out}"; then
+      return 0
+    fi
+    if grep -q '4179' <<<"${out}"; then
+      warn "ERROR 4179: ${ip}:${rpc} не empty. Нужен wipe home/data/redo на этом узле (не на seed)."
+      return 2
+    fi
+    warn "ADD SERVER через ${seed}: ${out}"
+  done
+  return 1
+}
+
+wait_host_mysql() {
+  local ip="$1"
+  local port="${2:-2881}"
+  local client pass elapsed=0
+  client="$(sql_client_bin)"
+  [[ -n "${client}" ]] || return 1
+  pass="$(yaml_get ocp.root_password)"
+  [[ "${pass}" == "null" ]] && pass=""
+  while (( elapsed < 90 )); do
+    if "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=5 -Nse "select 1" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ -n "${pass}" ]] && MYSQL_PWD="${pass}" "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=5 -Nse "select 1" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+  return 1
+}
+
+obd_scale_out_yaml() {
+  local deploy="$1" yaml="$2"
+  if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL obd cluster scale_out "${deploy}" -c "${yaml}"
+  else
+    obd cluster scale_out "${deploy}" -c "${yaml}"
+  fi
+}
+
+join_empty_observer() {
+  local deploy="$1" ip="$2" rpc="$3" zone="$4" mysql_port="$5"
+  # После wipe узел уже в конфиге OBD — start, сразу ADD SERVER с длинным timeout.
+  # Нельзя оставлять observer работать «вхолостую»: clog → ERROR 4179.
+  if ! obd_start_component "${deploy}" "oceanbase-ce" "${ip}"; then
+    warn "obd cluster start -s ${ip} не удался (узла может не быть в OBD config)"
+    return 1
+  fi
+  wait_host_mysql "${ip}" "${mysql_port}" || warn "${ip}:${mysql_port} ещё не отвечает — ADD SERVER всё равно"
+  add_observer_server_sql "${ip}" "${rpc}" "${zone}" || return 1
+  wait_observer_active "${ip}"
 }
 
 obd_yaml_observer_spec() {
@@ -504,7 +571,7 @@ obd_yaml_observer_spec() {
 }
 
 # OBD scale_out: start observer, затем ADD SERVER с дефолтным ob_query_timeout=10s.
-# При 6+ узлах SQL часто не укладывается — OBD-5000, хотя узел уже слушает 2881.
+# При 6+ узлах SQL часто не укладывается — OBD-5000. Живой observer пишет clog → 4179.
 scale_out_observer() {
   local deploy="$1" yaml="$2"
   local ip rpc mysql_port zone status
@@ -514,33 +581,29 @@ scale_out_observer() {
   raise_sys_query_timeout || true
   reset_observer_for_scale_out "${ip}"
   info "Очистка ${ip} и добавление observer из ${yaml}"
-  if command -v stdbuf >/dev/null 2>&1; then
-    if stdbuf -oL -eL obd cluster scale_out "${deploy}" -c "${yaml}"; then
-      return 0
-    fi
-  else
-    if obd cluster scale_out "${deploy}" -c "${yaml}"; then
-      return 0
-    fi
+  if obd_scale_out_yaml "${deploy}" "${yaml}"; then
+    return 0
   fi
-  warn "obd cluster scale_out ${ip} вернул ошибку. Часто это ob_query_timeout=10s на ADD SERVER, а не «битый» узел."
-  sleep 5
   status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
   if grep -qi ACTIVE <<<"${status}"; then
     info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
     return 0
   fi
-  if add_observer_server_sql "${ip}" "${rpc}" "${zone}"; then
-    wait_observer_active "${ip}"
+  warn "obd cluster scale_out ${ip} не прошёл. Не делайте ADD SERVER по уже запущенному узлу — будет ERROR 4179 (non-empty)."
+  info "Повтор: wipe ${ip}, start, ADD SERVER с ob_query_timeout=3600s"
+  reset_observer_for_scale_out "${ip}"
+  if join_empty_observer "${deploy}" "${ip}" "${rpc}" "${zone}" "${mysql_port}"; then
+    return 0
+  fi
+  reset_observer_for_scale_out "${ip}"
+  if obd_scale_out_yaml "${deploy}" "${yaml}"; then
     return 0
   fi
   status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-  if grep -qiE 'ACTIVE|INACTIVE' <<<"${status}"; then
-    info "${ip} появился в DBA_OB_SERVERS (${status}) — ждём ACTIVE"
-    wait_observer_active "${ip}"
+  if grep -qi ACTIVE <<<"${status}"; then
     return 0
   fi
-  die "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}. Проверьте rootservice_list и observer.log на ${ip}"
+  die "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}. ERROR 4179 → wipe только ${ip} (не seed). Timeout 10s → SET GLOBAL ob_query_timeout."
 }
 
 obagent_home_path() {

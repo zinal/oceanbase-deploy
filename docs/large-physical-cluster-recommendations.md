@@ -505,13 +505,34 @@ YAML каждого `scale_out` содержит только отсутству
 
 Перед `scale_out` целевой observer очищается (процессы, `home_path`, data/redo). Seed-узлы не трогаются. Неудачный `ADD SERVER` оставляет запущенный observer: следующий `scale_out` без очистки видит pid и не подставляет `rootservice_list`.
 
-`ALTER SYSTEM ADD SERVER` в OBD идёт с дефолтным `ob_query_timeout=10s`. На 6-м и последующих узлах SQL часто не укладывается: `OBD-5000` ровно через ~10 с (`ERROR 4012 … 10000000(us)`), хотя `Start observer ok` и `Connect to observer <new>:2881 ok` уже были. Скрипт ставит `SET GLOBAL ob_query_timeout` на sys и при ошибке OBD повторяет `ADD SERVER` с timeout 3600 с. Если OBD уже упал, **не** делайте wipe — повторите SQL к seed:
+`ALTER SYSTEM ADD SERVER` в OBD идёт с дефолтным `ob_query_timeout=10s`. На 6-м и последующих узлах SQL часто не укладывается: `OBD-5000` ровно через ~10 с (`ERROR 4012 … 10000000(us)`), хотя `Start observer ok` уже был. Если после этого сразу повторить `ADD SERVER` по **тому же** запущенному observer — `ERROR 4179 add non-empty server`: процесс успел записать clog и для кластера уже «не пустой», хотя в `DBA_OB_SERVERS` его нет.
+
+Нельзя: `ADD SERVER` без wipe. Нужно остановить observer **только на этом IP**, очистить `home_path` / `data_dir` / `redo_dir`, поднять процесс заново и сразу `ADD SERVER` с `ob_query_timeout=3600s`. Seed (`observer-1..3`) не трогать.
+
+```bash
+# только 10.130.0.37 — не seed 10.130.0.34/21/28
+ssh obadmin@10.130.0.37
+pkill -f /home/obadmin/observer/bin/observer || true
+pkill -f /home/obadmin/observer/bin/obshell || true
+rm -rf /home/obadmin/observer
+find /ob-data/1 /ob-log/1 -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+mkdir -p /ob-data/1 /ob-log/1
+```
+
+Затем с jump host:
 
 ```sql
-SET SESSION ob_query_timeout = 3600000000;
-ALTER SYSTEM ADD SERVER '10.130.0.37:2882' ZONE zone3;
-SELECT SVR_IP, SVR_PORT, STATUS FROM oceanbase.DBA_OB_SERVERS WHERE SVR_IP='10.130.0.37';
+SET GLOBAL ob_query_timeout = 3600000000;
 ```
+
+```bash
+obd cluster start ob-yc-prod -c oceanbase-ce -s 10.130.0.37
+# сразу, пока узел empty:
+obclient -h10.130.0.34 -P2881 -uroot@sys -p -e \
+  "SET SESSION ob_query_timeout=3600000000; ALTER SYSTEM ADD SERVER '10.130.0.37:2882' ZONE zone3;"
+```
+
+Либо `obd cluster scale_out ob-yc-prod -c generated/staged-scale-out/01-03-server6-oceanbase.yaml` после wipe (если OBD ещё не зарегистрировал server6).
 
 План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
 
