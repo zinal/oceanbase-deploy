@@ -307,17 +307,104 @@ npx skills add oceanbase/oceanbase-skills --skill oceanbase-deploy
 
 Destroy ждёт свободный слот операций Compute (квота — 15 активных на каталог) и повторяет `delete` при `ResourceExhausted`. Если прервать (`^C`), `generated/inventory.env` не стирается — повторите ту же команду. Без инвентаря ВМ ищутся по метке `deployment=<name>`.
 
-## Подключение к кластеру
+## Эксплуатация
 
-После развёртывания:
+Имя кластера OBD — `deployment.name` в `config/deploy.yaml` (в примере — `ob-yc-prod`). IP и счётчики узлов — в `generated/inventory.env` (`DEPLOY_NAME`, `OBSERVER_1_IP`, `OBPROXY_1_IP`, `OCP_1_IP`).
+
+После перезапуска ВМ Yandex Cloud внутренний DNS (`<имя>.ru-central1.internal`) не меняется, а **IP могут смениться**. Перед `obd cluster start` обновите IP в инвентаре (`yc compute instance get`) и выполните `./scripts/deploy.sh config`.
+
+### Запуск остановленного кластера
+
+Полный старт всех компонентов (кластер останавливали через `obd cluster stop` или выключили процессы):
 
 ```bash
-obd cluster display <deployment_name>
-mysql -h<obproxy_ip> -P2883 -uroot -p
-# Obshell dashboard: http://<observer_ip>:2886
+source ~/.oceanbase-all-in-one/bin/env.sh   # если obd не в PATH
+obd cluster start ob-yc-prod
+obd cluster display ob-yc-prod
 ```
 
-При нескольких ВМ obproxy (`vm_profiles.obproxy.count > 1`) можно поставить **HAProxy** как TCP-балансировщик с привязкой соединений по IP клиента — см. [docs/haproxy-obproxy-tcp-lb.md](docs/haproxy-obproxy-tcp-lb.md) и [config/haproxy-obproxy-tcp-lb.cfg.example](config/haproxy-obproxy-tcp-lb.cfg.example).
+Если **oceanbase-ce уже running** (SQL к `:2881` отвечает, зависание было на `obshell bootstrap` / не доехали proxy и OCP), стартуйте только оставшиеся компоненты — иначе OBD снова зайдёт в take-over obshell:
+
+```bash
+obd cluster start ob-yc-prod -c obproxy-ce,obagent,ocp-server-ce
+```
+
+Список после `-c` должен совпадать с тем, что реально есть в `obd cluster display`. Если OCP выключен — уберите `ocp-server-ce`. Если нет obagent — уберите `obagent`. Один компонент:
+
+```bash
+obd cluster start ob-yc-prod -c obproxy-ce
+```
+
+Остановка / рестарт:
+
+```bash
+obd cluster stop ob-yc-prod
+obd cluster restart ob-yc-prod
+```
+
+Временный отказ одной ВМ (диски целы) — [восстановление узла](#восстановление-узла), не `destroy`.
+
+Если `obd cluster start` завис на `obshell bootstrap -`: `./scripts/deploy.sh diagnose` и [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
+
+### SQL (клиенты)
+
+Через OBProxy (порт `oceanbase.ports.obproxy`, по умолчанию 2883):
+
+```bash
+mysql -h"${OBPROXY_1_IP}" -P2883 -uroot -p
+# пароль root@sys — ocp.root_password в config/deploy.yaml (сразу после bootstrap может быть пустым)
+```
+
+Напрямую на observer (2881), для диагностики:
+
+```bash
+mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p
+```
+
+User tenant после `./scripts/deploy.sh tenant` — пользователь и БД из секции `tenant`.
+
+При нескольких obproxy — [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md).
+
+### obshell (dashboard агента)
+
+На каждом observer слушает **2886** (`oceanbase.ports.obshell`):
+
+```bash
+# identity агента (без пароля)
+curl -sf "http://${OBSERVER_1_IP}:2886/api/v1/info"
+# поле data.identity: CLUSTER AGENT | TAKE OVER MASTER | TAKE OVER FOLLOWER
+```
+
+Веб-UI:
+
+```text
+http://<observer_ip>:2886
+```
+
+Кластерные операции UI делает только **CLUSTER AGENT**. На `TAKE OVER FOLLOWER` будет:
+
+```text
+'<ip>:2886' is 'TAKE OVER FOLLOWER', instead of 'CLUSTER AGENT', does not support this operation
+```
+
+Это отказ UI, не сбой observer. Откройте узел с `CLUSTER AGENT` (или take-over master, пока DAG не завершился). Сводка по всем узлам: `./scripts/deploy.sh diagnose`. Подписанный запрос к DAG: `python3 scripts/lib/obshell_ocs.py dag --host <ip> --port 2886`.
+
+### OCP (веб-консоль)
+
+Нужны `vm_profiles.ocp.enabled: true` и `ocp.enabled: true`. После успешного deploy:
+
+```text
+http://<OCP_1_IP>:8080
+```
+
+| Параметр | Значение |
+|----------|----------|
+| URL | `http://${OCP_1_IP}:${ocp.port}` (порт по умолчанию **8080**) |
+| Логин | `ocp.admin_username` (обычно `admin`) |
+| Пароль | `ocp.admin_password` в `config/deploy.yaml` |
+| IP | `OCP_1_IP` в `generated/inventory.env` |
+
+OCP ходит к observer/obproxy по внутренней сети YC; с ноутбука нужен VPN/ssh-туннель, если 8080 не опубликован в интернет. Подробности — [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
 
