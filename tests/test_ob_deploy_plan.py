@@ -205,18 +205,16 @@ def test_scale_out_cli_writes_resumable_manifest() -> None:
         )
 
         lines = manifest.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 2
+        assert len(lines) == 4
         first_label, first_ob, first_agent = lines[0].split("|")
-        assert first_label == "server4-server6"
-        assert ips(PLAN.load_yaml(Path(first_ob))["oceanbase-ce"]) == [
-            "10.0.0.5",
-            "10.0.0.6",
-        ]
-        assert ips(PLAN.load_yaml(Path(first_agent))["obagent"]) == [
-            "10.0.0.4",
-            "10.0.0.5",
-            "10.0.0.6",
-        ]
+        assert first_label == "server4-server6/server4"
+        assert first_ob == "-"
+        assert ips(PLAN.load_yaml(Path(first_agent))["obagent"]) == ["10.0.0.4"]
+
+        second_label, second_ob, second_agent = lines[1].split("|")
+        assert second_label == "server4-server6/server5"
+        assert ips(PLAN.load_yaml(Path(second_ob))["oceanbase-ce"]) == ["10.0.0.5"]
+        assert ips(PLAN.load_yaml(Path(second_agent))["obagent"]) == ["10.0.0.5"]
 
 
 def test_malformed_registered_config_fails_closed() -> None:

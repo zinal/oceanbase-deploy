@@ -188,6 +188,7 @@ def build_scale_out_plan(
                 {
                     "first": server_name(batch[0]) or desired_ips[0],
                     "last": server_name(batch[-1]) or desired_ips[-1],
+                    "servers": copy.deepcopy(batch),
                     "oceanbase": {ob_key: ob_block} if ob_block is not None else None,
                     "obagent": {"obagent": agent_block} if agent_block is not None else None,
                 }
@@ -211,23 +212,50 @@ def cmd_scale_out(args: argparse.Namespace) -> None:
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = []
-    for number, batch in enumerate(plan, start=1):
-        label = f"{batch['first']}-{batch['last']}"
-        ob_path: Path | None = None
-        agent_path: Path | None = None
-        if batch["oceanbase"] is not None:
-            ob_path = args.output_dir / f"{number:02d}-{label}-oceanbase.yaml"
-            dump_yaml(batch["oceanbase"], ob_path)
-        if batch["obagent"] is not None:
-            agent_path = args.output_dir / f"{number:02d}-{label}-obagent.yaml"
-            dump_yaml(batch["obagent"], agent_path)
-        lines.append(f"{label}|{ob_path or '-'}|{agent_path or '-'}")
+    ob_key = oceanbase_component_key(full_cfg)
+    for round_number, batch in enumerate(plan, start=1):
+        round_label = f"{batch['first']}-{batch['last']}"
+        batch_ob = batch["oceanbase"]
+        batch_agent = batch["obagent"]
+        for position, server in enumerate(batch["servers"], start=1):
+            ip = server_ip(server)
+            name = server_name(server) or ip
+            ob_path: Path | None = None
+            agent_path: Path | None = None
+
+            if batch_ob is not None:
+                node_ob = selected_component(batch_ob[ob_key], {ip}, keep_settings=False)
+                if node_ob is not None:
+                    ob_path = (
+                        args.output_dir
+                        / f"{round_number:02d}-{position:02d}-{name}-oceanbase.yaml"
+                    )
+                    dump_yaml({ob_key: node_ob}, ob_path)
+            if batch_agent is not None:
+                node_agent = selected_component(
+                    batch_agent["obagent"],
+                    {ip},
+                    keep_settings=False,
+                )
+                if node_agent is not None:
+                    agent_path = (
+                        args.output_dir
+                        / f"{round_number:02d}-{position:02d}-{name}-obagent.yaml"
+                    )
+                    dump_yaml({"obagent": node_agent}, agent_path)
+            if ob_path is not None or agent_path is not None:
+                lines.append(
+                    f"{round_label}/{name}|{ob_path or '-'}|{agent_path or '-'}"
+                )
 
     args.manifest.write_text(
         "".join(f"{line}\n" for line in lines),
         encoding="utf-8",
     )
-    print(f"Scale-out plan written: {args.manifest} ({len(plan)} batches)")
+    print(
+        f"Scale-out plan written: {args.manifest} "
+        f"({len(plan)} rounds, {len(lines)} single-node operations)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

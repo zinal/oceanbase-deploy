@@ -498,7 +498,7 @@ obshell bootstrap -
 
 1. Из полного `generated/obd-cluster.yaml` строится `generated/obd-seed.yaml` с `server1..server3`, по одному observer в каждой Zone.
 2. OBD выполняет `cluster deploy/start` seed-кластера и дожидается успешного OBShell take-over.
-3. Оставшиеся узлы добавляются `obd cluster scale_out` пакетами по три: один в `zone1`, один в `zone2`, один в `zone3`.
+3. Оставшиеся узлы добавляются `obd cluster scale_out` раундами по три: один в `zone1`, один в `zone2`, один в `zone3`. Каждый вызов OBD получает YAML только одного нового observer; три вызова выполняются последовательно.
 4. Для каждого пакета сначала добавляется `oceanbase-ce`, затем отдельным вызовом — `obagent`.
 
 YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
