@@ -93,7 +93,7 @@ python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
   --manifest "${PLAN_MANIFEST}"
 
 info "Запуск уже зарегистрированных obagent, если они ещё не работают..."
-obd_start_component "${deploy_name}" "obagent"
+start_registered_obagents "${deploy_name}" "${registered_config}"
 
 while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
   [[ -n "${batch_label}" ]] || continue
@@ -105,7 +105,7 @@ while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
     obd cluster scale_out "${deploy_name}" -c "${obagent_yaml}"
     agent_ip="$(obd_yaml_first_ip "${obagent_yaml}")"
     info "Запуск obagent на ${agent_ip}: OBD scale_out его не стартует"
-    obd_start_component "${deploy_name}" "obagent" "${agent_ip}"
+    start_obagent_node "${deploy_name}" "${agent_ip}"
   fi
 done < "${PLAN_MANIFEST}"
 

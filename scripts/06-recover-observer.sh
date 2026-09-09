@@ -353,8 +353,12 @@ obd cluster scale_out "${DEPLOY_NAME_CLUSTER}" -c "${SCALE_OUT_OB}"
 
 if [[ -s "${SCALE_OUT_AGENT}" ]]; then
   info "OBD scale_out obagent (${NEW_IP})..."
-  obd cluster scale_out "${DEPLOY_NAME_CLUSTER}" -c "${SCALE_OUT_AGENT}" \
-    || warn "obagent scale_out не удался — поставьте агент вручную на ${NEW_IP}"
+  if obd cluster scale_out "${DEPLOY_NAME_CLUSTER}" -c "${SCALE_OUT_AGENT}"; then
+    start_obagent_node "${DEPLOY_NAME_CLUSTER}" "${NEW_IP}" \
+      || warn "obagent не стартовал на ${NEW_IP} — каталоги run/ и повторный start можно выполнить вручную"
+  else
+    warn "obagent scale_out не удался — поставьте агент вручную на ${NEW_IP}"
+  fi
 fi
 
 if [[ "${SKIP_SQL}" != "true" ]]; then

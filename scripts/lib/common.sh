@@ -335,6 +335,67 @@ print(ip)
 PY
 }
 
+obagent_home_path() {
+  local user
+  user="$(yaml_get oceanbase.deploy_user)"
+  if [[ -z "${user}" || "${user}" == "null" ]]; then
+    user="$(ssh_connect_user)"
+  fi
+  printf '/home/%s/obagent' "${user}"
+}
+
+obd_yaml_component_ips() {
+  local yaml_path="$1" component="$2"
+  python3 - "${yaml_path}" "${component}" <<'PY'
+import sys
+import yaml
+
+path, component = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    data = yaml.safe_load(fh)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+block = data.get(component)
+if not isinstance(block, dict):
+    raise SystemExit(0)
+for entry in block.get("servers") or []:
+    ip = entry if isinstance(entry, str) else (entry or {}).get("ip")
+    if ip:
+        print(ip)
+PY
+}
+
+# OBD scale_out does not run obagent init, so run/ is missing and
+# ob_agentctl start fails with fetch_admin_lock_failed.
+ensure_obagent_work_home() {
+  local host="$1"
+  local home="${2:-}"
+  [[ -n "${home}" ]] || home="$(obagent_home_path)"
+  info "Каталоги obagent на ${host}: ${home}/{run,bin,lib,conf,log}"
+  run_remote "${host}" "mkdir -p '${home}/run' '${home}/bin' '${home}/lib' '${home}/conf' '${home}/log'"
+}
+
+start_obagent_node() {
+  local deploy="$1" ip="$2"
+  ensure_obagent_work_home "${ip}"
+  obd_start_component "${deploy}" "obagent" "${ip}"
+}
+
+start_registered_obagents() {
+  local deploy="$1" registered_yaml="$2"
+  local ip home
+  local -a ips=()
+  [[ -f "${registered_yaml}" ]] || return 0
+  home="$(obagent_home_path)"
+  mapfile -t ips < <(obd_yaml_component_ips "${registered_yaml}" "obagent")
+  ((${#ips[@]})) || return 0
+  for ip in "${ips[@]}"; do
+    [[ -n "${ip}" ]] || continue
+    ensure_obagent_work_home "${ip}" "${home}"
+  done
+  obd_start_component "${deploy}" "obagent"
+}
+
 # Официально: obd cluster start <deploy> -c <component> [-s <ip>]
 obd_start_component() {
   local deploy="$1" component="$2" ip="${3:-}"
