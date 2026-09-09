@@ -170,6 +170,12 @@ vm.max_map_count = 655360
 SYSCTL
 sysctl -p /etc/sysctl.d/99-oceanbase.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
 
+if [[ -e /sys/fs/cgroup/cgroup.controllers ]]; then
+  echo "WARN: cgroup v2. OceanBase/OCP ожидают cgroup v1 для изоляции CPU тенантов."
+  echo "WARN: баннер OCP «abnormal Cgroup configuration» — не стоп takeover."
+  echo "WARN: переключение: systemd.unified_cgroup_hierarchy=0 в GRUB и reboot (не на живом кластере без окна)."
+fi
+
 cat >/etc/security/limits.d/oceanbase.conf <<LIMITS
 ${DEPLOY_USER} soft nofile 655350
 ${DEPLOY_USER} hard nofile 655350
