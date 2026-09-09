@@ -214,6 +214,8 @@ def test_ocp_register_script_help() -> None:
     assert "-V" in out.stdout
     text = script.read_text(encoding="utf-8")
     assert 'check4ocp "${CLUSTER_NAME}" -V "${OCP_VERSION}"' in text
+    assert "--host_type" in text
+    assert "ocp_takeover.py" in text
 
 
 def test_dump_obshell_dag_maps_numeric_state() -> None:

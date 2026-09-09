@@ -140,11 +140,25 @@ if [[ "${check_rc}" -ne 0 ]]; then
 fi
 rm -f "${check_log}"
 
-info "obd cluster export-to-ocp ${CLUSTER_NAME} → ${OCP_URL} (user ${OCP_USER})"
+HOST_TYPE="$(yaml_get ocp.host_type)"
+[[ -z "${HOST_TYPE}" || "${HOST_TYPE}" == "null" ]] && HOST_TYPE=yandex-cloud
+CRED_NAME="$(yaml_get ocp.credential_name)"
+[[ -z "${CRED_NAME}" || "${CRED_NAME}" == "null" ]] && CRED_NAME="${DEPLOY_USER}-ssh"
+
+OBD_CLUSTER_DIR="${HOME}/.obd/cluster/${CLUSTER_NAME}"
+info "OBD takeOver читает mysql_port из oceanbase-ce.global (не из serverN). Проверка ${OBD_CLUSTER_DIR}/config.yaml..."
+python3 "${LIB_DIR}/lib/ocp_takeover.py" patch-config \
+  --cluster-dir "${OBD_CLUSTER_DIR}" \
+  --mysql-port "${MYSQL_PORT}"
+
+info "obd cluster export-to-ocp ${CLUSTER_NAME} → ${OCP_URL} (user ${OCP_USER}, host_type ${HOST_TYPE})"
+info "Сбой oceanbase-ce-utils при export — предупреждение OBD, takeover всё равно идёт."
 obd cluster export-to-ocp "${CLUSTER_NAME}" \
   -a "${OCP_URL}" \
   -u "${OCP_USER}" \
-  -p "${OCP_PASSWORD}"
+  -p "${OCP_PASSWORD}" \
+  --host_type "${HOST_TYPE}" \
+  --credential_name "${CRED_NAME}"
 
 cat <<EOF
 

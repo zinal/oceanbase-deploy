@@ -274,6 +274,11 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             "global": {
                 "appname": ob_cfg.get("cluster_name", "obcluster"),
                 "cluster_id": 1,
+                # OBD export-to-ocp читает mysql_port только из global (не из serverN).
+                "mysql_port": int(ports.get("mysql", 2881)),
+                "rpc_port": int(ports.get("rpc", 2882)),
+                "obshell_port": int(ports.get("obshell", 2886)),
+                "home_path": home_path,
                 "memory_limit": tune["memory_limit"],
                 "system_memory": tune["system_memory"],
                 "datafile_size": tune["datafile_size"],
