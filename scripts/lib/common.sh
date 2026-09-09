@@ -754,25 +754,43 @@ ensure_obagent_work_home() {
   run_remote "${host}" "mkdir -p '${home}/run' '${home}/bin' '${home}/lib' '${home}/conf' '${home}/log'"
 }
 
+# After a 3-node obagent scale_out, `obd cluster start -s <ip>` still starts
+# every not-running agent (or a different server: 10.130.0.8 → server8/.18).
+# Create run/ on all packet IPs first, then start the component without -s.
+start_obagent_nodes() {
+  local deploy="$1"
+  shift || true
+  local ip home
+  local -a ips=()
+  home="$(obagent_home_path)"
+  for ip in "$@"; do
+    [[ -n "${ip}" ]] || continue
+    ips+=("${ip}")
+  done
+  ((${#ips[@]})) || return 0
+  for ip in "${ips[@]}"; do
+    ensure_obagent_work_home "${ip}" "${home}"
+  done
+  info "Запуск obagent (${#ips[@]} узлов: ${ips[*]}). OBD scale_out их не стартует; start -s по IP ненадёжен"
+  obd_start_component "${deploy}" "obagent"
+}
+
 start_obagent_node() {
-  local deploy="$1" ip="$2"
-  ensure_obagent_work_home "${ip}"
-  obd_start_component "${deploy}" "obagent" "${ip}"
+  start_obagent_nodes "$1" "$2"
+}
+
+start_obagent_yaml() {
+  local deploy="$1" yaml="$2"
+  local -a ips=()
+  [[ -f "${yaml}" ]] || return 0
+  mapfile -t ips < <(obd_yaml_component_ips "${yaml}" "obagent")
+  start_obagent_nodes "${deploy}" "${ips[@]}"
 }
 
 start_registered_obagents() {
   local deploy="$1" registered_yaml="$2"
-  local ip home
-  local -a ips=()
   [[ -f "${registered_yaml}" ]] || return 0
-  home="$(obagent_home_path)"
-  mapfile -t ips < <(obd_yaml_component_ips "${registered_yaml}" "obagent")
-  ((${#ips[@]})) || return 0
-  for ip in "${ips[@]}"; do
-    [[ -n "${ip}" ]] || continue
-    ensure_obagent_work_home "${ip}" "${home}"
-  done
-  obd_start_component "${deploy}" "obagent"
+  start_obagent_yaml "${deploy}" "${registered_yaml}"
 }
 
 # Официально: obd cluster start <deploy> -c <component> [-s <ip>]
