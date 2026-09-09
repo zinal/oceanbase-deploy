@@ -114,7 +114,7 @@ if observer_is_seed_ip "${JOIN_IP}"; then
 fi
 
 status="$(observer_cluster_status "${JOIN_IP}" 2>/dev/null || true)"
-if grep -qi ACTIVE <<<"${status}"; then
+if observer_status_is_active "${status}"; then
   info "${JOIN_IP} уже ACTIVE в DBA_OB_SERVERS — ничего делать не нужно"
   exit 0
 fi

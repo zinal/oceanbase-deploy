@@ -69,6 +69,27 @@ if (reset_observer_for_scale_out 10.0.0.1); then
   echo "FAIL: seed observer wipe was allowed" >&2
   exit 1
 fi
+observer_cluster_status() { printf 'ACTIVE\n'; }
+if (reset_observer_for_scale_out 10.0.0.4); then
+  echo "FAIL: ACTIVE observer wipe was allowed" >&2
+  exit 1
+fi
+observer_cluster_status() { printf 'INACTIVE\n'; }
+if (reset_observer_for_scale_out 10.0.0.4); then
+  echo "FAIL: INACTIVE cluster member wipe was allowed" >&2
+  exit 1
+fi
+unset -f observer_cluster_status
+observer_status_is_active ACTIVE
+observer_status_is_active $'ACTIVE\n'
+if observer_status_is_active INACTIVE; then
+  echo "FAIL: INACTIVE treated as ACTIVE" >&2
+  exit 1
+fi
+if observer_status_is_active ""; then
+  echo "FAIL: empty status treated as ACTIVE" >&2
+  exit 1
+fi
 
 bash -n "${ROOT}/scripts/04-deploy-cluster.sh"
 bash -n "${ROOT}/scripts/05-scale-out.sh"
@@ -85,5 +106,8 @@ grep -q "root@sys" "${ROOT}/scripts/lib/common.sh"
 grep -q "scale_out_joined_ips_args" "${ROOT}/scripts/04-deploy-cluster.sh"
 grep -q "seed_observers_active" "${ROOT}/scripts/04-deploy-cluster.sh"
 grep -q "missing_observer_ips" "${ROOT}/scripts/04-deploy-cluster.sh"
+grep -q "filter-scaleout" "${ROOT}/scripts/lib/common.sh"
+grep -q "уже ACTIVE в DBA_OB_SERVERS" "${ROOT}/scripts/lib/common.sh"
+grep -q "Нет SQL к seed observer" "${ROOT}/scripts/lib/common.sh"
 grep -q "log-ok" "${ROOT}/scripts/09-ocp-register.sh"
 echo "OK test-obd-yaml-first-ip"

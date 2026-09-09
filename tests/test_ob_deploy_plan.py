@@ -401,6 +401,48 @@ def test_one_node_cli_sets_seed_rootservice_list() -> None:
         assert len(PLAN.component_servers(PLAN.load_yaml(dst)["oceanbase-ce"])) == 1
 
 
+def test_filter_scaleout_drops_already_active_members() -> None:
+    batch = PLAN.build_scale_out_plan(
+        full_config(count=6),
+        registered_config([1, 2, 3], [1, 2, 3]),
+    )[0]["oceanbase"]
+    filtered = PLAN.filter_oceanbase_yaml(batch, {"10.0.0.5", "10.0.0.6"})
+    assert ips(filtered["oceanbase-ce"]) == ["10.0.0.5", "10.0.0.6"]
+    assert "server4" not in filtered["oceanbase-ce"]
+    assert filtered["oceanbase-ce"]["server5"]["zone"] == "zone2"
+    assert "rootservice_list" in filtered["oceanbase-ce"]["server6"]
+
+    with tempfile.TemporaryDirectory() as raw:
+        src = Path(raw) / "triple.yaml"
+        dst = Path(raw) / "pending.yaml"
+        PLAN.dump_yaml(batch, src)
+        proc = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/lib/ob_deploy_plan.py"),
+                "filter-scaleout",
+                "--input",
+                str(src),
+                "--output",
+                str(dst),
+                "--ips",
+                "10.0.0.5,10.0.0.6",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc.stdout.strip() == "10.0.0.5 10.0.0.6"
+        assert ips(PLAN.load_yaml(dst)["oceanbase-ce"]) == ["10.0.0.5", "10.0.0.6"]
+
+    try:
+        PLAN.filter_oceanbase_yaml(batch, {"10.9.9.9"})
+    except ValueError as exc:
+        assert "none of" in str(exc)
+    else:
+        raise AssertionError("filter-scaleout accepted IPs that are not in the YAML")
+
+
 def test_malformed_registered_config_fails_closed() -> None:
     registered = registered_config([1, 2, 3], [1, 2, 3])
     registered["oceanbase-ce"]["servers"].append({"name": "broken"})
@@ -428,5 +470,6 @@ if __name__ == "__main__":
     test_spec_cli_prints_fields()
     test_spec_cli_prints_all_servers_in_batch()
     test_one_node_cli_sets_seed_rootservice_list()
+    test_filter_scaleout_drops_already_active_members()
     test_malformed_registered_config_fails_closed()
     print("ok")

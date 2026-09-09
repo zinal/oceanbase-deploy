@@ -392,6 +392,32 @@ def cmd_one_node(args: argparse.Namespace) -> None:
     print(f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']} -> {args.output}")
 
 
+def parse_keep_ips(raw: str) -> set[str]:
+    ips = {tok.strip() for tok in raw.replace(",", " ").split() if tok.strip()}
+    if not ips:
+        raise ValueError("filter-scaleout: empty --ips")
+    return ips
+
+
+def filter_oceanbase_yaml(cfg: dict[str, Any], keep_ips: set[str]) -> dict[str, Any]:
+    """Keep only listed observer IPs in a scale-out YAML (named overrides included)."""
+    ob_key = oceanbase_component_key(cfg)
+    filtered = selected_component(cfg[ob_key], keep_ips, keep_settings=True)
+    if filtered is None:
+        raise ValueError(
+            f"filter-scaleout: none of {sorted(keep_ips)} are in {ob_key} servers"
+        )
+    result = copy.deepcopy(cfg)
+    result[ob_key] = filtered
+    return result
+
+
+def cmd_filter_scaleout(args: argparse.Namespace) -> None:
+    cfg = filter_oceanbase_yaml(load_yaml(args.input), parse_keep_ips(args.ips))
+    dump_yaml(cfg, args.output)
+    print(" ".join(observer_ips(cfg)))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -436,6 +462,19 @@ def build_parser() -> argparse.ArgumentParser:
     one_node.add_argument("--ip", required=True)
     one_node.add_argument("--output", type=Path, required=True)
     one_node.set_defaults(func=cmd_one_node)
+
+    filt = sub.add_parser(
+        "filter-scaleout",
+        help="keep only listed observer IPs in a scale-out YAML (resume mid-round)",
+    )
+    filt.add_argument("--input", type=Path, required=True)
+    filt.add_argument("--output", type=Path, required=True)
+    filt.add_argument(
+        "--ips",
+        required=True,
+        help="observer IPs to keep (whitespace/comma-separated)",
+    )
+    filt.set_defaults(func=cmd_filter_scaleout)
     return parser
 
 

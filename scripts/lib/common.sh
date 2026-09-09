@@ -391,14 +391,36 @@ observer_is_seed_ip() {
   [[ "${ip}" == "${OBSERVER_1_IP:-}" || "${ip}" == "${OBSERVER_2_IP:-}" || "${ip}" == "${OBSERVER_3_IP:-}" ]]
 }
 
+observer_status_normalize() {
+  tr -d '[:space:]' <<<"${1:-}"
+}
+
+observer_status_is_active() {
+  local s
+  s="$(observer_status_normalize "${1:-}")"
+  [[ "${s^^}" == ACTIVE ]]
+}
+
+observer_status_is_present() {
+  [[ -n "$(observer_status_normalize "${1:-}")" ]]
+}
+
 # Nodes from a failed all-at-once start keep local clog/config. OBD scale_out
 # then either skips start (pid still alive) or ADD SERVER times out / 4179.
+# Never wipe seed IPs or members already ACTIVE in DBA_OB_SERVERS.
 reset_observer_for_scale_out() {
   local host="$1"
-  local home data redo
+  local home data redo member_status
   [[ -n "${host}" ]] || die "reset_observer_for_scale_out: empty host"
   if observer_is_seed_ip "${host}"; then
     die "Отказ очищать seed observer ${host}"
+  fi
+  member_status="$(observer_cluster_status "${host}" 2>/dev/null || true)"
+  if observer_status_is_active "${member_status}"; then
+    die "Отказ очищать ${host}: уже ACTIVE в DBA_OB_SERVERS (не leftover)"
+  fi
+  if observer_status_is_present "${member_status}"; then
+    die "Отказ очищать ${host}: уже в DBA_OB_SERVERS (STATUS=${member_status}). Это не leftover — ./scripts/06-recover-observer.sh"
   fi
   home="$(observer_home_path)"
   data="$(yaml_get oceanbase.data_dir)"
@@ -497,7 +519,7 @@ seed_observers_active() {
   for ip in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
     [[ -n "${ip}" ]] || return 1
     status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-    grep -qi ACTIVE <<<"${status}" || return 1
+    observer_status_is_active "${status}" || return 1
   done
   return 0
 }
@@ -535,7 +557,7 @@ wait_observer_active() {
   local elapsed=0 status
   while (( elapsed < timeout )); do
     status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-    if grep -qi ACTIVE <<<"${status}"; then
+    if observer_status_is_active "${status}"; then
       info "${ip} в DBA_OB_SERVERS: ACTIVE"
       return 0
     fi
@@ -609,12 +631,15 @@ obd_yaml_observer_spec() {
 }
 
 # OBD scale_out: start observer, затем ADD SERVER (сессия часто 10s — поднимаем timeout).
-# YAML пакета: до 3 узлов (по одному на zone). Wipe всех IP до вызова; неуспевших
-# добираем по одному (wipe + start + ADD SERVER), не повторяя весь пакет.
+# YAML пакета: до 3 узлов (по одному на zone). Wipe только ещё не ACTIVE IP;
+# уже ACTIVE из того же YAML выкидываются (повторный deploy посреди раунда).
+# Неуспевших добираем по одному (wipe + start + ADD SERVER), не повторяя весь пакет.
 scale_out_observer() {
   local deploy="$1" yaml="$2"
-  local ip rpc mysql_port zone status failed=0
+  local ip rpc mysql_port zone status failed=0 work_yaml
   local -a ips=() rpcs=() mysqls=() zones=()
+  local -a pending_ips=() pending_rpcs=() pending_mysqls=() pending_zones=()
+  local -a active_ips=()
   [[ -f "${yaml}" ]] || die "нет YAML scale-out: ${yaml}"
   while read -r ip rpc mysql_port zone; do
     [[ -n "${ip}" ]] || continue
@@ -624,42 +649,73 @@ scale_out_observer() {
     zones+=("${zone}")
   done < <(obd_yaml_observer_spec "${yaml}")
   [[ "${#ips[@]}" -ge 1 ]] || die "не разобрать observer spec из ${yaml}"
-  raise_sys_query_timeout || true
-  info "Очистка ${#ips[@]} observer и scale_out из ${yaml}: ${ips[*]}"
-  for ip in "${ips[@]}"; do
-    reset_observer_for_scale_out "${ip}"
-  done
-  if ! obd_scale_out_yaml "${deploy}" "${yaml}"; then
-    warn "obd cluster scale_out ${yaml} не прошёл целиком — доберём не-ACTIVE по одному"
+  if ! observer_sys_sql "SELECT 1" >/dev/null 2>&1; then
+    die "Нет SQL к seed observer — не очищаем узлы из ${yaml} (риск стереть уже вступивший). Почините root@sys и повторите deploy."
   fi
+  raise_sys_query_timeout || true
   local idx
   for idx in "${!ips[@]}"; do
     ip="${ips[idx]}"
-    rpc="${rpcs[idx]}"
-    mysql_port="${mysqls[idx]}"
-    zone="${zones[idx]}"
+    status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+    if observer_status_is_active "${status}"; then
+      active_ips+=("${ip}")
+      continue
+    fi
+    if observer_status_is_present "${status}"; then
+      die "${ip} в DBA_OB_SERVERS со статусом ${status} (не leftover). Не wipe. ./scripts/06-recover-observer.sh"
+    fi
+    pending_ips+=("${ip}")
+    pending_rpcs+=("${rpcs[idx]}")
+    pending_mysqls+=("${mysqls[idx]}")
+    pending_zones+=("${zones[idx]}")
+  done
+  if [[ "${#pending_ips[@]}" -eq 0 ]]; then
+    info "Все observer из ${yaml} уже ACTIVE (${ips[*]}) — пропуск wipe и scale_out"
+    return 0
+  fi
+  work_yaml="${yaml}"
+  if [[ "${#active_ips[@]}" -gt 0 ]]; then
+    work_yaml="${yaml%.yaml}-pending.yaml"
+    info "Уже ACTIVE, не трогаем: ${active_ips[*]}. YAML сужаем до ${pending_ips[*]}"
+    python3 "${SCRIPT_DIR}/ob_deploy_plan.py" filter-scaleout \
+      --input "${yaml}" \
+      --output "${work_yaml}" \
+      --ips "${pending_ips[*]}"
+  fi
+  info "Очистка ${#pending_ips[@]} leftover observer и scale_out из ${work_yaml}: ${pending_ips[*]}"
+  for ip in "${pending_ips[@]}"; do
+    reset_observer_for_scale_out "${ip}"
+  done
+  if ! obd_scale_out_yaml "${deploy}" "${work_yaml}"; then
+    warn "obd cluster scale_out ${work_yaml} не прошёл целиком — доберём не-ACTIVE по одному"
+  fi
+  for idx in "${!pending_ips[@]}"; do
+    ip="${pending_ips[idx]}"
+    rpc="${pending_rpcs[idx]}"
+    mysql_port="${pending_mysqls[idx]}"
+    zone="${pending_zones[idx]}"
     if wait_observer_active "${ip}" 90; then
       continue
     fi
     status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-    if grep -qi ACTIVE <<<"${status}"; then
+    if observer_status_is_active "${status}"; then
       info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
       continue
     fi
-    warn "${ip} не ACTIVE после пакетного scale_out. Wipe + ADD SERVER (не seed)."
+    warn "${ip} не ACTIVE после пакетного scale_out. Wipe + ADD SERVER (не seed, не ACTIVE)."
     reset_observer_for_scale_out "${ip}"
     if join_empty_observer "${deploy}" "${ip}" "${rpc}" "${zone}" "${mysql_port}"; then
       continue
     fi
     status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-    if grep -qi ACTIVE <<<"${status}"; then
+    if observer_status_is_active "${status}"; then
       continue
     fi
     warn "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}"
     failed=1
   done
   if [[ "${failed}" -ne 0 ]]; then
-    die "пакет ${yaml}: не все observer ACTIVE (${ips[*]}). ERROR 4179 → wipe только этот IP. Повторите deploy."
+    die "пакет ${yaml}: не все observer ACTIVE (${pending_ips[*]}). ERROR 4179 → wipe только этот IP. Повторите deploy."
   fi
 }
 
