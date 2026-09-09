@@ -178,6 +178,8 @@ vm_profiles:
 2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д.; внутри раунда OBD получает три последовательных одноузловых YAML.
 3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Повторный запуск строит план относительно зарегистрированного OBD-конфига и продолжает с отсутствующих компонентов.
 
+В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`, а `ALTER SYSTEM ADD SERVER` завершается таймаутом.
+
 Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
 
 Если `obd cluster start` завис на `obshell bootstrap -` после `oceanbase bootstrap ok`, сначала `./scripts/deploy.sh diagnose`: это либо неудачный SQL bootstrap (>7 zone), либо уже живой кластер — take-over obshell без master (`TAKE OVER FOLLOWER`, нет БД `ocs`) либо master есть и OBD висит в `wait_dag_succeed`. Destroy в двух последних случаях не нужен. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
