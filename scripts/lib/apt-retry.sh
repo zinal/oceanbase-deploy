@@ -22,6 +22,8 @@ apt_lock_paths() {
 }
 
 # Тесты подменяют через apt_lock_busy_hook или APT_SKIP_LOCK_WAIT=1.
+# Не использовать pgrep -f: паттерн есть в argv самого pgrep, lock всегда «занят»,
+# каждый apt_get молча ждёт APT_LOCK_TIMEOUT (prepare «висит»).
 apt_lock_busy() {
   if [[ "${APT_SKIP_LOCK_WAIT:-}" == "1" ]]; then
     return 1
@@ -37,16 +39,19 @@ apt_lock_busy() {
   while IFS= read -r path; do
     [[ -e "${path}" ]] || continue
     if command -v fuser >/dev/null 2>&1; then
-      fuser "${path}" >/dev/null 2>&1 && return 0
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 2 fuser "${path}" >/dev/null 2>&1 && return 0
+      else
+        fuser "${path}" >/dev/null 2>&1 && return 0
+      fi
     fi
   done < <(apt_lock_paths)
 
   if command -v pgrep >/dev/null 2>&1; then
+    # Только точное имя процесса (15 символов: unattended-upgr). Не pgrep -f.
     pgrep -x unattended-upgr >/dev/null 2>&1 && return 0
     pgrep -x apt-get >/dev/null 2>&1 && return 0
-    pgrep -x apt >/dev/null 2>&1 && return 0
     pgrep -x dpkg >/dev/null 2>&1 && return 0
-    pgrep -f '/usr/bin/unattended-upgrade' >/dev/null 2>&1 && return 0
   fi
   return 1
 }
@@ -86,7 +91,10 @@ apt_get() {
   tmp="$(mktemp)"
 
   while true; do
-    wait_apt_lock_until "${deadline}" "${poll}"
+    # Первый заход сразу в apt-get: ложный busy не должен жечь весь таймаут.
+    if (( attempt > 0 )); then
+      wait_apt_lock_until "${deadline}" "${poll}"
+    fi
     rc=0
     DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}" \
       "${APT_GET_CMD:-apt-get}" "$@" >"${tmp}" 2>&1 || rc=$?

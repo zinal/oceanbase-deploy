@@ -53,6 +53,34 @@ wait_apt_lock_until "$((SECONDS + 5))" 0
 unset -f apt_lock_busy_hook
 [[ "$(cat "${tmp}/busy-calls")" == "4" ]] || fail "ожидалось 4 проверки lock (3 busy + 1 free), got $(cat "${tmp}/busy-calls")"
 
+echo "=== apt_lock_busy не true из-за pgrep -f (иначе prepare висит по 10 мин на каждый apt_get) ==="
+if grep -E '^[[:space:]]*pgrep[[:space:]]+-f' "${ROOT}/scripts/lib/apt-retry.sh"; then
+  fail "pgrep -f самоматчится и всегда считает lock занятым"
+fi
+if pgrep -x unattended-upgr >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
+  echo "skip: на хосте реально крутится apt/dpkg"
+else
+  if apt_lock_busy; then
+    fail "apt_lock_busy=true без unattended-upgr/apt-get — ложное ожидание ${APT_LOCK_TIMEOUT}с"
+  fi
+fi
+
+echo "=== первый apt_get не ждёт lock, даже если busy-hook всегда true ==="
+apt_lock_busy_hook() { return 0; }
+APT_LOCK_TIMEOUT=8
+APT_GET_RETRY_SLEEP=0
+cat >"${tmp}/fake-apt-ok" <<'EOF'
+#!/usr/bin/env bash
+echo "ok-first $*"
+EOF
+chmod +x "${tmp}/fake-apt-ok"
+APT_GET_CMD="${tmp}/fake-apt-ok"
+started="${SECONDS}"
+out="$(apt_get install -y -qq chrony)"
+(( SECONDS - started < 3 )) || fail "первый apt_get ждал lock (${SECONDS} vs ${started})"
+grep -q 'ok-first' <<<"${out}" || fail "первый apt_get должен сразу вызвать apt: ${out}"
+unset -f apt_lock_busy_hook
+
 echo "=== apt_get повторяет после lock и затем успех ==="
 export APT_SKIP_LOCK_WAIT=1
 APT_LOCK_TIMEOUT=30
