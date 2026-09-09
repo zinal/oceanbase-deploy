@@ -196,7 +196,9 @@ OceanBase Cloud Platform (OCP):
 EOF
   info "Регистрация кластера в OCP (export-to-ocp)..."
   if ! bash "${LIB_DIR}/09-ocp-register.sh"; then
-    warn "export-to-ocp не удался (часто нужен CLUSTER AGENT на obshell). Повторите: ./scripts/deploy.sh ocp-register"
+    warn "export-to-ocp не удался. Повторите: ./scripts/deploy.sh ocp-register"
+    warn "Частые причины: нет mysql_port в oceanbase-ce.global; OCP takeOver без --host_type;"
+    warn "или obshell не CLUSTER AGENT. Utils RPM — только WARN, не стоп."
   fi
 fi
 

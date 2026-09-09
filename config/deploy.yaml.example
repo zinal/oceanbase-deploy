@@ -151,6 +151,8 @@ ocp:
   version: ""                      # опционально: версия ocp-server-ce (пустая = latest из зеркала OBD)
                                  # check4ocp без явной версии считает OCP 3.1.1 и требует OS-user admin;
                                  # скрипт ocp-register сам передаёт -V (config / установленная / 4.4.2)
+  host_type: yandex-cloud          # OBD export-to-ocp --host_type (тип хоста в OCP)
+  credential_name: obadmin-ssh     # SSH credential в OCP; пустое имя OBD заменяет UUID
   port: 8080
   admin_username: admin
   admin_password: ChangeMe1!       # OBD-1025: 8–32 символа, ≥3 класса (цифры/a-z/A-Z/спец.)
