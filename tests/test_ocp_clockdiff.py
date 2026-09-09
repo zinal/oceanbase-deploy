@@ -234,9 +234,16 @@ def test_prepare_script_has_setcap() -> None:
     assert 'exec "$REAL" -o "$@"' in text
     assert "-ef" in text
     register = (ROOT / "scripts" / "09-ocp-register.sh").read_text(encoding="utf-8")
-    assert "ocp_clockdiff.py" in register
     assert "--clockdiff-only" in register
-    assert "exit 0" in register
+    assert "CLOCKDIFF_TEST_IP" not in register
+    only_idx = register.find('CLOCKDIFF_ONLY_CMD}" == "true"')
+    tenants_idx = register.find("DBA_OB_TENANTS")
+    assert only_idx != -1 and tenants_idx != -1
+    assert only_idx < tenants_idx
+    only_block = register[only_idx:tenants_idx]
+    assert "exit 0" in only_block
+    assert "ocp_clockdiff.py" not in only_block
+    assert "install_ocp_clockdiff_wrapper" in only_block
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "ocp-clockdiff" in deploy
     deploy_case = deploy.split("\n  deploy)")[1].split("\n  tenant)")[0]
