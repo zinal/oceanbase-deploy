@@ -106,7 +106,7 @@ JOIN_IP=""
 resolve_observer_target "${TARGET}"
 
 if ! observer_sys_sql "SELECT 1" >/dev/null; then
-  die "Нет SQL к seed observer (root@sys). Проверьте ocp.root_password и OBSERVER_1_IP."
+  die "Нет SQL к seed observer (root@sys). $(observer_sys_sql_fail_hint). Проверьте ocp.root_password / пустой пароль и OBSERVER_1_IP."
 fi
 
 if observer_is_seed_ip "${JOIN_IP}"; then

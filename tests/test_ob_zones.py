@@ -108,6 +108,53 @@ def test_obd_config_small_cluster_uses_first_zones() -> None:
     assert config_zones(2) == ["zone1", "zone2"]
 
 
+def test_root_password_applied_without_ocp_vm() -> None:
+    """Gist deploy-noocp: ocp.enabled=true, vm_profiles.ocp.enabled=false."""
+    mod = load_module("gen_obd", ROOT / "scripts" / "03-generate-obd-config.py")
+    cfg = {
+        "yandex_cloud": {"zone": "ru-central1-d", "ssh_user": "demo"},
+        "ssh": {"port": 22, "private_key_file": ""},
+        "vm_profiles": {
+            "observer": {"count": 3},
+            "ocp": {"enabled": False, "count": 1},
+        },
+        "ocp": {
+            "enabled": True,
+            "root_password": "ChangeMe1!",
+            "proxyro_password": "ChangeMe1!",
+        },
+        "oceanbase": {
+            "auto_tune": False,
+            "cluster_name": "obcluster",
+            "cpu_count": 16,
+            "memory_limit": "48G",
+            "system_memory": "4G",
+            "datafile_size": "474G",
+            "log_disk_size": "250G",
+            "components": {
+                "ob_configserver": False,
+                "obproxy_ce": False,
+                "obagent": False,
+            },
+        },
+    }
+    inv = {"OBSERVER_COUNT": "3", "DEPLOY_NAME": "ob-yc-prod", "OCP_COUNT": "0"}
+    for idx in range(1, 4):
+        inv[f"OBSERVER_{idx}_IP"] = f"10.0.0.{idx}"
+    obd = mod.build_obd_config(cfg, inv)
+    global_cfg = obd["oceanbase-ce"]["global"]
+    assert global_cfg["root_password"] == "ChangeMe1!", global_cfg
+    assert global_cfg["proxyro_password"] == "ChangeMe1!", global_cfg
+    assert "ocp_meta_tenant" not in global_cfg
+    assert "ocp-server-ce" not in obd
+
+
+def test_obd_config_omits_root_password_without_ocp_section() -> None:
+    global_cfg = obd_config_for(3)["oceanbase-ce"]["global"]
+    assert "root_password" not in global_cfg
+    assert "proxyro_password" not in global_cfg
+
+
 def test_scale_out_reuses_zone_of_replaced_node() -> None:
     ob_sys = load_module("ob_sys", ROOT / "scripts" / "lib" / "ob-sys.py")
     cfg = {"oceanbase": {"deploy_user": "obadmin", "ports": {"mysql": 2881, "rpc": 2882}}}
@@ -262,6 +309,8 @@ def main() -> None:
         test_uneven_and_small_clusters_warn,
         test_obd_config_never_exceeds_three_zones,
         test_obd_config_small_cluster_uses_first_zones,
+        test_root_password_applied_without_ocp_vm,
+        test_obd_config_omits_root_password_without_ocp_section,
         test_scale_out_reuses_zone_of_replaced_node,
         test_cli_used_by_recover_script,
         test_too_many_zones_detected_in_obd_yaml,

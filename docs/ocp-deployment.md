@@ -117,7 +117,7 @@ python3 scripts/lib/vm_profiles.py resolve ocp --config config/deploy.yaml --for
 | `admin_password` | Пароль admin OCP. OBD-1025: длина 8–32, не меньше трёх классов из цифр, строчных, заглавных и спец. (`~!@#%^&*_-+=\|(){}[]:;,.?/$`'\"<>`) |
 | `memory_size` | Память JVM OCP (8G по умолчанию) |
 | `home_path`, `soft_dir`, `log_dir` | Каталоги на OCP-ВМ |
-| `root_password`, `proxyro_password` | Пароли `root@sys` / `proxyro`. После bootstrap OBD выполняет `ALTER USER`; нужны ≥8 символов и ≥2 класса (цифры/буквы/спец.). `changeme` даёт OBD-5000 и зависание start. |
+| `root_password`, `proxyro_password` | Пароли `root@sys` / `proxyro` в **oceanbase-ce**, даже если OCP-ВМ выключена (`vm_profiles.ocp.enabled: false`). После bootstrap OBD выполняет `ALTER USER`; нужны ≥8 символов и ≥2 класса (цифры/буквы/спец.). `changeme` даёт OBD-5000 и зависание start. Без этих полей в OBD yaml пароль остаётся пустым, а SQL scale-out с `ocp.root_password` падает с «Нет SQL к seed observer». |
 | `meta_tenant`, `monitor_tenant` | Имена и ресурсы тенантов OCP |
 
 ## Доступ к консоли

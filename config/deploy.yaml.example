@@ -178,7 +178,8 @@ ocp:
   home_path: /home/obadmin/ocp
   soft_dir: /ocp-data/software
   log_dir: /ocp-data/logs
-  # Пароли OceanBase для создания meta/monitor tenants (при integrated deploy)
+  # Пароли OceanBase (oceanbase-ce.global). Нужны даже без OCP-ВМ:
+  # иначе bootstrap оставляет root@sys пустым, а SQL scale-out ходит с этим паролем.
   root_password: ChangeMe1!        # после bootstrap OBD делает ALTER USER; не используйте changeme
   proxyro_password: ChangeMe1!
   meta_tenant:

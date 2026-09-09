@@ -48,14 +48,71 @@ got="$(obd_yaml_component_ips "${tmp}/registered.yaml" obagent | tr '\n' ' ')"
 
 CONFIG_FILE="${tmp}/deploy.yaml"
 cat >"${CONFIG_FILE}" <<'YAML'
+ocp:
+  root_password: ChangeMe1!
 oceanbase:
   deploy_user: obadmin
   home_path: /home/obadmin/observer
   data_dir: /ob-data/1
   redo_dir: /ob-log/1
+  ports:
+    mysql: 2881
 YAML
 [[ "$(obagent_home_path)" == "/home/obadmin/obagent" ]]
 [[ "$(observer_home_path)" == "/home/obadmin/observer" ]]
+[[ "$(observer_sys_user)" == "root" ]]
+cands="$(observer_root_password_candidates | awk '{print NR, length($0)}')"
+[[ "${cands}" == $'1 10\n2 0' ]] || {
+  echo "FAIL password candidates: ${cands}" >&2
+  exit 1
+}
+
+mkdir -p "${tmp}/bin"
+cat >"${tmp}/bin/obclient" <<'EOF'
+#!/usr/bin/env bash
+user=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u*) user="${1#-u}"; shift ;;
+    -h*|-P*|--connect-timeout=*) shift ;;
+    -Nse|-e)
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "${MYSQL_PWD:-}" ]]; then
+  echo "ERROR 1045: Access denied for user (using password: YES)" >&2
+  exit 1
+fi
+if [[ "${user}" != "root" ]]; then
+  echo "ERROR 1045: Access denied for user '${user}'" >&2
+  exit 1
+fi
+echo 1
+exit 0
+EOF
+chmod +x "${tmp}/bin/obclient"
+PATH="${tmp}/bin:${PATH}"
+OB_SYS_SQL_READY=0
+OB_SYS_SQL_USER=""
+OB_SYS_SQL_PASS=""
+OB_SYS_SQL_EMPTY_WARNED=0
+OBSERVER_1_IP=10.0.0.1
+OBSERVER_2_IP=10.0.0.2
+OBSERVER_3_IP=10.0.0.3
+if ! observer_sys_sql "SELECT 1" >/dev/null; then
+  echo "FAIL: SQL fallback to empty password did not work (${OB_SYS_SQL_LAST_ERR:-})" >&2
+  exit 1
+fi
+[[ "${OB_SYS_SQL_USER}" == "root" ]] || {
+  echo "FAIL: expected user root, got ${OB_SYS_SQL_USER}" >&2
+  exit 1
+}
+[[ -z "${OB_SYS_SQL_PASS}" ]] || {
+  echo "FAIL: expected empty password cache" >&2
+  exit 1
+}
 
 OBSERVER_1_IP=10.0.0.1
 OBSERVER_2_IP=10.0.0.2
@@ -109,6 +166,9 @@ grep -q "missing_observer_ips" "${ROOT}/scripts/04-deploy-cluster.sh"
 grep -q "filter-scaleout" "${ROOT}/scripts/lib/common.sh"
 grep -q "уже ACTIVE в DBA_OB_SERVERS" "${ROOT}/scripts/lib/common.sh"
 grep -q "Нет SQL к seed observer" "${ROOT}/scripts/lib/common.sh"
+grep -q "observer_root_password_candidates" "${ROOT}/scripts/lib/common.sh"
+grep -q "wait_seed_sys_sql" "${ROOT}/scripts/04-deploy-cluster.sh"
+grep -q "apply_oceanbase_sys_passwords" "${ROOT}/scripts/03-generate-obd-config.py"
 grep -q "start_obagent_yaml" "${ROOT}/scripts/04-deploy-cluster.sh"
 grep -q "start_obagent_yaml" "${ROOT}/scripts/05-scale-out.sh"
 grep -q "start_obagent_nodes" "${ROOT}/scripts/lib/common.sh"
