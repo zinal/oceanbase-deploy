@@ -608,44 +608,59 @@ obd_yaml_observer_spec() {
   python3 "${SCRIPT_DIR}/ob_deploy_plan.py" spec --input "$1"
 }
 
-# OBD scale_out: start observer, затем ADD SERVER с дефолтным ob_query_timeout=10s.
-# При 6+ узлах SQL часто не укладывается — OBD-5000. Живой observer пишет clog → 4179.
+# OBD scale_out: start observer, затем ADD SERVER (сессия часто 10s — поднимаем timeout).
+# YAML пакета: до 3 узлов (по одному на zone). Wipe всех IP до вызова; неуспевших
+# добираем по одному (wipe + start + ADD SERVER), не повторяя весь пакет.
 scale_out_observer() {
   local deploy="$1" yaml="$2"
-  local ip rpc mysql_port zone status
+  local ip rpc mysql_port zone status failed=0
+  local -a ips=() rpcs=() mysqls=() zones=()
   [[ -f "${yaml}" ]] || die "нет YAML scale-out: ${yaml}"
-  read -r ip rpc mysql_port zone < <(obd_yaml_observer_spec "${yaml}")
-  [[ -n "${ip}" && -n "${rpc}" && -n "${zone}" ]] || die "не разобрать observer spec из ${yaml}"
+  while read -r ip rpc mysql_port zone; do
+    [[ -n "${ip}" ]] || continue
+    ips+=("${ip}")
+    rpcs+=("${rpc}")
+    mysqls+=("${mysql_port}")
+    zones+=("${zone}")
+  done < <(obd_yaml_observer_spec "${yaml}")
+  [[ "${#ips[@]}" -ge 1 ]] || die "не разобрать observer spec из ${yaml}"
   raise_sys_query_timeout || true
-  reset_observer_for_scale_out "${ip}"
-  info "Очистка ${ip} и добавление observer из ${yaml}"
-  if obd_scale_out_yaml "${deploy}" "${yaml}"; then
+  info "Очистка ${#ips[@]} observer и scale_out из ${yaml}: ${ips[*]}"
+  for ip in "${ips[@]}"; do
+    reset_observer_for_scale_out "${ip}"
+  done
+  if ! obd_scale_out_yaml "${deploy}" "${yaml}"; then
+    warn "obd cluster scale_out ${yaml} не прошёл целиком — доберём не-ACTIVE по одному"
+  fi
+  local idx
+  for idx in "${!ips[@]}"; do
+    ip="${ips[idx]}"
+    rpc="${rpcs[idx]}"
+    mysql_port="${mysqls[idx]}"
+    zone="${zones[idx]}"
     if wait_observer_active "${ip}" 90; then
-      return 0
+      continue
     fi
-    warn "obd cluster scale_out ${ip} вернул 0, но в DBA_OB_SERVERS нет ACTIVE — leftover в метаданных OBD"
-  else
     status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
     if grep -qi ACTIVE <<<"${status}"; then
       info "${ip} уже ACTIVE — OBD не дождался ответа SQL"
-      return 0
+      continue
     fi
-    warn "obd cluster scale_out ${ip} не прошёл. Не делайте ADD SERVER по уже запущенному узлу — будет ERROR 4179 (non-empty)."
+    warn "${ip} не ACTIVE после пакетного scale_out. Wipe + ADD SERVER (не seed)."
+    reset_observer_for_scale_out "${ip}"
+    if join_empty_observer "${deploy}" "${ip}" "${rpc}" "${zone}" "${mysql_port}"; then
+      continue
+    fi
+    status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
+    if grep -qi ACTIVE <<<"${status}"; then
+      continue
+    fi
+    warn "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}"
+    failed=1
+  done
+  if [[ "${failed}" -ne 0 ]]; then
+    die "пакет ${yaml}: не все observer ACTIVE (${ips[*]}). ERROR 4179 → wipe только этот IP. Повторите deploy."
   fi
-  info "Повтор: wipe ${ip}, start, ADD SERVER с ob_query_timeout=3600s"
-  reset_observer_for_scale_out "${ip}"
-  if join_empty_observer "${deploy}" "${ip}" "${rpc}" "${zone}" "${mysql_port}"; then
-    return 0
-  fi
-  reset_observer_for_scale_out "${ip}"
-  if obd_scale_out_yaml "${deploy}" "${yaml}"; then
-    wait_observer_active "${ip}" 90 && return 0
-  fi
-  status="$(observer_cluster_status "${ip}" 2>/dev/null || true)"
-  if grep -qi ACTIVE <<<"${status}"; then
-    return 0
-  fi
-  die "не удалось ADD SERVER ${ip}:${rpc} zone ${zone}. ERROR 4179 → wipe только ${ip} (не seed). Timeout 10s → SET GLOBAL ob_query_timeout."
 }
 
 obagent_home_path() {
