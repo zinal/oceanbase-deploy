@@ -65,6 +65,9 @@ case "${STEP}" in
   diagnose)
     run_cmd bash "${ROOT}/scripts/diagnose-obd-start.sh" "${@:2}"
     ;;
+  join-observer)
+    run_cmd bash "${ROOT}/scripts/join-empty-observer.sh" "${@:2}"
+    ;;
   ocp)
     run_cmd bash "${ROOT}/scripts/deploy-ocp.sh" "${2:-all}"
     ;;
@@ -96,6 +99,7 @@ case "${STEP}" in
   deploy     — подготовка серверов + развёртывание через OBD
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
+  join-observer — leftover observer / ERROR 4179: wipe одного IP и ADD SERVER
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   ocp-register — зарегистрировать oceanbase-ce в UI OCP (export-to-ocp)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)

@@ -182,7 +182,15 @@ vm_profiles:
 
 Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`.
 
-OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Скрипт перед scale-out ставит `SET GLOBAL ob_query_timeout=3600s` и при сбое OBD повторяет `ADD SERVER` сам. Не стирайте уже запущенный новый observer — достаточно длинного timeout.
+OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Повторный `ADD SERVER` по уже запущенному узлу даёт **ERROR 4179** (non-empty): процесс записал clog, в `DBA_OB_SERVERS` его нет. Не повторяйте SQL и не вызывайте `06-recover-observer.sh --temporary` (`START SERVER` бесполезен). С jump host:
+
+```bash
+./scripts/join-empty-observer.sh 6 --yes          # index из inventory, server6
+# или
+./scripts/deploy.sh join-observer 10.130.0.37 --yes
+```
+
+Скрипт очищает **только этот IP**, поднимает empty observer и сразу `ADD SERVER` с timeout 3600 с. Seed (`observer-1..3`) и уже ACTIVE узлы не трогает. После `ACTIVE` продолжайте `./scripts/deploy.sh deploy`.
 
 Так начальный локальный take-over DAG не содержит десятки READY-подзадач и не упирается в очередь ExecutorPool OBShell. Желательно задавать число observer кратным трём; последний неполный пакет поддерживается, но оставляет zone разного размера.
 
@@ -251,6 +259,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
 │   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
 │   ├── 07-recover-obproxy.sh    # замена погибшего obproxy
 │   ├── deploy-ocp.sh            # развёртывание OCP (отдельная ВМ)
@@ -293,6 +302,12 @@ SSH и подготовка серверов используют **внутре
 ```
 
 Без флага режима скрипт выбирает сам: ВМ есть в YC → temporary, нет → replace. Подробности: [docs/node-recovery.md](docs/node-recovery.md).
+
+Если `ALTER SYSTEM ADD SERVER` вернул **ERROR 4179** и в `DBA_OB_SERVERS` нет строки — это не отказ члена кластера, а leftover observer. Нужен wipe и повторный join:
+
+```bash
+./scripts/join-empty-observer.sh 6 --yes
+```
 
 ## Terraform (альтернатива)
 

@@ -57,6 +57,12 @@
 
 Если после окна в час узел не член кластера — не повторяйте `--temporary`, переходите на `--replace`.
 
+Если в `DBA_OB_SERVERS` **нет строки** для IP, а `ADD SERVER` даёт **ERROR 4179** (non-empty) — это leftover observer после 10-секундного timeout, не временный отказ. `--temporary` здесь бесполезен (`START SERVER` не добавит узел). Используйте:
+
+```bash
+./scripts/join-empty-observer.sh 6 --yes
+```
+
 В off-peak можно вернуть leader в исходную zone:
 
 ```sql
