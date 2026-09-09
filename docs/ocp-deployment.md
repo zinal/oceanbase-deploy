@@ -164,7 +164,7 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 | Сообщение | Значение | Нужен ли фикс |
 |-----------|----------|----------------|
 | `The current user must be the admin user` | OBD без `-V` считает OCP 3.1.1 | да, `-V 4.4.2`; **не** менять SSH на `admin` |
-| `Failed to install repository oceanbase-ce-utils … to /home/obadmin/observer` / `Failed to install utils to servers` | OBD пытается доложить RPM `oceanbase-ce-utils` (сборка `.el7`) в `home_path` observer. Для takeover это необязательно: сам OBD пишет WARN и продолжает. Часто срыв на узле, где каталог observer ещё пустой после staged scale-out | нет, не блокирует |
+| `Failed to install repository oceanbase-ce-utils … to /home/obadmin/observer` / `Failed to install utils to servers` | OBD пытается доложить RPM `oceanbase-ce-utils` (сборка `.el7`) в `home_path` observer. Для takeover это необязательно: сам OBD пишет WARN и продолжает. Часто срыв на узле, где каталог observer ещё пустой после staged scale-out | нет, не блокирует. Если есть `takeover task successfully submitted to ocp` — задача уже в UI |
 | `do takeover … You must specify the value of the given parameter` | OCP `POST /api/v2/ob/clusters/takeOver` получил пустое поле. Типично `"port": null`: OBD берёт `mysql_port` **только из** `oceanbase-ce.global`, а генератор раньше писал порт лишь в `serverN`. Пустой `--host_type` на свежем OCP создаёт тип хоста с `name=""` — та же ошибка | да: `mysql_port` в global + `--host_type yandex-cloud` |
 
 `Configurations of the oceanbase-ce can be taken over by OCP` после WARN utils — precheck прошёл. Кластер при этом уже развёрнут; пустой список в UI — пока takeover не принят. Запасной путь — ручной Take over в UI (таблица ниже).

@@ -86,11 +86,14 @@ for candidate in \
 done
 [[ -n "${registered_config}" ]] || die "Кластер ${deploy_name} не зарегистрирован в OBD"
 
+JOINED_IPS_ARGS=()
+scale_out_joined_ips_args || true
 python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
   --input "${FULL_OBD_CONFIG}" \
   --registered-config "${registered_config}" \
   --output-dir "${PLAN_DIR}" \
-  --manifest "${PLAN_MANIFEST}"
+  --manifest "${PLAN_MANIFEST}" \
+  "${JOINED_IPS_ARGS[@]}"
 
 info "Запуск уже зарегистрированных obagent, если они ещё не работают..."
 start_registered_obagents "${deploy_name}" "${registered_config}"

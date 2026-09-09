@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from ocp_takeover import (  # noqa: E402
+    export_to_ocp_log_ok,
     insert_global_mysql_port,
     needs_mysql_port,
     patch_obd_cluster_dir,
@@ -120,6 +121,30 @@ def test_register_script_passes_host_type() -> None:
     assert "--credential_name" in script
     assert "ocp_takeover.py" in script
     assert 'check4ocp "${CLUSTER_NAME}" -V "${OCP_VERSION}"' in script
+    assert "log-ok" in script
+    assert "PIPESTATUS" in script
+
+
+def test_export_to_ocp_log_ok_after_utils_error() -> None:
+    log = """
+[ERROR] Failed to install repository oceanbase-ce-utils
+[WARN] Failed to install utils to servers
+takeover task successfully submitted to ocp, you can check task at http://10.130.0.22:8080/task/22
+"""
+    assert export_to_ocp_log_ok(log)
+    assert not export_to_ocp_log_ok("Failed to install utils to servers\nTrace ID: abc")
+    proc = subprocess.run(
+        [
+            "python3",
+            str(ROOT / "scripts" / "lib" / "ocp_takeover.py"),
+            "log-ok",
+        ],
+        input=log,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
 
 
 def test_generated_obd_global_has_mysql_port() -> None:
@@ -139,6 +164,7 @@ def main() -> None:
         test_patch_cluster_dir,
         test_cli_patch,
         test_register_script_passes_host_type,
+        test_export_to_ocp_log_ok_after_utils_error,
         test_generated_obd_global_has_mysql_port,
     ]
     for fn in tests:

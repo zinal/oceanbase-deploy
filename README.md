@@ -180,7 +180,7 @@ vm_profiles:
 
 В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`.
 
-Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`.
+Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`. Повторный `./scripts/deploy.sh deploy` смотрит **ACTIVE в `DBA_OB_SERVERS`**, а не только `~/.obd/cluster`: узел, который OBD уже записал после неудачного ADD SERVER, снова попадает в план.
 
 OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Повторный `ADD SERVER` по уже запущенному узлу даёт **ERROR 4179** (non-empty): процесс записал clog, в `DBA_OB_SERVERS` его нет. Не повторяйте SQL и не вызывайте `06-recover-observer.sh --temporary` (`START SERVER` бесполезен). С jump host:
 
@@ -441,7 +441,7 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 
 `[ERROR] The current user must be the admin user` на `check4ocp` — ложная сработка OBD без `-V` (дефолт 3.1.1). SSH-пользователь остаётся `obadmin`; не делайте `edit-config user.username=admin`.
 
-`Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
+`Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. Если в логе есть `takeover task successfully submitted to ocp` (задача в UI, например `/task/22`), `ocp-register` считает это успехом, даже если OBD вернул ненулевой код из‑за utils RPM. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Прогресс — в OCP «Задачи». Имя кластера в UI — `oceanbase.cluster_name` (`obcluster`), не hostname ocp-1.
 

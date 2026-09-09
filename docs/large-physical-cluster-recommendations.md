@@ -545,7 +545,9 @@ obclient -hob-yc-prod-observer-1 -P2881 -uroot@sys -p'ChangeMe1!' -e \
 
 Либо `obd cluster scale_out ob-yc-prod -c generated/staged-scale-out/01-03-server6-oceanbase.yaml` после wipe (если OBD ещё не зарегистрировал server6).
 
-План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
+План observer сравнивается с **ACTIVE в `DBA_OB_SERVERS`**, не только с `~/.obd/cluster/<deploy>/config.yaml`. OBD может записать server6 в свои метаданные после `Start observer ok`, даже если `ADD SERVER` не прошёл (4179 / timeout). Повторный `./scripts/deploy.sh deploy` тогда раньше считал узел уже добавленным и переходил к OCP. Теперь leftover IP снова попадают в scale-out (wipe + ADD SERVER). Seed уже ACTIVE — полный `obd cluster start` пропускается, чтобы не поднимать dirty observer.
+
+`Failed to install … oceanbase-ce-utils` при export-to-ocp — WARN. Если в логе есть `takeover task successfully submitted to ocp`, регистрация в OCP прошла (задача в UI, например `/task/22`).
 
 Причина staged-порядка — дефект ExecutorPool OBShell 4.2.5.0–4.5.1.0: локальный take-over DAG крупного уже работающего кластера создаёт десятки READY-подзадач, а bounded-очередь и mutex могут взаимно заблокировать producer и workers. Это не ограничение OceanBase на число observer. После take-over штатные cluster DAG хранятся и координируются иначе, поэтому дальнейший `scale_out` является поддерживаемым способом собрать крупный кластер.
 

@@ -226,11 +226,29 @@ def chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[pos : pos + size] for pos in range(0, len(items), size)]
 
 
+def parse_joined_ips(raw: str | None) -> set[str] | None:
+    """Parse ACTIVE SVR_IP list. None = unset (use OBD metadata); empty = invalid."""
+    if raw is None:
+        return None
+    ips = {tok.strip() for tok in raw.replace(",", " ").split() if tok.strip()}
+    return ips or None
+
+
+def observer_ips(cfg: dict[str, Any]) -> list[str]:
+    key = oceanbase_component_key(cfg)
+    return [server_ip(entry) for entry in component_servers(cfg[key])]
+
+
 def build_scale_out_plan(
     full_cfg: dict[str, Any],
     registered_cfg: dict[str, Any],
+    joined_ob_ips: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return missing oceanbase/obagent nodes grouped by desired zone-balanced triples."""
+    """Return missing oceanbase/obagent nodes grouped by desired zone-balanced triples.
+
+    Observer membership comes from DBA_OB_SERVERS (joined_ob_ips) when given.
+    OBD ~/.obd/cluster config can list leftover nodes that never passed ADD SERVER.
+    """
     ob_key = oceanbase_component_key(full_cfg)
     desired_ob = full_cfg[ob_key]
     desired_servers = component_servers(desired_ob)
@@ -238,7 +256,8 @@ def build_scale_out_plan(
         raise ValueError("full OBD config contains fewer than three observers")
 
     registered_ob_ips = registered_component_ips(registered_cfg, ob_key)
-    rs_list = rootservice_list(desired_ob, registered_ob_ips)
+    member_ob_ips = joined_ob_ips if joined_ob_ips is not None else registered_ob_ips
+    rs_list = rootservice_list(desired_ob, member_ob_ips)
     registered_agent_ips = registered_component_ips(registered_cfg, "obagent")
     desired_agent = full_cfg.get("obagent")
     desired_agent_by_ip: dict[str, Any] = {}
@@ -250,7 +269,7 @@ def build_scale_out_plan(
     plan: list[dict[str, Any]] = []
     for batch in chunks(desired_servers[SEED_OBSERVER_COUNT:], SCALE_OUT_BATCH_SIZE):
         desired_ips = [server_ip(entry) for entry in batch]
-        missing_ob_ips = {ip for ip in desired_ips if ip not in registered_ob_ips}
+        missing_ob_ips = {ip for ip in desired_ips if ip not in member_ob_ips}
         missing_agent_ips = {
             ip
             for ip in desired_ips
@@ -290,10 +309,19 @@ def cmd_seed(args: argparse.Namespace) -> None:
     print(f"Seed config written: {args.output} ({len(component_servers(seed_cfg[ob_key]))} observers)")
 
 
+def cmd_ips(args: argparse.Namespace) -> None:
+    for ip in observer_ips(load_yaml(args.input)):
+        print(ip)
+
+
 def cmd_scale_out(args: argparse.Namespace) -> None:
     full_cfg = load_yaml(args.input)
     registered_cfg = load_yaml(args.registered_config)
-    plan = build_scale_out_plan(full_cfg, registered_cfg)
+    plan = build_scale_out_plan(
+        full_cfg,
+        registered_cfg,
+        joined_ob_ips=parse_joined_ips(args.joined_ips),
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -389,7 +417,17 @@ def build_parser() -> argparse.ArgumentParser:
     scale_out.add_argument("--registered-config", type=Path, required=True)
     scale_out.add_argument("--output-dir", type=Path, required=True)
     scale_out.add_argument("--manifest", type=Path, required=True)
+    scale_out.add_argument(
+        "--joined-ips",
+        default=None,
+        help="ACTIVE SVR_IP from DBA_OB_SERVERS (whitespace/comma-separated). "
+        "Leftover IPs in OBD metadata that never joined are scaled out again.",
+    )
     scale_out.set_defaults(func=cmd_scale_out)
+
+    ips_cmd = sub.add_parser("ips", help="print observer IPs from an OBD YAML")
+    ips_cmd.add_argument("--input", type=Path, required=True)
+    ips_cmd.set_defaults(func=cmd_ips)
 
     spec = sub.add_parser("spec", help="print ip rpc_port mysql_port zone from a one-node YAML")
     spec.add_argument("--input", type=Path, required=True)

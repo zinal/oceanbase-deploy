@@ -107,7 +107,9 @@ else
 fi
 
 info "Запуск seed-кластера и ожидание завершения OBShell take-over..."
-if ! run_obd cluster start "${CLUSTER_NAME}"; then
+if obd_cluster_registered "${CLUSTER_NAME}" && seed_observers_active; then
+  info "Seed observer уже ACTIVE — пропуск obd cluster start (иначе OBD поднимает leftover observer с clog)"
+elif ! run_obd cluster start "${CLUSTER_NAME}"; then
   warn "obd cluster start не завершился (ошибка или зависание/Ctrl+C)."
   warn "«oceanbase bootstrap ok» — надпись спиннера, не факт что SQL прошёл."
   warn "Если спиннер остановился на «obshell bootstrap -» — это ожидание take-over агентов;"
@@ -145,11 +147,14 @@ registered_config="$(registered_obd_config)" \
   || die "OBD не сохранил конфигурацию ${CLUSTER_NAME} после start"
 
 mkdir -p "${SCALE_OUT_DIR}"
+JOINED_IPS_ARGS=()
+scale_out_joined_ips_args || true
 python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
   --input "${OBD_CONFIG}" \
   --registered-config "${registered_config}" \
   --output-dir "${SCALE_OUT_DIR}" \
-  --manifest "${SCALE_OUT_MANIFEST}"
+  --manifest "${SCALE_OUT_MANIFEST}" \
+  "${JOINED_IPS_ARGS[@]}"
 
 # OBD scale_out for obagent only installs/registers the node. The next
 # scale_out then fails status_check if that agent was never started.
@@ -170,6 +175,22 @@ while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
     start_obagent_node "${CLUSTER_NAME}" "${agent_ip}"
   fi
 done < "${SCALE_OUT_MANIFEST}"
+
+missing="$(missing_observer_ips "${OBD_CONFIG}" || true)"
+if [[ -n "${missing}" ]]; then
+  warn "После плана OBD в DBA_OB_SERVERS нет: $(printf '%s' "${missing}" | tr '\n' ' ')"
+  while read -r miss_ip; do
+    [[ -n "${miss_ip}" ]] || continue
+    miss_yaml="${SCALE_OUT_DIR}/missing-${miss_ip}-oceanbase.yaml"
+    python3 "${LIB_DIR}/lib/ob_deploy_plan.py" one-node \
+      --input "${OBD_CONFIG}" --ip "${miss_ip}" --output "${miss_yaml}"
+    scale_out_observer "${CLUSTER_NAME}" "${miss_yaml}"
+  done <<< "${missing}"
+fi
+missing="$(missing_observer_ips "${OBD_CONFIG}" || true)"
+if [[ -n "${missing}" ]]; then
+  die "Не все observer ACTIVE: $(printf '%s' "${missing}" | tr '\n' ' '). OCP не регистрируем. Повторите ./scripts/deploy.sh deploy или ./scripts/join-empty-observer.sh <ip> --yes"
+fi
 
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"
