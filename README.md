@@ -88,7 +88,8 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # obd cluster deploy + start
+./scripts/deploy.sh deploy      # prepare + перегенерация yaml + obd cluster deploy/start
+./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ```
 
@@ -169,7 +170,7 @@ vm_profiles:
     memory_gb: 16
 ```
 
-Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
+Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится. Если `obd cluster start` завис на `obshell bootstrap -` после `oceanbase bootstrap ok`, это часто тот же сбой SQL (спиннер врёт) — `./scripts/deploy.sh diagnose`. Подробности — [docs/large-physical-cluster-recommendations.md §12](docs/large-physical-cluster-recommendations.md#12-zone-и-bootstrap-почему-ровно-три-zone).
 
 При `vm_profiles.ocp.enabled: true` и `ocp.enabled: true` разворачивается веб-консоль OCP на отдельной ВМ. См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
@@ -229,6 +230,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 02-prepare-servers.sh    # sysctl, диски, chrony, пользователь
 │   ├── 03-generate-obd-config.py
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
+│   ├── diagnose-obd-start.sh    # зависание start: zone, display-trace, obshell
 │   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── 06-recover-observer.sh   # замена погибшего observer

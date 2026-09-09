@@ -45,6 +45,26 @@ install_obd_if_needed
 
 verify_all_observer_storage
 
+check_obd_zone_layout() {
+  local yaml_path="$1" label="$2"
+  [[ -f "${yaml_path}" ]] || return 0
+  python3 "${LIB_DIR}/lib/ob_zones.py" check-obd "${yaml_path}" --dump \
+    || die "${label}: слишком много zone в ${yaml_path}. Сначала: ./scripts/deploy.sh config, затем obd cluster destroy ${CLUSTER_NAME} -f (если кластер уже зарегистрирован) и повторный deploy."
+}
+
+info "Проверка числа OceanBase zone (не больше 7)..."
+check_obd_zone_layout "${OBD_CONFIG}" "generated/obd-cluster.yaml"
+if [[ -d "${HOME}/.obd/cluster/${CLUSTER_NAME}" ]]; then
+  shopt -s nullglob
+  registered_yamls=("${HOME}/.obd/cluster/${CLUSTER_NAME}"/*.yaml "${HOME}/.obd/cluster/${CLUSTER_NAME}"/*.yml)
+  shopt -u nullglob
+  if [[ ${#registered_yamls[@]} -gt 0 ]]; then
+    for yaml_path in "${registered_yamls[@]}"; do
+      check_obd_zone_layout "${yaml_path}" "зарегистрированный кластер OBD ${CLUSTER_NAME}"
+    done
+  fi
+fi
+
 if [[ "$(yaml_get ocp.enabled)" == "true" && "$(yaml_get vm_profiles.ocp.enabled)" == "true" ]]; then
   python3 - "${LIB_DIR}/lib/vm_profiles.py" "${CONFIG_FILE}" <<'PY'
 import importlib.util
@@ -80,12 +100,19 @@ fi
 info "Запуск кластера..."
 if ! run_obd cluster start "${CLUSTER_NAME}"; then
   warn "obd cluster start не завершился (ошибка или зависание/Ctrl+C)."
-  warn "Если уже было «oceanbase bootstrap ok» — observer'ы подняты, destroy не нужен."
+  warn "«oceanbase bootstrap ok» — надпись спиннера, не факт что SQL прошёл."
+  warn "Если спиннер остановился на «obshell bootstrap -» — это ожидание take-over агентов;"
+  warn "часто это следствие неудачного ALTER SYSTEM BOOTSTRAP (слишком много zone)."
+  warn "Диагностика: ./scripts/deploy.sh diagnose"
   warn "Проверьте: mysql -h<OBSERVER_1_IP> -P$(yaml_get oceanbase.ports.mysql) -uroot"
   warn "          (сначала пустой пароль, затем ocp.root_password)"
   warn "          obd cluster display ${CLUSTER_NAME}"
   warn "          obd display-trace   # последний Trace ID из вывода OBD"
   warn "После правки пароля: obd cluster edit-config ${CLUSTER_NAME}, затем снова start."
+  if [[ -x "${LIB_DIR}/diagnose-obd-start.sh" ]]; then
+    warn "Снимаю локальную диагностику..."
+    bash "${LIB_DIR}/diagnose-obd-start.sh" --local || true
+  fi
   die "obd cluster start ${CLUSTER_NAME} не завершился успешно"
 fi
 

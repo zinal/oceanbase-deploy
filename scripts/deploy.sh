@@ -52,10 +52,15 @@ case "${STEP}" in
     ;;
   deploy)
     run_step 02-prepare-servers.sh
+    # Перегенерация yaml: иначе start подхватит старый «zone на observer».
+    run_python_step 03-generate-obd-config.py
     run_step 04-deploy-cluster.sh
     ;;
   tenant)
     run_step 08-create-tenant.sh
+    ;;
+  diagnose)
+    run_cmd bash "${ROOT}/scripts/diagnose-obd-start.sh" "${@:2}"
     ;;
   ocp)
     run_cmd bash "${ROOT}/scripts/deploy-ocp.sh" "${2:-all}"
@@ -87,6 +92,7 @@ case "${STEP}" in
   config     — генерация obd-cluster.yaml
   deploy     — подготовка серверов + развёртывание через OBD
   tenant     — создание user tenant, пользователя и БД (после deploy)
+  diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace

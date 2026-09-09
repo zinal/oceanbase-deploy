@@ -9,8 +9,8 @@
 - при bootstrap sys-тенант получает по одной full-реплике на каждую zone
   (`F{1}@zone1, F{1}@zone2, ...`), а Paxos-группа лога ограничена
   `OB_MAX_MEMBER_NUMBER = 7`. Больше семи zone — `alter system bootstrap`
-  падает, и дальше OBD сыплет OBD-5000 на `modify zone ... set idc` и
-  `alter user "root"`;
+  падает; OBD всё равно печатает «oceanbase bootstrap ok» и дальше зависает
+  на ожидании серверов или на «obshell bootstrap -»;
 - majority Paxos требует нечётного числа zone, штатная модель OceanBase —
   3 zone с равным числом серверов.
 """
@@ -19,8 +19,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
 
 ZONE_COUNT = 3
+# deps/oblib/src/lib/ob_define.h OB_MAX_MEMBER_NUMBER — размер Paxos-группы sys-тенанта
+# равен числу zone при bootstrap. Больше семи zone — ALTER SYSTEM BOOTSTRAP падает.
+MAX_PAXOS_ZONES = 7
+OCEANBASE_COMPONENT_KEYS = ("oceanbase-ce", "oceanbase")
 
 
 def zone_names() -> list[str]:
@@ -60,6 +67,104 @@ def uneven_zones_warning(observer_count: int) -> str | None:
     )
 
 
+def oceanbase_component(obd_cfg: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Блок oceanbase-ce / oceanbase из конфигурации OBD."""
+    if not isinstance(obd_cfg, dict):
+        return None
+    for key in OCEANBASE_COMPONENT_KEYS:
+        block = obd_cfg.get(key)
+        if isinstance(block, dict):
+            return block
+    return None
+
+
+def oceanbase_zones_from_obd(obd_cfg: dict[str, Any] | None) -> list[str]:
+    """Zone каждого observer в порядке server-override (с повторами)."""
+    comp = oceanbase_component(obd_cfg)
+    if not comp:
+        return []
+    zones: list[str] = []
+    for key, val in comp.items():
+        if key in ("servers", "global", "depends", "version") or not isinstance(val, dict):
+            continue
+        zone = val.get("zone")
+        if zone is not None and str(zone).strip():
+            zones.append(str(zone).strip())
+    return zones
+
+
+def unique_zones(zones: list[str]) -> list[str]:
+    """Уникальные имена zone в порядке первого появления."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for zone in zones:
+        if zone not in seen:
+            seen.add(zone)
+            out.append(zone)
+    return out
+
+
+def too_many_zones_error(zones: list[str], source: str) -> str | None:
+    """Ошибка, если в конфиге OBD больше MAX_PAXOS_ZONES уникальных zone."""
+    names = unique_zones(zones)
+    if len(names) <= MAX_PAXOS_ZONES:
+        return None
+    counts = Counter(zones)
+    layout = ", ".join(f"{name}={counts[name]}" for name in names)
+    shown = ", ".join(names[:12])
+    extra = "" if len(names) <= 12 else f" … ещё {len(names) - 12}"
+    return (
+        f"{source}: {len(names)} уникальных zone ({shown}{extra}; {layout}). "
+        f"При bootstrap sys-тенант получает full-реплику на каждую zone, "
+        f"а Paxos-группа ограничена OB_MAX_MEMBER_NUMBER={MAX_PAXOS_ZONES}. "
+        f"OBD печатает «oceanbase bootstrap ok», SQL при этом падает, и start "
+        f"зависает на ожидании серверов / obshell bootstrap. "
+        f"Перегенерируйте generated/obd-cluster.yaml, затем "
+        f"`obd cluster destroy <deploy> -f` и повторный deploy "
+        f"(локальность sys-тенанта иначе не исправить)."
+    )
+
+
+def load_obd_yaml(path: Path) -> dict[str, Any] | None:
+    try:
+        import yaml
+    except ImportError:
+        print("ERROR: нужен PyYAML (pip install pyyaml)", file=sys.stderr)
+        return None
+    try:
+        with path.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def check_obd_yaml_path(path: Path) -> str | None:
+    """None если zone в пределах лимита или файла нет / нет oceanbase-блока."""
+    if not path.is_file():
+        return None
+    cfg = load_obd_yaml(path)
+    if cfg is None:
+        return None
+    zones = oceanbase_zones_from_obd(cfg)
+    if not zones:
+        return None
+    return too_many_zones_error(zones, str(path))
+
+
+def registered_cluster_yaml_paths(deploy_name: str, obd_home: Path | None = None) -> list[Path]:
+    """YAML метаданных зарегистрированного в OBD кластера (~/.obd/cluster/<name>)."""
+    root = (obd_home or Path.home() / ".obd") / "cluster" / deploy_name
+    if root.is_file():
+        return [root]
+    if not root.is_dir():
+        return []
+    paths: list[Path] = []
+    for pattern in ("*.yaml", "*.yml"):
+        paths.extend(sorted(root.glob(pattern)))
+    return paths
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -72,6 +177,17 @@ def main() -> None:
 
     sub.add_parser("list", help="Имена всех zone")
 
+    p_check = sub.add_parser(
+        "check-obd",
+        help="Проверить, что в YAML OBD не больше 7 уникальных zone",
+    )
+    p_check.add_argument("path", type=Path)
+    p_check.add_argument(
+        "--dump",
+        action="store_true",
+        help="Печатать уникальные zone и их кратность",
+    )
+
     args = parser.parse_args()
     if args.command == "name":
         try:
@@ -82,6 +198,29 @@ def main() -> None:
     elif args.command == "sizes":
         for name, count in zone_sizes(args.count).items():
             print(f"{name}={count}")
+    elif args.command == "check-obd":
+        path: Path = args.path
+        if not path.is_file():
+            print(f"ERROR: файл не найден: {path}", file=sys.stderr)
+            sys.exit(1)
+        cfg = load_obd_yaml(path)
+        if cfg is None:
+            print(f"ERROR: не удалось прочитать YAML: {path}", file=sys.stderr)
+            sys.exit(1)
+        zones = oceanbase_zones_from_obd(cfg)
+        names = unique_zones(zones)
+        if args.dump:
+            counts = Counter(zones)
+            if names:
+                print(", ".join(f"{name}={counts[name]}" for name in names))
+            else:
+                print("zones=none")
+        err = too_many_zones_error(zones, str(path))
+        if err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            sys.exit(1)
+        if not args.dump:
+            print(f"OK: {len(names)} unique zone in {path}")
     else:
         for name in zone_names():
             print(name)
