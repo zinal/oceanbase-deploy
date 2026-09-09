@@ -47,8 +47,47 @@ fi
   || fail "ожидалась ровно одна запись /ob-data"
 
 echo "=== rewrite_fstab_uuid отказывается писать пустой UUID ==="
-if rewrite_fstab_uuid /ob-data ""; then
+if rewrite_fstab_uuid /ob-data "" 2>/dev/null; then
   fail "пустой UUID не должен попадать в fstab"
+fi
+
+LOOP_DEV=""
+loop_mnt="${tmp}/loop-mnt"
+cleanup_loop() {
+  sudo umount "${loop_mnt}" 2>/dev/null || true
+  if [[ -n "${LOOP_DEV}" ]]; then
+    sudo losetup -d "${LOOP_DEV}" 2>/dev/null || true
+  fi
+  rm -rf "${tmp}"
+}
+trap cleanup_loop EXIT
+
+if sudo -n true 2>/dev/null && command -v losetup >/dev/null && command -v mkfs.ext4 >/dev/null; then
+  echo "=== loop: mkfs + UUID в fstab + mount (реальный blkid) ==="
+  img="${tmp}/disk.img"
+  dd if=/dev/zero of="${img}" bs=1M count=64 status=none
+  LOOP_DEV="$(sudo losetup --find --show "${img}")"
+  [[ -n "${LOOP_DEV}" ]] || fail "losetup не вернул устройство"
+  : > "${FSTAB_FILE}"
+  sudo env \
+    FSTAB_FILE="${FSTAB_FILE}" \
+    UUID_WAIT_SECONDS=15 \
+    PATH="/usr/sbin:/usr/bin:/sbin:/bin" \
+    bash -c 'source "$1"; mount_device "$2" "$3"' _ "${SCRIPT}" "${LOOP_DEV}" "${loop_mnt}" \
+    || fail "mount_device на loop-устройстве"
+  loop_uuid="$(sudo blkid -c /dev/null -s UUID -o value "${LOOP_DEV}")"
+  [[ -n "${loop_uuid}" ]] || fail "blkid не вернул UUID loop-устройства"
+  grep -Fq "UUID=${loop_uuid} ${loop_mnt} " "${FSTAB_FILE}" \
+    || fail "fstab без UUID=${loop_uuid}: $(cat "${FSTAB_FILE}")"
+  if grep -qE '^UUID=[[:space:]]+' "${FSTAB_FILE}"; then
+    fail "в fstab пустой UUID= после реального mkfs"
+  fi
+  sudo mountpoint -q "${loop_mnt}" || fail "${loop_mnt} не смонтирован"
+  sudo umount "${loop_mnt}"
+  sudo losetup -d "${LOOP_DEV}"
+  LOOP_DEV=""
+else
+  echo "SKIP loop-тест (нет sudo/losetup/mkfs.ext4)"
 fi
 
 echo "=== wait_for_uuid повторяет blkid, пока UUID не появится ==="
@@ -117,19 +156,23 @@ EOF
 chmod +x "${tmp}/bin/mount"
 is_block_dev() { return 0; }
 UUID_WAIT_SECONDS=0
-if mount_device /dev/vdb /ob-data; then
+empty_mnt="${tmp}/mnt-empty"
+if mount_device /dev/vdb "${empty_mnt}" 2>/dev/null; then
   fail "mount_device должен упасть без UUID"
 fi
-if grep -qE 'UUID=[[:space:]]+/ob-data' "${FSTAB_FILE}"; then
+if grep -Fq "UUID= ${empty_mnt}" "${FSTAB_FILE}"; then
   fail "mount_device записал пустой UUID= в fstab"
+fi
+if grep -qE '^UUID=[[:space:]]+' "${FSTAB_FILE}"; then
+  fail "в fstab появилась запись с пустым UUID"
 fi
 grep -q 'UUID=keep-me /boot' "${FSTAB_FILE}" || fail "fstab испорчен при отказе mount_device"
 
 echo "=== mount_device чинит отравленный fstab когда UUID уже есть ==="
-cat >"${FSTAB_FILE}" <<'EOF'
-UUID= /ob-data ext4 defaults,noatime,nodiratime,nodelalloc 0 2
+repair_mnt="${tmp}/mnt-repair"
+cat >"${FSTAB_FILE}" <<EOF
+UUID= ${repair_mnt} ext4 defaults,noatime,nodiratime,nodelalloc 0 2
 EOF
-printf 'ext4' > "${tmp}/fstype"
 cat >"${tmp}/bin/blkid" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$*" == *"-s TYPE"* ]]; then
@@ -145,7 +188,6 @@ EOF
 chmod +x "${tmp}/bin/blkid"
 cat >"${tmp}/bin/mountpoint" <<'EOF'
 #!/usr/bin/env bash
-# после успешного mount — считаем точку смонтированной
 if [[ -f "${MOUNT_FLAG:-/nonexistent}" ]]; then
   exit 0
 fi
@@ -161,10 +203,10 @@ chmod +x "${tmp}/bin/mount"
 export MOUNT_FLAG="${tmp}/mounted"
 rm -f "${MOUNT_FLAG}"
 UUID_WAIT_SECONDS=0
-mount_device /dev/vdb /ob-data || fail "mount_device должен смонтировать при валидном UUID"
-grep -q '^UUID=11111111-2222-3333-4444-555555555555 /ob-data ' "${FSTAB_FILE}" \
-  || fail "отравленный fstab не исправлен"
-if grep -qE '^UUID=[[:space:]]+/ob-data ' "${FSTAB_FILE}"; then
+mount_device /dev/vdb "${repair_mnt}" || fail "mount_device должен смонтировать при валидном UUID"
+grep -Fq "UUID=11111111-2222-3333-4444-555555555555 ${repair_mnt} " "${FSTAB_FILE}" \
+  || fail "отравленный fstab не исправлен: $(cat "${FSTAB_FILE}")"
+if grep -Fq "UUID= ${repair_mnt} " "${FSTAB_FILE}"; then
   fail "пустой UUID= остался после ремонта"
 fi
 
