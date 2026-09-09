@@ -494,6 +494,33 @@ obshell bootstrap -
 
 Кластер, уже развёрнутый со схемой «Zone на observer», починить правкой конфигурации нельзя: locality sys-тенанта фиксируется на bootstrap. Нужен `obd cluster destroy <deploy> -f` и повторный `deploy` (данных там всё равно нет — bootstrap не прошёл).
 
+### Если SQL уже жив, а спиннер на `obshell bootstrap -`
+
+Это другой случай. Пример с 30 observer (`ob-yc-prod`): `generated/obd-cluster.yaml` и `~/.obd/cluster/<deploy>/config.yaml` — `zone1=10, zone2=10, zone3=10`; `__all_server` — 30× ACTIVE; bootstrap SQL есть в логе:
+
+```text
+alter system bootstrap REGION "deault_region" ZONE "zone1" SERVER "10.130.0.33:2882", ...
+```
+
+(`deault_region` — опечатка OBD, на bootstrap не влияет.)
+
+obshell при этом:
+
+- `/api/v1/info` → `"identity":"TAKE OVER FOLLOWER"` на узлах;
+- `obshell.log`: `Unknown database 'ocs'`, `The current database is not OCS`, lock/unlock take-over **без** `create take over dag`.
+
+OBD-плагин `obshell_bootstrap` засчитывает только `TAKE OVER MASTER` и `CLUSTER AGENT`. FOLLOWER он пропускает и крутит опрос всех IP (на 30 узлах один круг — десятки секунд, 200 кругов — час+), либо висит в `wait_dag_succeed`.
+
+**Destroy не нужен.** Observer-кластер уже работает. Дальше: Ctrl+C у `obd cluster start`, остановить только процессы obshell, поднять obshell **с одного** observer (чтобы он стал master и создал БД `ocs`), затем на остальных, потом `obd cluster start <deploy> -c obproxy-ce,obagent,ocp-server-ce`.
+
+Сбор признаков:
+
+```bash
+./scripts/deploy.sh diagnose
+# Trace ID start (не deploy): строка alter system bootstrap в ~/.obd/log/obd
+obd display-trace <uuid-из-этой-строки>
+```
+
 Сбор признаков на управляющей машине:
 
 ```bash
