@@ -232,6 +232,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 04-deploy-cluster.sh     # obd cluster deploy/start
 │   ├── diagnose-obd-start.sh    # зависание start: zone, display-trace, obshell
 │   ├── 08-create-tenant.sh      # user tenant + user + database
+│   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── 06-recover-observer.sh   # замена погибшего observer
 │   ├── 07-recover-obproxy.sh    # замена погибшего obproxy
@@ -391,7 +392,28 @@ http://<observer_ip>:2886
 
 ### OCP (веб-консоль)
 
-Нужны `vm_profiles.ocp.enabled: true` и `ocp.enabled: true`. После успешного deploy:
+Нужны `vm_profiles.ocp.enabled: true` и `ocp.enabled: true`. OCP-ВМ (`OCP_1_IP`, в стенде `10.130.0.4`) запускает **только JVM ocp-server-ce на :8080** — это не второй OceanBase и не observer. 30 observer живут на отдельных ВМ; meta-тенанты `ocp_meta` / `ocp_monitor` создаются **в том же** oceanbase-ce.
+
+После успешного `obd cluster start` (включая `ocp-server-ce`) список кластеров в UI часто **пустой**, пока кластер не зарегистрирован:
+
+```bash
+./scripts/deploy.sh ocp-register
+# то же самое:
+obd cluster check4ocp ob-yc-prod
+obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp.admin_password>'
+```
+
+Прогресс — в OCP «Задачи». Имя кластера в UI — `oceanbase.cluster_name` (`obcluster`), не hostname ocp-1.
+
+Проверка, что meta не на OCP-ВМ:
+
+```bash
+mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p -e \
+  "SELECT tenant_name, status FROM oceanbase.DBA_OB_TENANTS;"
+# ожидаются ocp_meta и ocp_monitor рядом с sys
+```
+
+Вход:
 
 ```text
 http://<OCP_1_IP>:8080

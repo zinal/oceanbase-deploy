@@ -130,7 +130,37 @@ http://<OCP_1_IP>:8080
 
 Учётные данные: `ocp.admin_username` / `ocp.admin_password` из `config/deploy.yaml`.
 
-IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP_1_IP`).
+IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP_1_IP`). На этой ВМ нет observer: слушает **8080** (OCP), не 2881. `obd cluster display` покажет `ocp-server-ce` на `OCP_1_IP` и `oceanbase-ce` на 30 observer — это один OBD-деплой, не два кластера OceanBase.
+
+### Пустой список кластеров в UI
+
+Старт `ocp-server-ce` поднимает консоль и пишет метаданные в тенанты `ocp_meta` / `ocp_monitor` **внутри основного oceanbase-ce**. Сам кластер в раздел «Кластеры» OCP **не попадает**, пока его не зарегистрировать:
+
+```bash
+./scripts/deploy.sh ocp-register
+```
+
+Это `obd cluster check4ocp` + `obd cluster export-to-ocp <deploy> -a http://<OCP_1_IP>:8080 -u admin -p …`. После этого в UI появляется задача takeover; по завершении виден кластер с `appname` (`oceanbase.cluster_name`, в gist — `obcluster`, `cluster_id=1`).
+
+Если export-to-ocp недоступен — в UI «Take over cluster»:
+
+| Поле | Значение |
+|------|----------|
+| Адрес | `OBPROXY_1_IP` (не IP OCP-ВМ) |
+| Порт | `2883` (`oceanbase.ports.obproxy`) |
+| Режим | proxy |
+| Имя кластера | `oceanbase.cluster_name` (`obcluster`) |
+| Cluster ID | `1` |
+| Пароль | `ocp.root_password` (`root@sys`) |
+
+Проверка тенантов на observer, не на ocp-1:
+
+```bash
+mysql -h<OBSERVER_1_IP> -P2881 -uroot -p -e \
+  "SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS;"
+```
+
+Нет `ocp_meta` — полный `obd cluster start` oceanbase-ce не дошёл до создания OCP-тенантов (типично при зависании на `obshell bootstrap`). Сначала доведите start / тенанты, потом `ocp-register`. `check4ocp` может требовать identity obshell `CLUSTER AGENT`.
 
 ## Ограничения
 

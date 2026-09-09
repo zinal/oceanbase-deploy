@@ -59,6 +59,9 @@ case "${STEP}" in
   tenant)
     run_step 08-create-tenant.sh
     ;;
+  ocp-register)
+    run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" "${@:2}"
+    ;;
   diagnose)
     run_cmd bash "${ROOT}/scripts/diagnose-obd-start.sh" "${@:2}"
     ;;
@@ -94,6 +97,7 @@ case "${STEP}" in
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
+  ocp-register — зарегистрировать oceanbase-ce в UI OCP (export-to-ocp)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
   all        — полный цикл (по умолчанию)

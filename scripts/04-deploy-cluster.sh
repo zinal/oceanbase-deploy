@@ -132,8 +132,14 @@ OceanBase Cloud Platform (OCP):
   URL:      http://${OCP_1_IP}:${ocp_port}
   Username: ${ocp_user}
   Password: см. ocp.admin_password в config/deploy.yaml
+  Хост ${OCP_1_IP} — только ocp-server-ce (JVM), не observer.
+  Пустой список кластеров в UI: ./scripts/deploy.sh ocp-register
 
 EOF
+  info "Регистрация кластера в OCP (export-to-ocp)..."
+  if ! bash "${LIB_DIR}/09-ocp-register.sh"; then
+    warn "export-to-ocp не удался (часто нужен CLUSTER AGENT на obshell). Повторите: ./scripts/deploy.sh ocp-register"
+  fi
 fi
 
 cat <<EOF
