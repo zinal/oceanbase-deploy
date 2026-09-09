@@ -2,6 +2,16 @@
 
 При `vm_profiles.obproxy.count > 1` клиентам нужна единая точка входа. **HAProxy** в режиме `tcp` проксирует соединения на порт **2883** (MySQL-протокол OceanBase) и распределяет **новые** TCP-сессии между несколькими ВМ obproxy.
 
+На **runner-ВМ** (`ob-runner-N`) это ставится командой:
+
+```bash
+./scripts/deploy.sh runner-haproxy
+```
+
+Скрипт устанавливает пакет `haproxy` на каждый хост из `RUNNER_*` и записывает конфиг по образцу [bench/tpcc/haproxy.cfg](../bench/tpcc/haproxy.cfg): frontend на `127.0.0.1:2883`, backend — **имена** obproxy (`OBPROXY_*_NAME`), не IP. Прикладные клиенты на runner подключаются к `127.0.0.1:2883` (как в TPC-C profile).
+
+Нужны `vm_profiles.runner.enabled: true` (и уже выполненный `provision`). `./scripts/deploy.sh all` вызывает тот же шаг, если runner включены.
+
 ## Схема
 
 ```mermaid
@@ -49,7 +59,8 @@ sudo apt install -y haproxy
 sudo cp config/haproxy-obproxy-tcp-lb.cfg.example /etc/haproxy/haproxy.cfg
 ```
 
-3. Подставьте IP obproxy из `generated/inventory.env` (`OBPROXY_*_IP`).
+3. Подставьте **имена** obproxy из `generated/inventory.env` (`OBPROXY_*_NAME`), не IP.
+   Автоматически: `./scripts/deploy.sh runner-haproxy` (на `ob-runner-N`, bind `127.0.0.1:2883`).
 4. Проверка и запуск:
 
 ```bash
@@ -67,4 +78,5 @@ mysql -h<haproxy_lb_ip> -P2883 -uroot -p
 ## См. также
 
 - [config/haproxy-obproxy-tcp-lb.cfg.example](../config/haproxy-obproxy-tcp-lb.cfg.example) — готовый фрагмент конфигурации
-- [README.md](../README.md) — развёртывание кластера и `vm_profiles.obproxy`
+- [bench/tpcc/haproxy.cfg](../bench/tpcc/haproxy.cfg) — образец для runner (localhost + имена obproxy)
+- [README.md](../README.md) — развёртывание кластера, `vm_profiles.obproxy` и `vm_profiles.runner`

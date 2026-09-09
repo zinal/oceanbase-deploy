@@ -4,7 +4,7 @@
 
 ## Возможности
 
-- Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring)
+- Настраиваемые **профили ВМ по ролям** (observer, obproxy, configserver, monitoring, runner)
 - Оптимальные типы дисков YC: non-replicated для реплицируемых data, io-m3 для log/boot
 - Подготовка серверов по best practices (sysctl, limits, chrony, монтирование дисков)
 - Генерация конфигурации OBD и безопасное staged-развёртывание: 3 seed observer → scale-out по 3
@@ -28,6 +28,7 @@ flowchart TB
     O3[observer-3 zone3]
     P[obproxy]
     M[monitoring optional]
+    R[ob-runner optional]
   end
 
   Scripts --> OBD
@@ -36,7 +37,8 @@ flowchart TB
   OBD -->|SSH| O3
   OBD -->|SSH| P
   OBD -->|SSH| M
-  Client[Клиенты] -->|2883| P
+  Client[Клиенты / runner] -->|127.0.0.1:2883| HAP[HAProxy on runner]
+  HAP -->|имена obproxy| P
   P --> O1 & O2 & O3
 ```
 
@@ -91,6 +93,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
+./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
 ```
 
 `provision` создаёт ресурсы асинхронно (как [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms)):
@@ -110,7 +113,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 |--------|------------|
 | `yandex_cloud` | Инфраструктура YC: zone, subnet, SSH, **образ ОС**, network_acceleration |
 | `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
-| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp** |
+| `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp**, **runner** |
 | `oceanbase` | Параметры кластера, OBD, auto-tune |
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 | `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`) |
@@ -168,7 +171,24 @@ vm_profiles:
     enabled: false
     cores: 4
     memory_gb: 16
+
+  runner:                      # прикладная нагрузка (TPC-C), имена ob-runner-N
+    enabled: false             # provision создаёт ВМ только при true
+    count: 5                   # по умолчанию 5
+    cores: 8
+    memory_gb: 32
+    boot_disk:
+      type: network-ssd
+      size_gb: 150
 ```
+
+При `vm_profiles.runner.enabled: true` `provision` создаёт ВМ `ob-runner-1` … `ob-runner-N` (префикс задаётся `name_prefix`, по умолчанию `ob-runner`). Они не входят в OBD. После кластера поставьте HAProxy на каждый runner:
+
+```bash
+./scripts/deploy.sh runner-haproxy
+```
+
+HAProxy слушает `127.0.0.1:2883` и балансирует на **имена** obproxy из inventory (`OBPROXY_*_NAME`), не на IP. Образец конфига — [bench/tpcc/haproxy.cfg](bench/tpcc/haproxy.cfg). `./scripts/deploy.sh all` вызывает этот шаг, если runner включены.
 
 Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится.
 
@@ -247,6 +267,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   └── haproxy-obproxy-tcp-lb.cfg.example
 ├── scripts/
 │   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
+│   ├── lib/runner_haproxy.py    # генерация haproxy.cfg (имена obproxy)
 │   ├── lib/yc-async.sh          # async + retry + wait (ydb-snippets pattern)
 │   ├── deploy.sh                # главный сценарий
 │   ├── 00-check-prerequisites.sh
@@ -258,6 +279,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── diagnose-obd-start.sh    # зависание start: zone, display-trace, obshell
 │   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
+│   ├── 10-runner-haproxy.sh     # HAProxy на runner-ВМ (backend — имена obproxy)
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -399,7 +421,7 @@ mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p
 
 User tenant после `./scripts/deploy.sh tenant` — пользователь и БД из секции `tenant`.
 
-При нескольких obproxy — [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md).
+При нескольких obproxy клиенты с runner ходят через HAProxy на localhost: [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md), `./scripts/deploy.sh runner-haproxy`.
 
 ### obshell (dashboard агента)
 

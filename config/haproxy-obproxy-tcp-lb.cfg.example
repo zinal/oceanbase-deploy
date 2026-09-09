@@ -20,8 +20,10 @@
 #   sudo systemctl enable --now haproxy
 #
 # Имена и IP возьмите из generated/inventory.env после provision
-# (OBPROXY_1_IP, OBPROXY_2_IP, …) или внутренний DNS YC:
-#   <deployment_name>-obproxy-1.ru-central1.internal
+# (OBPROXY_1_NAME, OBPROXY_2_NAME, …). HAProxy на runner должен
+# смотреть на hostname, не на IP:
+#   ./scripts/deploy.sh runner-haproxy
+# Внутренний DNS YC: <deployment_name>-obproxy-1.ru-central1.internal
 
 global
     log /dev/log local0

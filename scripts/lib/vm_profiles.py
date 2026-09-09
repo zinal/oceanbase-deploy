@@ -65,6 +65,21 @@ ROLE_ALIASES = {
     "configserver": "configserver",
     "observer": "observer",
     "ocp": "ocp",
+    "runner": "runner",
+    "runners": "runner",
+    "ob-runner": "runner",
+    "ob_runner": "runner",
+}
+
+# Дефолты роли, если в yaml нет cores/memory/count/boot_disk.
+ROLE_RESOURCE_DEFAULTS = {
+    "runner": {
+        "cores": 8,
+        "memory_gb": 32,
+        "count": 5,
+        "name_prefix": "ob-runner",
+        "boot_disk": {"type": "network-ssd", "size_gb": 150},
+    },
 }
 
 
@@ -106,6 +121,7 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
     defaults = cfg.get("vm_defaults", {})
     profiles = cfg.get("vm_profiles", {})
     yc = cfg.get("yandex_cloud", {})
+    role_defaults = ROLE_RESOURCE_DEFAULTS.get(role, {})
 
     if role not in profiles:
         raise KeyError(f"Unknown vm profile role: {role}")
@@ -113,7 +129,10 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
     profile = deepcopy(profiles[role])
     core_fraction = profile.pop("core_fraction", defaults.get("core_fraction", 100))
 
-    boot = _merge_disk(defaults.get("boot_disk"), profile.get("boot_disk"))
+    boot = _merge_disk(
+        _merge_disk(defaults.get("boot_disk"), role_defaults.get("boot_disk")),
+        profile.get("boot_disk"),
+    )
     data = _merge_disk(defaults.get("data_disk"), profile.get("data_disk"))
     log = _merge_disk(defaults.get("log_disk"), profile.get("log_disk"))
 
@@ -122,20 +141,24 @@ def resolve_profile(cfg: dict[str, Any], role: str) -> dict[str, Any]:
             disk["size_gb"] = round_disk_size_gb(int(disk["size_gb"]), disk["type"])
 
     image_spec = build_image_spec(profile, yc)
+    default_cores = role_defaults.get("cores", defaults.get("cores", 4))
+    default_memory = role_defaults.get("memory_gb", defaults.get("memory_gb", 16))
+    name_prefix = profile.get("name_prefix") or role_defaults.get("name_prefix") or ""
 
     return {
         "role": role,
         "platform": profile.get("platform", defaults.get("platform", "standard-v3")),
-        "cores": int(profile.get("cores", defaults.get("cores", 4))),
-        "memory_gb": int(profile.get("memory_gb", defaults.get("memory_gb", 16))),
+        "cores": int(profile.get("cores", default_cores)),
+        "memory_gb": int(profile.get("memory_gb", default_memory)),
         "image_spec": image_spec,
         "core_fraction": int(core_fraction),
         "boot_disk": boot,
         "data_disk": data,
         "log_disk": log,
-        "count": int(profile.get("count", 1)),
+        "count": int(profile.get("count", role_defaults.get("count", 1))),
         "enabled": profile.get("enabled", True),
         "dedicated": profile.get("dedicated", True),
+        "name_prefix": name_prefix,
     }
 
 

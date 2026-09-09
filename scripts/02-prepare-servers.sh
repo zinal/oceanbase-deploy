@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --role)
       PREPARE_ROLE="${2:-}"
-      [[ -n "${PREPARE_ROLE}" ]] || die "--role требует значение (observer|obproxy|configserver|monitor|ocp)"
+      [[ -n "${PREPARE_ROLE}" ]] || die "--role требует значение (observer|obproxy|configserver|monitor|ocp|runner)"
       shift 2
       ;;
     --)
@@ -107,7 +107,7 @@ prepare_host() {
   local data_mount="${OBS_DATA_MOUNT}" log_enabled="${OBS_LOG_ENABLED}" log_mount="${OBS_LOG_MOUNT}"
   local need_data="true" need_log="${log_enabled}"
 
-  if [[ "${role}" == "obproxy" || "${role}" == "configserver" ]]; then
+  if [[ "${role}" == "obproxy" || "${role}" == "configserver" || "${role}" == "runner" ]]; then
     need_data="false"
     need_log="false"
   elif [[ "${role}" == "monitor" ]]; then
@@ -335,6 +335,11 @@ else
   if [[ "${OCP_VM_ENABLED}" == "true" && "${OCP_COUNT:-0}" -gt 0 ]]; then
     for i in $(seq 1 "${OCP_COUNT}"); do
       start_prepare_job "$(inventory_host OCP "${i}")" "ocp"
+    done
+  fi
+  if [[ "${RUNNER_COUNT:-0}" -gt 0 ]]; then
+    for i in $(seq 1 "${RUNNER_COUNT}"); do
+      start_prepare_job "$(inventory_host RUNNER "${i}")" "runner"
     done
   fi
 fi
