@@ -132,6 +132,32 @@ def test_rpm_urls_for_5_0_1() -> None:
     assert "v5.0.1_CE" in github_rpm_url(
         "oceanbase-ce", "5.0.1.0", "100000042026072912", "8", "x86_64"
     )
+    el7 = package_rpm_urls("5.0.1", el="7", arch="x86_64")
+    assert any("/el/7/x86_64/oceanbase-ce-5.0.1.0" in u for u in el7)
+
+
+def test_local_rpm_platform_el7() -> None:
+    from obd_version import local_rpm_platforms, resolve_rpm_platforms
+
+    table = """
+| name          | version | release                      | arch   | md5 |
+| oceanbase-ce  | 4.6.0.0 | 100000162026071511.el7      | x86_64 | aaa |
+| oceanbase-ce  | 4.3.5.3 | 103020012025120120.el7      | x86_64 | bbb |
+| oceanbase-ce-libs | 4.6.0.0 | 100000162026071511.el7   | x86_64 | ccc |
+"""
+    rows = parse_obd_table_rows(table)
+    assert local_rpm_platforms(rows) == [("7", "x86_64")]
+    assert resolve_rpm_platforms(rows) == [("7", "x86_64")]
+    assert resolve_rpm_platforms([]) == [("7", "x86_64"), ("8", "x86_64")]
+    script = ROOT / "scripts" / "lib" / "obd_version.py"
+    proc = subprocess.run(
+        ["python3", str(script), "rpm-platform"],
+        input=table,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "7 x86_64"
 
 
 def _generate(ob_cfg: dict) -> dict:
@@ -187,9 +213,8 @@ def test_deploy_does_not_pass_dash_v() -> None:
     assert "cluster deploy" in text
     assert '-V "${ob_version}"' not in text
     prepare = (ROOT / "scripts" / "lib" / "prepare-obd-mirror.sh").read_text(encoding="utf-8")
-    assert "obd mirror clone" in prepare
-    assert "rpm-urls" in prepare
-    assert "obd mirror enable remote" in prepare
+    assert "rpm-platform" in prepare
+    assert "el${el}/${arch}" in prepare or "Семейство RPM" in prepare
     enable_at = prepare.index("obd mirror enable remote")
     plugin_die_at = prepare.index("Плагин OBD не покрывает")
     assert enable_at < plugin_die_at
@@ -252,6 +277,7 @@ def main() -> None:
         test_plugin_covers_major,
         test_hint_mentions_all_in_one,
         test_rpm_urls_for_5_0_1,
+        test_local_rpm_platform_el7,
         test_generate_writes_padded_version,
         test_example_defaults_to_5_0_1,
         test_deploy_does_not_pass_dash_v,

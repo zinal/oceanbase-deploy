@@ -161,7 +161,7 @@ bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/downl
 source ~/.oceanbase-all-in-one/bin/env.sh
 ```
 
-`./scripts/deploy.sh check` и `deploy` вызывают `obd-mirror`. Совместимый набор All-in-One 5.0.1: OCP-CE 4.4.2, OBProxy 4.3.6 BP1, OBAgent 4.2.6.
+`./scripts/deploy.sh check` и `obd-mirror` берут **el/arch из уже лежащих в local пакетов** (на All-in-One это часто **el7**, даже если хост Ubuntu). Скрипт качает `oceanbase-ce` / `oceanbase-ce-libs` 5.0.1.0 с mirrors.oceanbase.com и делает `obd mirror clone`. Совместимый набор All-in-One 5.0.1: OCP-CE 4.4.2, OBProxy 4.3.6 BP1, OBAgent 4.2.6.
 
 ```yaml
 yandex_cloud:

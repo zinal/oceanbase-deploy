@@ -186,6 +186,45 @@ def remote_mirrors_enabled(rows: Iterable[dict[str, str]]) -> bool:
     return False
 
 
+_EL_RE = re.compile(r"\.el(\d+)\b")
+
+
+def local_rpm_platforms(
+    rows: Iterable[dict[str, str]],
+    *,
+    component: str = OCEANBASE_CE,
+) -> list[tuple[str, str]]:
+    """Семейство RPM из local: release `….el7` и arch `x86_64`.
+
+    All-in-One на Ubuntu всё равно кладёт el7, поэтому нельзя брать el8 с хоста.
+    """
+    seen: list[tuple[str, str]] = []
+    for row in rows:
+        if (row.get("name") or "").strip() != component:
+            continue
+        match = _EL_RE.search(row.get("release") or "")
+        el = match.group(1) if match else ""
+        arch = (row.get("arch") or "").strip()
+        if not el or not arch:
+            continue
+        pair = (el, arch)
+        if pair not in seen:
+            seen.append(pair)
+    return seen
+
+
+def resolve_rpm_platforms(
+    rows: Iterable[dict[str, str]],
+    *,
+    fallback_arch: str = "x86_64",
+) -> list[tuple[str, str]]:
+    found = local_rpm_platforms(rows)
+    if found:
+        return found
+    # Пустой local: All-in-One чаще el7, yum/GitHub есть и el7, и el8.
+    return [("7", fallback_arch), ("8", fallback_arch)]
+
+
 def plugin_versions_in(path: Path) -> list[str]:
     if not path.is_dir():
         return []
@@ -378,6 +417,14 @@ def cmd_plugin_dest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rpm_platform(args: argparse.Namespace) -> int:
+    text = Path(args.mirror_file).read_text(encoding="utf-8") if args.mirror_file else sys.stdin.read()
+    rows = parse_obd_table_rows(text)
+    for el, arch in resolve_rpm_platforms(rows, fallback_arch=args.arch):
+        _print(f"{el} {arch}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -428,6 +475,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     pdest = sub.add_parser("plugin-dest")
     pdest.set_defaults(func=cmd_plugin_dest)
+
+    plat = sub.add_parser("rpm-platform", help="el/arch из obd mirror list local")
+    plat.add_argument("--mirror-file")
+    plat.add_argument("--arch", default="x86_64")
+    plat.set_defaults(func=cmd_rpm_platform)
     return parser
 
 

@@ -38,14 +38,6 @@ obd_py() {
   python3 "${OBD_VERSION_PY}" "$@"
 }
 
-rpm_el() {
-  if [[ -f /etc/os-release ]] && grep -qE 'VERSION_ID="?7' /etc/os-release; then
-    printf '7\n'
-    return 0
-  fi
-  printf '8\n'
-}
-
 rpm_arch() {
   local m
   m="$(uname -m)"
@@ -54,6 +46,13 @@ rpm_arch() {
     aarch64|arm64) printf 'aarch64\n' ;;
     *) printf '%s\n' "${m}" ;;
   esac
+}
+
+# All-in-One на Ubuntu кладёт el7 в local; os-release (22.04) для RPM не годится.
+rpm_platforms() {
+  local fallback
+  fallback="$(rpm_arch)"
+  printf '%s\n' "${local_table}" | obd_py rpm-platform --arch "${fallback}"
 }
 
 download_file() {
@@ -149,10 +148,9 @@ clone_downloaded_rpms() {
   (cd "${work}" && obd mirror clone ./*.rpm)
 }
 
-download_ce_rpms() {
-  local el arch work url dest ok
-  el="$(rpm_el)"
-  arch="$(rpm_arch)"
+download_ce_rpms_for() {
+  local el="$1" arch="$2"
+  local work url dest ok
   work="$(mktemp -d "${TMPDIR:-/tmp}/ob-ce-rpms.XXXXXX")"
   info "Скачиваю oceanbase-ce ${requested} (el${el}/${arch}) с yum/GitHub..."
   ok=0
@@ -174,9 +172,27 @@ download_ce_rpms() {
     rm -rf "${work}"
     return 1
   fi
-  clone_downloaded_rpms "${work}" || true
+  if ! clone_downloaded_rpms "${work}"; then
+    warn "obd mirror clone не принял RPM el${el}/${arch}"
+    rm -rf "${work}"
+    return 1
+  fi
   rm -rf "${work}"
   refresh_tables
+}
+
+download_ce_rpms() {
+  local el arch
+  while read -r el arch; do
+    [[ -n "${el}" && -n "${arch}" ]] || continue
+    info "Семейство RPM: el${el}/${arch} (как в local, не с os-release хоста)"
+    if download_ce_rpms_for "${el}" "${arch}"; then
+      if have_package; then
+        return 0
+      fi
+    fi
+  done < <(rpm_platforms)
+  return 1
 }
 
 extract_plugins_from_rpm() {
@@ -227,34 +243,36 @@ ensure_plugins() {
     warn "obd update не удался (нужны права на каталог установки OBD)"
   fi
 
-  local el arch url rpm dest
-  el="$(rpm_el)"
-  arch="$(rpm_arch)"
-  url="$(obd_py ob-deploy-url --version "${requested}" --el "${el}" --arch "${arch}" || true)"
-  [[ -n "${url}" ]] || return 1
-  dest="$(mktemp "${TMPDIR:-/tmp}/ob-deploy.XXXXXX.rpm")"
-  info "Скачиваю ${url} (плагины 5.x)..."
-  if ! download_file "${url}" "${dest}"; then
-    rm -f "${dest}"
-    return 1
-  fi
-  local plug
-  plug="$(obd_py plugin-dest)"
-  info "Копирую плагины oceanbase-ce 5.x в ${plug}"
-  if extract_plugins_from_rpm "${dest}" "${plug}"; then
-    rm -f "${dest}"
-    refresh_plugin
-    if [[ "${plugin_status}" -eq 0 ]]; then
-      info "Плагин 5.x установлен в ${plug}"
-      return 0
+  local el arch url dest
+  while read -r el arch; do
+    [[ -n "${el}" && -n "${arch}" ]] || continue
+    url="$(obd_py ob-deploy-url --version "${requested}" --el "${el}" --arch "${arch}" || true)"
+    [[ -n "${url}" ]] || continue
+    dest="$(mktemp "${TMPDIR:-/tmp}/ob-deploy.XXXXXX.rpm")"
+    info "Скачиваю ${url} (плагины 5.x)..."
+    if ! download_file "${url}" "${dest}"; then
+      rm -f "${dest}"
+      continue
     fi
-  fi
-  rm -f "${dest}"
+    local plug
+    plug="$(obd_py plugin-dest)"
+    info "Копирую плагины oceanbase-ce 5.x в ${plug}"
+    if extract_plugins_from_rpm "${dest}" "${plug}"; then
+      rm -f "${dest}"
+      refresh_plugin
+      if [[ "${plugin_status}" -eq 0 ]]; then
+        info "Плагин 5.x установлен в ${plug}"
+        return 0
+      fi
+    fi
+    rm -f "${dest}"
+  done < <(rpm_platforms)
   return 1
 }
 
 refresh_tables
 log_local_versions
+info "Семейство RPM из local: $(rpm_platforms | paste -sd ', ' - || true)"
 
 if printf '%s\n' "${repo_table}" | obd_py remote-enabled >/dev/null 2>&1; then
   info "Удалённые зеркала OBD включены"
