@@ -146,21 +146,22 @@ oceanbase:
   enable_remote_mirror: true   # если пакета нет в local — включить remote
 ```
 
-2. Обновите пакеты на инсталляционном хосте (один из способов):
+2. Обновите пакеты на инсталляционном хосте:
 
 ```bash
-# A. Рекомендуется: All-in-One 5.0.1 (OBD 4.5.0 + RPM 5.0.1 + совместимые obproxy/obagent)
-bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/download-center/opensource/oceanbase-all-in-one/installer.sh)"
-source ~/.oceanbase-all-in-one/bin/env.sh
-obd mirror list local | grep oceanbase-ce
-
-# B. Онлайн: включить community.stable (нужен доступ к mirrors.oceanbase.com)
-./scripts/deploy.sh obd-mirror
+./scripts/deploy.sh check        # сам включит remote, скачает RPM 5.0.1 и при необходимости плагин 5.x
 # то же самое:
-#   obd mirror enable remote && obd mirror update
+./scripts/deploy.sh obd-mirror
 ```
 
-`./scripts/deploy.sh check` предупредит, если 5.0.1 нет в зеркалах. `deploy` перед `obd cluster deploy` сам вызовет `obd-mirror`. Совместимый набор All-in-One 5.0.1: OCP-CE 4.4.2, OBProxy 4.3.6 BP1, OBAgent 4.2.6.
+Если `mirrors.oceanbase.com` недоступен, поставьте All-in-One 5.0.1 вручную:
+
+```bash
+bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/download-center/opensource/oceanbase-all-in-one/installer.sh)"
+source ~/.oceanbase-all-in-one/bin/env.sh
+```
+
+`./scripts/deploy.sh check` и `deploy` вызывают `obd-mirror`. Совместимый набор All-in-One 5.0.1: OCP-CE 4.4.2, OBProxy 4.3.6 BP1, OBAgent 4.2.6.
 
 ```yaml
 yandex_cloud:

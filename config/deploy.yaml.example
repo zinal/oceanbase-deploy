@@ -235,8 +235,8 @@ oceanbase:
   # Пустая = latest из доступных зеркал. All-in-One 4.6.x держит remote выключенным
   # и кладёт 4.6.0 в local — без этой строки новые кластера останутся на 4.6.0.
   version: "5.0.1.0"
-  # Если 5.0.1 нет в local: ./scripts/deploy.sh obd-mirror включит remote и update.
-  # false — только local (офлайн); тогда сначала обновите All-in-One до 5.0.1.
+  # Если 5.0.1 нет в local: check/obd-mirror включат remote, скачают RPM и плагин 5.x.
+  # false — только то, что уже в local (офлайн).
   enable_remote_mirror: true
   deploy_user: obadmin
   home_path: /home/obadmin/observer

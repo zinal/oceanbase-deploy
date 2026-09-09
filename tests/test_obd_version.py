@@ -114,9 +114,24 @@ def test_plugin_covers_major() -> None:
 def test_hint_mentions_all_in_one() -> None:
     hint = missing_package_hint("5.0.1")
     assert "5.0.1.0" in hint
+    assert "obd-mirror" in hint
     assert "All-in-One" in hint
-    assert "obd mirror enable remote" in hint
-    assert "oceanbase.version" in hint
+    assert "mirrors.oceanbase.com" in hint
+
+
+def test_rpm_urls_for_5_0_1() -> None:
+    from obd_version import github_rpm_url, package_rpm_urls, yum_rpm_url
+
+    urls = package_rpm_urls("5.0.1", el="8", arch="x86_64")
+    assert any("mirrors.oceanbase.com" in u and "oceanbase-ce-5.0.1.0" in u for u in urls)
+    assert any("github.com/oceanbase/oceanbase" in u and "oceanbase-ce-libs" in u for u in urls)
+    assert (
+        yum_rpm_url("oceanbase-ce", "5.0.1.0", "100000042026072912", "8", "x86_64")
+        == "https://mirrors.oceanbase.com/community/stable/el/8/x86_64/oceanbase-ce-5.0.1.0-100000042026072912.el8.x86_64.rpm"
+    )
+    assert "v5.0.1_CE" in github_rpm_url(
+        "oceanbase-ce", "5.0.1.0", "100000042026072912", "8", "x86_64"
+    )
 
 
 def _generate(ob_cfg: dict) -> dict:
@@ -171,8 +186,16 @@ def test_deploy_does_not_pass_dash_v() -> None:
     assert "prepare-obd-mirror.sh" in text
     assert "cluster deploy" in text
     assert '-V "${ob_version}"' not in text
+    prepare = (ROOT / "scripts" / "lib" / "prepare-obd-mirror.sh").read_text(encoding="utf-8")
+    assert "obd mirror clone" in prepare
+    assert "rpm-urls" in prepare
+    assert "obd mirror enable remote" in prepare
+    enable_at = prepare.index("obd mirror enable remote")
+    plugin_die_at = prepare.index("Плагин OBD не покрывает")
+    assert enable_at < plugin_die_at
     check = (ROOT / "scripts" / "00-check-prerequisites.sh").read_text(encoding="utf-8")
-    assert "--check-only" in check
+    assert "prepare-obd-mirror.sh" in check
+    assert "--ensure" in check
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "obd-mirror" in deploy
     assert "prepare-obd-mirror.sh" in deploy
@@ -228,6 +251,7 @@ def main() -> None:
         test_remote_enabled_flag,
         test_plugin_covers_major,
         test_hint_mentions_all_in_one,
+        test_rpm_urls_for_5_0_1,
         test_generate_writes_padded_version,
         test_example_defaults_to_5_0_1,
         test_deploy_does_not_pass_dash_v,
