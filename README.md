@@ -450,7 +450,7 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 # затем Retry задачи в UI OCP (не второй takeover)
 ```
 
-`ERROR: Expecting value` после `OCP clockdiff ready` — HTML логина вместо JSON API, clockdiff на ОС уже готов.
+Первый прогон мог только сделать `setcap`; Retry тогда всё ещё `clockdiff <ip>` (ICMP) и в YC падает. Повторный `ocp-clockdiff` ставит wrapper `-o`. `ERROR: Expecting value` — HTML логина, не clockdiff.
 
 Баннер `abnormal Cgroup configuration` на Ubuntu 22.04 (cgroup v2) — не этот FAIL. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
