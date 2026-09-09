@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREPARE="${ROOT}/scripts/lib/prepare-ocp-host.sh"
 
 grep -q '/usr/lib/oceanbase/clockdiff.real' "${PREPARE}"
+grep -q "/usr/sbin/clockdiff" "${PREPARE}"
+grep -q "/usr/bin/clockdiff" "${PREPARE}"
 grep -q 'exec "$REAL" -o "$@"' "${PREPARE}"
 grep -q 'is_elf' "${PREPARE}"
 grep -q 'src.*-ef.*real' "${PREPARE}"
