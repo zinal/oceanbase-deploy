@@ -53,6 +53,10 @@ def _ob_zones_mod():
     return _lib_mod("ob_zones")
 
 
+def _obd_version_mod():
+    return _lib_mod("obd_version")
+
+
 def auto_tune(cfg: dict, observer_count: int) -> dict:
     """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
     return _vm_profiles_mod().observer_auto_tune(cfg)
@@ -268,7 +272,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         }
 
     if components.get("oceanbase_ce", True):
-        obd_ob: dict = {
+        obd_ob: dict = {}
+        ob_version = _obd_version_mod().requested_oceanbase_version({"oceanbase": ob_cfg})
+        if ob_version:
+            # `obd cluster deploy -V` нет: версия только в YAML компонента.
+            obd_ob["version"] = ob_version
+        obd_ob.update({
             "depends": ["ob-configserver"] if components.get("ob_configserver", True) else [],
             "servers": servers,
             "global": {
@@ -287,7 +296,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                 "production_mode": obs_count >= 3,
                 "enable_syslog_wf": False,
             },
-        }
+        })
         if ocp_enabled(cfg):
             ocp = ocp_cfg(cfg)
             meta = ocp.get("meta_tenant", {}) or {}

@@ -105,6 +105,13 @@ def test_seed_keeps_three_zones_and_service_components() -> None:
     assert full["oceanbase-ce"]["servers"][-1]["name"] == "server9"
 
 
+def test_seed_keeps_oceanbase_version() -> None:
+    full = full_config()
+    full["oceanbase-ce"]["version"] = "5.0.1.0"
+    seed = PLAN.build_seed_config(full)
+    assert seed["oceanbase-ce"]["version"] == "5.0.1.0"
+
+
 def test_scale_out_plan_uses_balanced_triples() -> None:
     plan = PLAN.build_scale_out_plan(
         full_config(),
@@ -456,6 +463,7 @@ def test_malformed_registered_config_fails_closed() -> None:
 
 if __name__ == "__main__":
     test_seed_keeps_three_zones_and_service_components()
+    test_seed_keeps_oceanbase_version()
     test_scale_out_plan_uses_balanced_triples()
     test_scale_out_plan_resumes_components_independently()
     test_rootservice_list_uses_one_registered_server_per_zone()

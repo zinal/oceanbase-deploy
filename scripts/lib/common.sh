@@ -18,6 +18,19 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "Команда '$cmd' не найдена. Установите её и повторите."
 }
 
+# All-in-One кладёт obd в ~/.oceanbase-all-in-one; без source его нет в PATH.
+source_obd_env() {
+  if command -v obd >/dev/null 2>&1; then
+    return 0
+  fi
+  local envf="${HOME}/.oceanbase-all-in-one/bin/env.sh"
+  if [[ -f "${envf}" ]]; then
+    # shellcheck disable=SC1090
+    source "${envf}"
+  fi
+  command -v obd >/dev/null 2>&1
+}
+
 require_file() {
   local path="$1"
   [[ -f "$path" ]] || die "Файл не найден: $path"
