@@ -88,7 +88,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # prepare + 3 seed observer + scale-out остальных по 3
+./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ```
@@ -443,14 +443,12 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 
 `Failed to install … oceanbase-ce-utils` — WARN OBD, takeover продолжается. Если в логе есть `takeover task successfully submitted to ocp` (задача в UI, например `/task/22`), `ocp-register` считает это успехом, даже если OBD вернул ненулевой код из‑за utils RPM.
 
-Задача в статусе **Taking over** и subtask «Pre check for create host» FAILED (`Execute clock diff failed`) — OCP с ocp-1 запускает `clockdiff <observer>` (ICMP). SSH к узлам при этом уже ок:
+`./scripts/deploy.sh deploy` и `all` при включённом OCP сами вызывают `ocp-clockdiff` (wrapper `-o` на OCP-ВМ) до `export-to-ocp`. Отдельная команда нужна, если takeover уже ушёл в UI без wrapper:
 
 ```bash
 ./scripts/deploy.sh ocp-clockdiff
 # затем Retry задачи в UI OCP (не второй takeover)
 ```
-
-Первый прогон мог только сделать `setcap`; Retry тогда всё ещё `clockdiff <ip>` (ICMP) и в YC падает. Повторный `ocp-clockdiff` ставит wrapper `-o`. `ERROR: Expecting value` — HTML логина, не clockdiff.
 
 Баннер `abnormal Cgroup configuration` на Ubuntu 22.04 (cgroup v2) — не этот FAIL. `You must specify the value of the given parameter` — в takeOver нет `port` (`mysql_port` должен быть в `oceanbase-ce.global`). См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 

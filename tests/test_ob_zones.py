@@ -201,6 +201,7 @@ def test_diagnose_script_help() -> None:
     deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
     assert "diagnose-obd-start.sh" in deploy
     assert "03-generate-obd-config.py" in deploy_case
+    assert "run_ocp_clockdiff_if_enabled" in deploy_case
     assert "09-ocp-register.sh" in deploy
     assert "ocp-register" in deploy
 

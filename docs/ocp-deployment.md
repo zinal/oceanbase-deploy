@@ -140,7 +140,7 @@ IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP
 ./scripts/deploy.sh ocp-register
 ```
 
-Это `obd cluster check4ocp -V <версия OCP>` + `obd cluster export-to-ocp <deploy> -a http://<OCP_1_IP>:8080 -u admin -p …`. После этого в UI появляется задача takeover; по завершении виден кластер с `appname` (`oceanbase.cluster_name`, в gist — `obcluster`, `cluster_id=1`).
+Это `obd cluster check4ocp -V <версия OCP>` + `obd cluster export-to-ocp <deploy> -a http://<OCP_1_IP>:8080 -u admin -p …`. `./scripts/deploy.sh deploy` / `all` при включённом OCP сначала делают `ocp-clockdiff` (wrapper `-o`), затем этот register. После этого в UI появляется задача takeover; по завершении виден кластер с `appname` (`oceanbase.cluster_name`, в gist — `obcluster`, `cluster_id=1`).
 
 `check4ocp` без `-V` в OBD по умолчанию считает OCP **3.1.1** и печатает:
 
