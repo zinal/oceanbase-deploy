@@ -21,8 +21,8 @@ usage() {
 его в OCP: obd cluster check4ocp -V <ocp.version|установленная> + export-to-ocp.
 Без -V OBD считает OCP 3.1.1 и ошибочно требует OS-пользователя admin.
 
-  --clockdiff-only  только clockdiff CAP_NET_RAW + ocp.host.check.clock-diff.mode=1
-                    (для retry задачи takeover «Pre check for create host»)
+  --clockdiff-only  только wrapper clockdiff -o + CAP_NET_RAW на OCP-ВМ
+                    (без SQL/API к кластеру; для deploy до start и для retry takeover)
 
 OCP-ВМ (ocp-server-ce) не содержит oceanbase-ce. Пустой список кластеров в UI
 после start ocp-server-ce — нормально, пока не выполнен export-to-ocp.
@@ -54,6 +54,25 @@ fi
 if [[ "${CLOCKDIFF_ONLY_CMD}" != "true" ]]; then
   command -v obd >/dev/null 2>&1 || die "obd не в PATH"
   obd_cluster_registered "${CLUSTER_NAME}" || die "Кластер OBD ${CLUSTER_NAME} не зарегистрирован"
+fi
+
+DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
+[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER="$(yaml_get yandex_cloud.ssh_user)"
+[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER=obadmin
+
+install_ocp_clockdiff_wrapper() {
+  info "clockdiff на OCP-ВМ ${OCP_1_IP}: wrapper -o + CAP_NET_RAW"
+  if ! run_remote "${OCP_1_IP}" \
+    "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true bash -s" \
+    < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
+    die "не удалось установить clockdiff wrapper на ${OCP_1_IP}"
+  fi
+}
+
+# До obd cluster start нет observer/OCP API — только OS-wrapper на OCP-ВМ.
+if [[ "${CLOCKDIFF_ONLY_CMD}" == "true" ]]; then
+  install_ocp_clockdiff_wrapper
+  exit 0
 fi
 
 OCP_PORT="$(yaml_get ocp.port)"
@@ -120,60 +139,7 @@ else
   warn "SQL к ${OBSERVER_1_IP}:${MYSQL_PORT} не прошёл — проверьте observer и ocp.root_password."
 fi
 
-DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
-[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER="$(yaml_get yandex_cloud.ssh_user)"
-[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER=obadmin
-
-info "clockdiff на OCP-ВМ ${OCP_1_IP}: wrapper -o + CAP_NET_RAW (mode 0 = ICMP TIMESTAMP, в YC exit 1)"
-if ! run_remote "${OCP_1_IP}" \
-  "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true CLOCKDIFF_TEST_IP='${OBSERVER_1_IP:-}' bash -s" \
-  < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
-  warn "не удалось починить clockdiff на ${OCP_1_IP} — takeover может упасть на Pre check for create host"
-fi
-# HTML SPA на неизвестных /api/v2/... даёт WARN, не падение. Wrapper уже делает -o.
-if ! python3 "${LIB_DIR}/lib/ocp_clockdiff.py" apply \
-  --url "${OCP_URL}" --user "${OCP_USER}" --password "${OCP_PASSWORD}"; then
-  warn "API параметров OCP недоступен (часто login HTML). Wrapper на ${OCP_1_IP} всё равно вызывает clockdiff -o."
-fi
-
-META_USER="$(yaml_get ocp.meta_tenant.username)"
-[[ -z "${META_USER}" || "${META_USER}" == "null" ]] && META_USER=root
-META_PASS="$(yaml_get ocp.meta_tenant.password)"
-[[ -z "${META_PASS}" || "${META_PASS}" == "null" ]] && META_PASS=ocp_meta_root
-META_DB="$(yaml_get ocp.meta_tenant.database)"
-[[ -z "${META_DB}" || "${META_DB}" == "null" ]] && META_DB=meta_database
-if client="$(sql_client)"; [[ -n "${client}" && -n "${OBSERVER_1_IP:-}" ]]; then
-  if MYSQL_PWD="${META_PASS}" "${client}" \
-    -h"${OBSERVER_1_IP}" -P"${MYSQL_PORT}" -u"${META_USER}@${META_TENANT}" -D"${META_DB}" -Nse \
-    "UPDATE config_properties SET value='1' WHERE \`key\`='ocp.host.check.clock-diff.mode'" \
-    2>/dev/null; then
-    info "ocp_meta.config_properties: clock-diff.mode=1 (OCP может кэшировать до рестарта JVM; wrapper действует сразу)"
-  else
-    warn "не удалось UPDATE ocp_meta.config_properties — достаточно wrapper -o на OCP-ВМ"
-  fi
-fi
-
-if [[ "${CLOCKDIFF_ONLY_CMD}" == "true" ]]; then
-  cat <<EOF
-
-clockdiff на ${OCP_1_IP}: /usr/bin/clockdiff — wrapper, который добавляет -o
-(IP timestamp). OCP Retry всё ещё вызывает mode 0 без флагов; без wrapper
-ICMP TIMESTAMP в YC даёт exit 1 при живом SSH.
-
-Дальше в UI: http://${OCP_1_IP}:${OCP_PORT}/task/22 → Retry
-«Pre check for create host». Не создавайте второй takeover.
-
-Проверка с OCP-ВМ (как JVM, argv без -o):
-  sudo -u ${DEPLOY_USER} /usr/bin/clockdiff ${OBSERVER_1_IP}
-
-Баннер «abnormal Cgroup configuration» на Ubuntu 22.04 (cgroup v2) —
-не причина падения pre-check. Изоляция CPU тенантов на v2 не работает;
-переключение на cgroup v1 требует GRUB systemd.unified_cgroup_hierarchy=0
-и reboot observer, не делайте это на живом кластере без окна.
-
-EOF
-  exit 0
-fi
+install_ocp_clockdiff_wrapper
 
 OCP_VERSION="$(resolve_ocp_check_version "${CLUSTER_NAME}")"
 info "obd cluster check4ocp ${CLUSTER_NAME} -V ${OCP_VERSION}"
