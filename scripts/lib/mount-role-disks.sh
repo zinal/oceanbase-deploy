@@ -5,13 +5,10 @@
 set -euo pipefail
 
 MARKER_FILE="${MARKER_FILE:-/etc/oceanbase-deploy-role-marker}"
-
-command -v mkfs.ext4 >/dev/null 2>&1 || {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq e2fsprogs
-  fi
-}
+FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
+DISK_WAIT_SECONDS="${DISK_WAIT_SECONDS:-90}"
+UUID_WAIT_SECONDS="${UUID_WAIT_SECONDS:-30}"
+FSTAB_OPTS="${FSTAB_OPTS:-defaults,noatime,nodiratime,nodelalloc}"
 
 read_marker() {
   local key="$1" default="${2:-}"
@@ -27,72 +24,220 @@ read_marker() {
   printf '%s' "${default}"
 }
 
-ROLE="${ROLE:-$(read_marker role)}"
-DEPLOY_USER="${DEPLOY_USER:-$(read_marker deploy_user)}"
-DATA_DISK_ENABLED="${DATA_DISK_ENABLED:-$(read_marker data_disk_enabled false)}"
-DATA_MOUNT="${DATA_MOUNT:-$(read_marker data_mount /ob-data)}"
-LOG_DISK_ENABLED="${LOG_DISK_ENABLED:-$(read_marker log_disk_enabled false)}"
-LOG_MOUNT="${LOG_MOUNT:-$(read_marker log_mount /ob-log)}"
-DATA_DIR="${DATA_DIR:-$(read_marker data_dir)}"
-REDO_DIR="${REDO_DIR:-$(read_marker redo_dir)}"
+is_block_dev() {
+  [[ -b "$1" ]]
+}
+
+device_fs_type() {
+  blkid -c /dev/null -s TYPE -o value "$1" 2>/dev/null || true
+}
+
+device_uuid() {
+  local uuid
+  uuid="$(blkid -c /dev/null -s UUID -o value "$1" 2>/dev/null || true)"
+  uuid="${uuid//$'\n'/}"
+  uuid="${uuid//$'\r'/}"
+  uuid="${uuid// /}"
+  printf '%s' "${uuid}"
+}
+
+udev_settle() {
+  udevadm settle --timeout=5 2>/dev/null || true
+}
+
+wait_for_uuid() {
+  local device="$1"
+  local uuid="" elapsed=0
+  udev_settle
+  while true; do
+    uuid="$(device_uuid "${device}")"
+    if [[ -n "${uuid}" ]]; then
+      printf '%s' "${uuid}"
+      return 0
+    fi
+    (( elapsed < UUID_WAIT_SECONDS )) || break
+    sleep 1
+    elapsed=$((elapsed + 1))
+    udev_settle
+  done
+  return 1
+}
+
+# Удаляет прежние записи точки монтирования (в том числе битые UUID=) и пишет UUID.
+rewrite_fstab_uuid() {
+  local mount_point="$1" uuid="$2"
+  local tmp
+  [[ -n "${uuid}" ]] || {
+    echo "ERROR: отказ записать пустой UUID для ${mount_point} в ${FSTAB_FILE}" >&2
+    return 1
+  }
+  tmp="$(mktemp)"
+  if [[ -f "${FSTAB_FILE}" ]]; then
+    awk -v mp="${mount_point}" '
+      /^[[:space:]]*#/ { print; next }
+      NF >= 2 && $2 == mp { next }
+      { print }
+    ' "${FSTAB_FILE}" > "${tmp}"
+  fi
+  printf 'UUID=%s %s ext4 %s 0 2\n' "${uuid}" "${mount_point}" "${FSTAB_OPTS}" >> "${tmp}"
+  cat "${tmp}" > "${FSTAB_FILE}"
+  rm -f "${tmp}"
+}
 
 find_yc_disk() {
   local device_name="$1"
   local candidate resolved
-  for candidate in \
-    "/dev/disk/by-id/virtio-${device_name}" \
-    /dev/disk/by-id/*-"${device_name}" \
-    /dev/disk/by-path/*-"${device_name}"; do
+  local -a candidates=()
+  local nullglob_was_on=0
+  shopt -q nullglob && nullglob_was_on=1
+  shopt -s nullglob
+  candidates=(
+    "/dev/disk/by-id/virtio-${device_name}"
+    /dev/disk/by-id/*-"${device_name}"
+    /dev/disk/by-path/*-"${device_name}"
+  )
+  if (( nullglob_was_on == 0 )); then
+    shopt -u nullglob
+  fi
+  for candidate in "${candidates[@]}"; do
     [[ -e "${candidate}" ]] || continue
     resolved="$(readlink -f "${candidate}")"
-    [[ -b "${resolved}" ]] || continue
+    is_block_dev "${resolved}" || continue
     printf '%s\n' "${resolved}"
     return 0
   done
   return 1
 }
 
-mount_device() {
-  local device="$1" mount_point="$2"
-  [[ -b "${device}" ]] || return 1
-  if mountpoint -q "${mount_point}"; then
+wait_for_yc_disk() {
+  local device_name="$1"
+  local device="" elapsed=0
+  udev_settle
+  while true; do
+    if device="$(find_yc_disk "${device_name}")"; then
+      printf '%s\n' "${device}"
+      return 0
+    fi
+    (( elapsed < DISK_WAIT_SECONDS )) || break
+    sleep 2
+    elapsed=$((elapsed + 2))
+    udev_settle
+  done
+  return 1
+}
+
+is_system_disk() {
+  local d="$1" resolved src
+  resolved="$(readlink -f "${d}" 2>/dev/null || printf '%s' "${d}")"
+  case "${resolved}" in
+    /dev/vda|/dev/vda[0-9]*|/dev/sda|/dev/sda[0-9]*|/dev/nvme0n1|/dev/nvme0n1p*)
+      return 0
+      ;;
+  esac
+  src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+  if [[ -n "${src}" ]]; then
+    src="$(readlink -f "${src}" 2>/dev/null || printf '%s' "${src}")"
+    [[ "${src}" == "${resolved}" ]] && return 0
+  fi
+  return 1
+}
+
+ensure_ext4() {
+  local device="$1"
+  local fstype
+  fstype="$(device_fs_type "${device}")"
+  if [[ "${fstype}" == "ext4" ]]; then
     return 0
   fi
-  if ! blkid "${device}" >/dev/null 2>&1; then
-    mkfs.ext4 -F "${device}" >/dev/null 2>&1
+  if [[ -n "${fstype}" ]]; then
+    echo "ERROR: ${device} содержит ${fstype}, не форматирую в ext4" >&2
+    return 1
   fi
-  mkdir -p "${mount_point}"
-  if ! grep -q "[[:space:]]${mount_point}[[:space:]]" /etc/fstab; then
-    local uuid
-    uuid="$(blkid -s UUID -o value "${device}")"
-    echo "UUID=${uuid} ${mount_point} ext4 defaults,noatime,nodiratime,nodelalloc 0 2" >> /etc/fstab
+  mkfs.ext4 -F -q "${device}" || {
+    echo "ERROR: mkfs.ext4 ${device} не удался" >&2
+    return 1
+  }
+  udev_settle
+}
+
+mount_device() {
+  local device="$1" mount_point="$2"
+  local uuid
+  is_block_dev "${device}" || return 1
+
+  if mountpoint -q "${mount_point}"; then
+    uuid="$(device_uuid "${device}")"
+    if [[ -n "${uuid}" ]]; then
+      rewrite_fstab_uuid "${mount_point}" "${uuid}" || true
+    fi
+    return 0
   fi
-  mount "${mount_point}" 2>/dev/null || mount -a
+
+  ensure_ext4 "${device}" || return 1
+  mkdir -p "${mount_point}" || return 1
+
+  uuid="$(wait_for_uuid "${device}")" || {
+    echo "ERROR: нет UUID у ${device} после подготовки ФС (не пишем UUID= в fstab)" >&2
+    return 1
+  }
+
+  rewrite_fstab_uuid "${mount_point}" "${uuid}" || return 1
+
+  # Монтируем по имени устройства: /dev/disk/by-uuid может появиться позже udev.
+  if mount "${device}" "${mount_point}" 2>/dev/null; then
+    mountpoint -q "${mount_point}" && return 0
+  fi
+  mount -U "${uuid}" "${mount_point}" 2>/dev/null || \
+    mount "${mount_point}" 2>/dev/null || \
+    mount -a 2>/dev/null || true
   mountpoint -q "${mount_point}"
+}
+
+dump_disk_debug() {
+  echo "ERROR: диагностика блочных устройств:" >&2
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT >&2 || true
+  echo "ERROR: /dev/disk/by-id:" >&2
+  ls -l /dev/disk/by-id/ >&2 || true
+  echo "ERROR: ${FSTAB_FILE}:" >&2
+  cat "${FSTAB_FILE}" >&2 || true
 }
 
 mount_role_disk() {
   local device_name="$1" mount_point="$2"
-  local device mounted=false
+  local device d mounted=false
   if mountpoint -q "${mount_point}"; then
     return 0
   fi
-  if device="$(find_yc_disk "${device_name}")"; then
-    mount_device "${device}" "${mount_point}" && mounted=true
+  if device="$(wait_for_yc_disk "${device_name}")"; then
+    echo "INFO: диск ${device_name} → ${device}" >&2
+    if mount_device "${device}" "${mount_point}"; then
+      mounted=true
+    fi
   fi
   if [[ "${mounted}" != "true" ]]; then
-    local d
-    for d in "/dev/disk/by-id/virtio-${device_name}" /dev/vd? /dev/sd? /dev/nvme*n*; do
-      [[ -b "${d}" ]] || continue
-      [[ "${d}" == /dev/vda || "${d}" == /dev/sda ]] && continue
+    local nullglob_was_on=0
+    shopt -q nullglob && nullglob_was_on=1
+    shopt -s nullglob
+    local -a fallback=("/dev/disk/by-id/virtio-${device_name}" /dev/vd? /dev/sd? /dev/nvme*n*)
+    if (( nullglob_was_on == 0 )); then
+      shopt -u nullglob
+    fi
+    for d in "${fallback[@]}"; do
+      is_block_dev "${d}" || continue
+      is_system_disk "${d}" && continue
       findmnt -rn -S "${d}" >/dev/null 2>&1 && continue
+      echo "INFO: fallback-монтирование ${d} → ${mount_point}" >&2
       if mount_device "${d}" "${mount_point}"; then
         mounted=true
         break
       fi
     done
   fi
-  [[ "${mounted}" == "true" ]]
+  if [[ "${mounted}" != "true" ]]; then
+    dump_disk_debug
+    return 1
+  fi
+  return 0
 }
 
 ensure_deploy_user() {
@@ -116,42 +261,69 @@ prepare_data_paths() {
   }
 }
 
-need_data="false"
-need_log="false"
-case "${ROLE}" in
-  observer)
-    [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
-    [[ "${LOG_DISK_ENABLED}" == "true" ]] && need_log="true"
-    ;;
-  monitor|monitoring)
-    [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
-    ;;
-  ocp)
-    [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
-    ;;
-esac
-
-ensure_deploy_user
-
-if [[ "${need_data}" == "true" ]]; then
-  mount_role_disk data "${DATA_MOUNT}" || {
-    echo "ERROR: не удалось смонтировать data-диск в ${DATA_MOUNT}" >&2
-    exit 1
+ensure_mkfs() {
+  command -v mkfs.ext4 >/dev/null 2>&1 || {
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update -qq
+      apt-get install -y -qq e2fsprogs
+    fi
   }
-fi
-if [[ "${need_log}" == "true" ]]; then
-  mount_role_disk log "${LOG_MOUNT}" || {
-    echo "ERROR: не удалось смонтировать log-диск в ${LOG_MOUNT}" >&2
-    exit 1
-  }
-fi
+}
 
-if [[ "${ROLE}" == "observer" || "${ROLE}" == "monitor" || "${ROLE}" == "monitoring" ]]; then
-  [[ "${need_data}" != "true" || -z "${DATA_DIR}" ]] || prepare_data_paths "${DATA_MOUNT}" "${DATA_DIR}" "data-диск"
-  [[ "${need_log}" != "true" || -z "${REDO_DIR}" ]] || prepare_data_paths "${LOG_MOUNT}" "${REDO_DIR}" "log-диск"
-fi
+mount_role_disks_main() {
+  local need_data="false" need_log="false"
 
-if [[ "${ROLE}" == "ocp" && "${need_data}" == "true" ]]; then
-  chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "${DATA_MOUNT}"
-  install -d -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" -m 0755 "${DATA_MOUNT}"
+  ensure_mkfs
+
+  # env из prepare-servers имеет приоритет над marker (cloud-init).
+  ROLE="${ROLE:-$(read_marker role)}"
+  DEPLOY_USER="${DEPLOY_USER:-$(read_marker deploy_user)}"
+  DATA_DISK_ENABLED="${DATA_DISK_ENABLED:-$(read_marker data_disk_enabled false)}"
+  DATA_MOUNT="${DATA_MOUNT:-$(read_marker data_mount /ob-data)}"
+  LOG_DISK_ENABLED="${LOG_DISK_ENABLED:-$(read_marker log_disk_enabled false)}"
+  LOG_MOUNT="${LOG_MOUNT:-$(read_marker log_mount /ob-log)}"
+  DATA_DIR="${DATA_DIR:-$(read_marker data_dir)}"
+  REDO_DIR="${REDO_DIR:-$(read_marker redo_dir)}"
+
+  case "${ROLE}" in
+    observer)
+      [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
+      [[ "${LOG_DISK_ENABLED}" == "true" ]] && need_log="true"
+      ;;
+    monitor|monitoring)
+      [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
+      ;;
+    ocp)
+      [[ "${DATA_DISK_ENABLED}" == "true" ]] && need_data="true"
+      ;;
+  esac
+
+  ensure_deploy_user
+
+  if [[ "${need_data}" == "true" ]]; then
+    mount_role_disk data "${DATA_MOUNT}" || {
+      echo "ERROR: не удалось смонтировать data-диск в ${DATA_MOUNT}" >&2
+      exit 1
+    }
+  fi
+  if [[ "${need_log}" == "true" ]]; then
+    mount_role_disk log "${LOG_MOUNT}" || {
+      echo "ERROR: не удалось смонтировать log-диск в ${LOG_MOUNT}" >&2
+      exit 1
+    }
+  fi
+
+  if [[ "${ROLE}" == "observer" || "${ROLE}" == "monitor" || "${ROLE}" == "monitoring" ]]; then
+    [[ "${need_data}" != "true" || -z "${DATA_DIR}" ]] || prepare_data_paths "${DATA_MOUNT}" "${DATA_DIR}" "data-диск"
+    [[ "${need_log}" != "true" || -z "${REDO_DIR}" ]] || prepare_data_paths "${LOG_MOUNT}" "${REDO_DIR}" "log-диск"
+  fi
+
+  if [[ "${ROLE}" == "ocp" && "${need_data}" == "true" ]]; then
+    chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "${DATA_MOUNT}"
+    install -d -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" -m 0755 "${DATA_MOUNT}"
+  fi
+}
+
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  mount_role_disks_main "$@"
 fi
