@@ -471,15 +471,34 @@ oceanbase bootstrap ok
 [ERROR] OBD-5000: alter user "root" IDENTIFIED BY %s execute failed
 ```
 
+Или, в более новых плагинах OBD, без пачки OBD-5000 на экране:
+
+```text
+Connect to observer 10.130.0.33:2881 ok
+oceanbase bootstrap ok
+obshell start ok
+obshell program health check ok
+obshell bootstrap -
+```
+
 Читается это не буквально:
 
 - `%s` — плейсхолдер параметра в шаблоне SQL; OBD печатает шаблон, а не подставленное значение (`EC_SQL_EXECUTE_FAILED` в `_errno.py`);
 - **`oceanbase bootstrap ok` — это надпись спиннера**, а не результат SQL. Сам `alter system bootstrap` выполняется с `exc_level='verbose'`, поэтому его ошибка видна только в `~/.obd/log/obd` / `obd display-trace`;
 - ошибки на `modify zone … set idc` и `alter user "root"` — это следствия: они идут по тому же соединению уже после неудачного bootstrap;
-- OBD не прерывается на первой ошибке (у `Cursor.execute` значение по умолчанию `raise_exception=False`, и `raise_cursor` его не переопределяет), а затем уходит в цикл ожидания `select * from oceanbase.__all_server` — отсюда «зависший» `obd cluster start`.
+- OBD не прерывается на первой ошибке (у `Cursor.execute` значение по умолчанию `raise_exception=False`, и `raise_cursor` его не переопределяет), а затем либо крутит `select * from oceanbase.__all_server`, либо стартует obshell и зависает на **`obshell bootstrap -`**. Плагин `obshell_bootstrap` опрашивает `/api/v1/info` на всех observer (до 200×3 с) и при identity `TAKE_OVER_MASTER` вызывает `wait_dag_succeed` **без таймаута**. На незабутстрапленном кластере DAG take-over не завершается — отсюда «зависший» `obd cluster start`.
 
-Из-за этого число OBD-5000 равно числу Zone: по строке на Zone — удобный индикатор реальной топологии кластера.
+Из-за этого число OBD-5000 равно числу Zone: по строке на Zone — удобный индикатор реальной топологии кластера. Если OBD-5000 нет на экране, смотрите unique zone в `generated/obd-cluster.yaml` и в `~/.obd/cluster/<deploy>/` — `obd cluster start` читает **зарегистрированный** конфиг, не yaml из `generated/`.
 
-Раскладка в этом репозитории (`scripts/lib/ob_zones.py`): ровно три Zone, observer распределяются по кругу — `1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`. Тем же правилом пользуются `scripts/05-scale-out.sh` и `scripts/06-recover-observer.sh`, поэтому расширение и замена узла попадают в правильную Zone. Число observer стоит держать кратным трём: `UNIT_NUM` тенанта одинаков для всех Zone, и «лишние» узлы в перекошенной Zone останутся без unit — генератор конфигурации предупреждает об этом.
+Раскладка в этом репозитории (`scripts/lib/ob_zones.py`): ровно три Zone, observer распределяются по кругу — `1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`. Тем же правилом пользуются `scripts/05-scale-out.sh` и `scripts/06-recover-observer.sh`, поэтому расширение и замена узла попадают в правильную Zone. Число observer стоит держать кратным трём: `UNIT_NUM` тенанта одинаков для всех Zone, и «лишние» узлы в перекошенной Zone останутся без unit — генератор конфигурации предупреждает об этом. `./scripts/deploy.sh deploy` заново генерирует yaml; `04-deploy-cluster.sh` отказывается стартовать, если уникальных zone больше семи.
 
 Кластер, уже развёрнутый со схемой «Zone на observer», починить правкой конфигурации нельзя: locality sys-тенанта фиксируется на bootstrap. Нужен `obd cluster destroy <deploy> -f` и повторный `deploy` (данных там всё равно нет — bootstrap не прошёл).
+
+Сбор признаков на управляющей машине:
+
+```bash
+./scripts/deploy.sh diagnose
+./scripts/diagnose-obd-start.sh e9d653a8-abc7-11f1-847c-d00d5a7271af
+# только локальные yaml/логи, без SSH:
+./scripts/diagnose-obd-start.sh --local
+```

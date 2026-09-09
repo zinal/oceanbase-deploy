@@ -324,6 +324,12 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                 obd_ob["global"]["proxyro_password"] = ocp["proxyro_password"]
         for sname, override in server_overrides.items():
             obd_ob[sname] = override
+        zone_err = ob_zones.too_many_zones_error(
+            [override["zone"] for override in server_overrides.values()],
+            "oceanbase-ce",
+        )
+        if zone_err:
+            raise ValueError(zone_err)
         result["oceanbase-ce"] = obd_ob
 
     if components.get("obproxy_ce", True):

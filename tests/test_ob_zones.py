@@ -13,7 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 from ob_zones import (  # noqa: E402
+    MAX_PAXOS_ZONES,
     ZONE_COUNT,
+    check_obd_yaml_path,
+    oceanbase_zones_from_obd,
+    too_many_zones_error,
+    unique_zones,
     uneven_zones_warning,
     zone_for_index,
     zone_names,
@@ -125,6 +130,70 @@ def test_cli_used_by_recover_script() -> None:
     assert 'ZONE="zone${INDEX}"' not in recover
 
 
+def _thirty_zone_obd() -> dict:
+    servers: dict = {}
+    for idx in range(1, 31):
+        servers[f"server{idx}"] = {"ip": f"10.0.0.{idx}", "zone": f"zone{idx}"}
+    return {
+        "oceanbase-ce": {
+            "servers": [{"name": f"server{i}", "ip": f"10.0.0.{i}"} for i in range(1, 31)],
+            **servers,
+        }
+    }
+
+
+def test_too_many_zones_detected_in_obd_yaml() -> None:
+    assert MAX_PAXOS_ZONES == 7
+    zones = oceanbase_zones_from_obd(_thirty_zone_obd())
+    assert len(unique_zones(zones)) == 30
+    err = too_many_zones_error(zones, "test.yaml")
+    assert err is not None
+    assert "30 уникальных zone" in err
+    assert "obshell bootstrap" in err
+    three = oceanbase_zones_from_obd(obd_config_for(30))
+    assert unique_zones(three) == ["zone1", "zone2", "zone3"]
+    assert too_many_zones_error(three, "ok.yaml") is None
+
+
+def test_check_obd_cli_rejects_thirty_zones() -> None:
+    import tempfile
+
+    import yaml
+
+    data = _thirty_zone_obd()
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "obd.yaml"
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "lib" / "ob_zones.py"), "check-obd", str(path), "--dump"],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 1, proc.stderr
+        assert "30 уникальных zone" in proc.stderr
+        assert check_obd_yaml_path(path) is not None
+        good = Path(td) / "good.yaml"
+        good.write_text(yaml.safe_dump(obd_config_for(30)), encoding="utf-8")
+        proc_ok = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "lib" / "ob_zones.py"), "check-obd", str(good), "--dump"],
+            capture_output=True,
+            text=True,
+        )
+        assert proc_ok.returncode == 0, proc_ok.stderr
+        assert "zone1=" in proc_ok.stdout
+
+
+def test_diagnose_script_help() -> None:
+    script = ROOT / "scripts" / "diagnose-obd-start.sh"
+    assert script.is_file()
+    out = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True, check=True)
+    assert "obshell bootstrap" in out.stdout
+    deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
+    assert "diagnose-obd-start.sh" in deploy
+    assert "03-generate-obd-config.py" in deploy_case
+
+
 def main() -> None:
     tests = [
         test_three_zones_round_robin,
@@ -134,6 +203,9 @@ def main() -> None:
         test_obd_config_small_cluster_uses_first_zones,
         test_scale_out_reuses_zone_of_replaced_node,
         test_cli_used_by_recover_script,
+        test_too_many_zones_detected_in_obd_yaml,
+        test_check_obd_cli_rejects_thirty_zones,
+        test_diagnose_script_help,
     ]
     for fn in tests:
         fn()
