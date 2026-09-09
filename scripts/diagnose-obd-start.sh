@@ -93,6 +93,7 @@ ROOT_PASSWORD="$(yaml_get ocp.root_password)"
 ZONE_PROBLEM=0
 BOOTSTRAP_HINTS=0
 OBSHELL_HINTS=0
+IDENTITIES_FILE=""
 
 dump_zones() {
   local path="$1"
@@ -138,11 +139,17 @@ else
     echo "Файлов логов нет в ${OBD_LOG_DIR}"
   else
     echo "Файлы: ${log_files[*]}"
-    if grep -R -E -i 'OBD-5000|SIZE_OVERFLOW|alter system bootstrap|take over|obshell bootstrap' "${log_files[@]}" 2>/dev/null \
-      | tail -n 80; then
+    echo "--- bootstrap / SIZE_OVERFLOW / obshell (без цикла __all_server) ---"
+    if grep -R -E -i 'SIZE_OVERFLOW|alter system bootstrap|obshell bootstrap|obshell take over|Cluster init failed' \
+      "${log_files[@]}" 2>/dev/null | grep -v '__all_server execute failed' | tail -n 40; then
       BOOTSTRAP_HINTS=1
     else
-      echo "Ключевых строк bootstrap/OBD-5000/take over не найдено (нужен display-trace)."
+      echo "Ключевых строк bootstrap/obshell не найдено (нужен display-trace)."
+    fi
+    if [[ -z "${TRACE_ID}" ]]; then
+      # Trace ID из вывода OBD часто принадлежит `cluster deploy`, а не start.
+      TRACE_ID="$(grep -h -E 'alter system bootstrap|obshell bootstrap' "${HOME}/.obd/log/obd" 2>/dev/null \
+        | tail -1 | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)"
     fi
     if [[ -z "${TRACE_ID}" ]]; then
       TRACE_ID="$(grep -R -h -E 'Trace ID:[[:space:]]*[0-9a-f-]{8,}' "${log_files[@]}" 2>/dev/null \
@@ -194,19 +201,31 @@ run_sql() {
   return 1
 }
 
+obshell_identity_from_json() {
+  python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print("PARSE_ERROR")
+    raise SystemExit(0)
+data=d.get("data") or {}
+print("%s\t%s" % (data.get("identity") or "?", data.get("ip") or "?"))'
+}
+
 check_obshell_http() {
   local ip="$1"
-  local url out
+  local url out ident
   for url in \
     "http://${ip}:${OBSHELL_PORT}/api/v1/info" \
     "https://${ip}:${OBSHELL_PORT}/api/v1/info"; do
     if out="$(curl -skf --max-time 5 "${url}" 2>/dev/null)"; then
-      printf '%s -> %s\n' "${url}" "$(printf '%s' "${out}" | tr '\n' ' ' | head -c 400)"
+      ident="$(printf '%s' "${out}" | obshell_identity_from_json)"
+      printf '%s\t%s\n' "${ip}" "${ident}"
       OBSHELL_HINTS=1
       return 0
     fi
   done
-  echo "${ip}:${OBSHELL_PORT} — HTTP info недоступен с управляющей машины (curl -skf --max-time 5)"
+  echo "${ip}	UNREACHABLE"
   return 1
 }
 
@@ -222,8 +241,12 @@ if [[ "${LOCAL_ONLY}" != "true" ]]; then
   else
     echo "Подключение: ${OBSERVER_1_IP}:${MYSQL_PORT} (пустой пароль, затем ocp.root_password)"
     if run_sql "${OBSERVER_1_IP}" "select zone, count(*) from oceanbase.__all_server group by zone"; then
-      echo "--- __all_zone ---"
-      run_sql "${OBSERVER_1_IP}" "select zone from oceanbase.__all_zone" || true
+      echo "--- distinct zone ---"
+      run_sql "${OBSERVER_1_IP}" "select distinct zone from oceanbase.__all_zone" || true
+      echo "--- databases (ocs нужна obshell take-over) ---"
+      run_sql "${OBSERVER_1_IP}" "show databases" || true
+      echo "--- __all_server status ---"
+      run_sql "${OBSERVER_1_IP}" "select status, count(*) from oceanbase.__all_server group by status" || true
       echo "--- __all_server (ip, zone, status) ---"
       run_sql "${OBSERVER_1_IP}" "select svr_ip, zone, status from oceanbase.__all_server" || true
     else
@@ -231,6 +254,26 @@ if [[ "${LOCAL_ONLY}" != "true" ]]; then
       echo "Если спиннер уже показал «oceanbase bootstrap ok» / «Connect to observer … ok», но SQL мёртв —"
       echo "bootstrap, скорее всего, не завершился (см. observer.log: SIZE_OVERFLOW / execute_bootstrap)."
       BOOTSTRAP_HINTS=1
+    fi
+  fi
+
+  section "obshell identity (все observer, HTTP :${OBSHELL_PORT})"
+  IDENTITIES_FILE="$(mktemp)"
+  if [[ -z "${OBSERVER_COUNT:-}" || "${OBSERVER_COUNT}" -lt 1 ]]; then
+    echo "Нет OBSERVER_COUNT в inventory — пропуск опроса identity."
+  else
+    echo "ip	identity	reported_ip"
+    i=""
+    ip=""
+    for (( i=1; i<=OBSERVER_COUNT; i++ )); do
+      ip_var="OBSERVER_${i}_IP"
+      ip="${!ip_var:-}"
+      [[ -n "${ip}" ]] || continue
+      check_obshell_http "${ip}" | tee -a "${IDENTITIES_FILE}" || true
+    done
+    echo "--- сводка identity ---"
+    if [[ -s "${IDENTITIES_FILE}" ]]; then
+      cut -f2 "${IDENTITIES_FILE}" | sort | uniq -c | sort -nr
     fi
   fi
 
@@ -271,7 +314,7 @@ done
 echo "obshell.log (take over / error):"
 for f in '${HOME_PATH}/log_obshell/obshell.log' '${HOME_PATH}/log/obshell.log'; do
   [[ -f "\$f" ]] || continue
-  grep -E -i 'take.?over|bootstrap|error|timeout|failed' "\$f" 2>/dev/null | tail -n 12
+  grep -E -i 'take.?over|create take over dag|Unknown database|not OCS|bootstrap|error|timeout|failed' "\$f" 2>/dev/null | tail -n 20
 done
 REMOTE
         :
@@ -302,24 +345,61 @@ OBD идёт дальше и зависает на ожидании сервер
 Правки generated/obd-cluster.yaml недостаточно для уже зарегистрированного кластера:
 obd cluster start читает ~/.obd/cluster/${CLUSTER_NAME}/.
 EOF
+  rm -f "${IDENTITIES_FILE:-}"
   exit 2
 fi
 
-cat <<EOF
-Если unique zone ≤ 7, зависание «obshell bootstrap -» — это ожидание take-over
-агентов obshell (плагин OBD: опрос /api/v1/info до 200×3с, затем wait_dag_succeed
-без таймаута). На 30 узлах это может идти много минут.
+FOLLOWER_ONLY=0
+if [[ -n "${IDENTITIES_FILE:-}" && -s "${IDENTITIES_FILE}" ]]; then
+  if grep -q $'TAKE OVER FOLLOWER' "${IDENTITIES_FILE}" \
+    && ! grep -qE $'TAKE OVER MASTER|CLUSTER AGENT' "${IDENTITIES_FILE}"; then
+    FOLLOWER_ONLY=1
+  fi
+fi
 
-Проверьте по сбору выше:
-  - SQL __all_server: все ли observer ACTIVE, сколько zone в __all_zone
-  - identity obshell: TAKE_OVER_MASTER / CLUSTER_AGENT vs SINGLE
-  - obshell.log: застрявший DAG take-over
-  - chrony: рассинхрон часов ломает агенты
-  - с jump host curl http://<ip>:${OBSHELL_PORT}/api/v1/info (health check OBD
-    часто идёт по SSH локально, а bootstrap — HTTP с управляющей машины)
+if [[ "${FOLLOWER_ONLY}" -eq 1 ]]; then
+  cat <<EOF
+Причина: OceanBase bootstrap УЖЕ прошёл (observer ACTIVE, zone ≤ 7), а obshell
+застрял в take-over. Плагин OBD ждёт identity TAKE OVER MASTER или CLUSTER AGENT
+на всех узлах; TAKE OVER FOLLOWER он игнорирует и крутит опрос (на 30 узлах это
+десятки минут, затем timeout, либо hang на wait_dag_succeed).
+
+В obshell.log типично: Unknown database 'ocs' / The current database is not OCS,
+lock+unlock take-over без «create take over dag». Все агенты — FOLLOWER, master нет.
+
+DESTROY НЕ НУЖЕН — SQL-кластер живой.
+
+Что делать:
+  1. Ctrl+C висящий obd cluster start (observer не трогать)
+  2. На всех observer остановить только obshell:
+       kill \$(cat ${HOME_PATH}/run/obshell.pid)
+  3. На observer-1 (один узел) запустить obshell с паролем root@sys:
+       export OB_ROOT_PASSWORD='<ocp.root_password>'
+       cd ${HOME_PATH} && ./bin/obshell admin start --ip <OBSERVER_1_IP> --port ${OBSHELL_PORT}
+     Дождаться identity CLUSTER AGENT или TAKE OVER MASTER:
+       curl -sf http://<OBSERVER_1_IP>:${OBSHELL_PORT}/api/v1/info
+  4. Запустить obshell на остальных узлах тем же admin start
+  5. obd cluster start ${CLUSTER_NAME} -c obproxy-ce,obagent,ocp-server-ce
+     (oceanbase-ce уже running; start доберёт остальные компоненты)
+
+Проверьте: SHOW DATABASES — должна появиться ocs после успешного take-over master.
+EOF
+  rm -f "${IDENTITIES_FILE:-}"
+  exit 3
+fi
+
+cat <<EOF
+Если unique zone ≤ 7 и SQL к sys работает — observer-кластер жив, destroy не нужен.
+Зависание «obshell bootstrap -» — ожидание take-over (опрос /api/v1/info до 200×3с
+плюс wait_dag_succeed без таймаута). На 30 узлах один круг опроса ~ десятки секунд.
+
+Сводка identity выше: нужен хотя бы один TAKE OVER MASTER или все CLUSTER AGENT.
+FOLLOWER без MASTER — агенты не выберут лидера сами, см. остановку/старт obshell
+с одного узла.
 
 Если SQL к sys не работает после «Connect to observer ok» — bootstrap не прошёл,
-смотрите observer.log и display-trace, не obshell. Кластер без успешного
-bootstrap чинится только destroy -f и повторным deploy.
+смотрите observer.log и display-trace. Кластер без успешного bootstrap чинится
+только destroy -f и повторным deploy.
 EOF
+rm -f "${IDENTITIES_FILE:-}"
 exit 0
