@@ -416,10 +416,12 @@ http://<observer_ip>:2886
 
 ```bash
 ./scripts/deploy.sh ocp-register
-# то же самое:
-obd cluster check4ocp ob-yc-prod
+# то же самое (нужен -V ≥ 4.2.0, иначе OBD требует OS-user admin):
+obd cluster check4ocp ob-yc-prod -V 4.4.2
 obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp.admin_password>'
 ```
+
+`[ERROR] The current user must be the admin user` на `check4ocp` — ложная сработка OBD без `-V` (дефолт 3.1.1). SSH-пользователь остаётся `obadmin`; не делайте `edit-config user.username=admin`. См. [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Прогресс — в OCP «Задачи». Имя кластера в UI — `oceanbase.cluster_name` (`obcluster`), не hostname ocp-1.
 

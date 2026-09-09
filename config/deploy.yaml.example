@@ -148,7 +148,9 @@ vm_profiles:
 # Документация: docs/ocp-deployment.md
 ocp:
   enabled: false
-  version: ""                      # опционально: версия ocp-server-ce
+  version: ""                      # опционально: версия ocp-server-ce (пустая = latest из зеркала OBD)
+                                 # check4ocp без явной версии считает OCP 3.1.1 и требует OS-user admin;
+                                 # скрипт ocp-register сам передаёт -V (config / установленная / 4.4.2)
   port: 8080
   admin_username: admin
   admin_password: ChangeMe1!       # OBD-1025: 8–32 символа, ≥3 класса (цифры/a-z/A-Z/спец.)

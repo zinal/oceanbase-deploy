@@ -72,6 +72,7 @@ fi
 
 bash -n "${ROOT}/scripts/04-deploy-cluster.sh"
 bash -n "${ROOT}/scripts/05-scale-out.sh"
+bash -n "${ROOT}/scripts/09-ocp-register.sh"
 bash -n "${ROOT}/scripts/lib/common.sh"
 bash -n "${ROOT}/scripts/lib/recover-common.sh"
 echo "OK test-obd-yaml-first-ip"

@@ -18,7 +18,8 @@ usage() {
 Использование: ./scripts/09-ocp-register.sh
 
 Проверяет тенанты ocp_meta / ocp_monitor на observer-кластере и регистрирует
-его в OCP: obd cluster check4ocp + obd cluster export-to-ocp.
+его в OCP: obd cluster check4ocp -V <ocp.version|установленная> + export-to-ocp.
+Без -V OBD считает OCP 3.1.1 и ошибочно требует OS-пользователя admin.
 
 OCP-ВМ (ocp-server-ce) не содержит oceanbase-ce. Пустой список кластеров в UI
 после start ocp-server-ce — нормально, пока не выполнен export-to-ocp.
@@ -109,13 +110,35 @@ else
   warn "SQL к ${OBSERVER_1_IP}:${MYSQL_PORT} не прошёл — проверьте observer и ocp.root_password."
 fi
 
-OCP_VERSION="$(yaml_get ocp.version)"
-info "obd cluster check4ocp ${CLUSTER_NAME}..."
-if [[ -n "${OCP_VERSION}" && "${OCP_VERSION}" != "null" ]]; then
-  obd cluster check4ocp "${CLUSTER_NAME}" -V "${OCP_VERSION}"
-else
-  obd cluster check4ocp "${CLUSTER_NAME}"
+DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
+[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER="$(yaml_get yandex_cloud.ssh_user)"
+[[ -z "${DEPLOY_USER}" || "${DEPLOY_USER}" == "null" ]] && DEPLOY_USER=obadmin
+OCP_VERSION="$(resolve_ocp_check_version "${CLUSTER_NAME}")"
+info "obd cluster check4ocp ${CLUSTER_NAME} -V ${OCP_VERSION}"
+info "user.username=${DEPLOY_USER} — OS/SSH, не admin консоли OCP. Для OCP ≥ 4.2.0 это нормально; не меняйте его на admin."
+
+check_log="$(mktemp)"
+check_rc=0
+set +e
+set +o pipefail
+obd cluster check4ocp "${CLUSTER_NAME}" -V "${OCP_VERSION}" 2>&1 | tee "${check_log}"
+check_rc="${PIPESTATUS[0]}"
+set -e
+set -o pipefail
+if [[ "${check_rc}" -ne 0 ]]; then
+  if grep -q "oceanbase-ce Check passed" "${check_log}"; then
+    warn "check4ocp вернул ${check_rc}, но oceanbase-ce Check passed — продолжаем export-to-ocp."
+  elif grep -q "The current user must be the admin user" "${check_log}"; then
+    warn "check4ocp требует user.username=admin только для OCP < 4.2.0 (OBD без -V берёт 3.1.1)."
+    warn "Не выполняйте edit-config user.username=admin — сломается SSH (${DEPLOY_USER}). Передано -V ${OCP_VERSION}."
+    warn "Продолжаем export-to-ocp."
+  else
+    cat "${check_log}" >&2 || true
+    rm -f "${check_log}"
+    die "obd cluster check4ocp ${CLUSTER_NAME} -V ${OCP_VERSION} не прошёл"
+  fi
 fi
+rm -f "${check_log}"
 
 info "obd cluster export-to-ocp ${CLUSTER_NAME} → ${OCP_URL} (user ${OCP_USER})"
 obd cluster export-to-ocp "${CLUSTER_NAME}" \

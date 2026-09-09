@@ -211,6 +211,9 @@ def test_ocp_register_script_help() -> None:
     out = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True, check=True)
     assert "export-to-ocp" in out.stdout
     assert "ocp-server-ce" in out.stdout
+    assert "-V" in out.stdout
+    text = script.read_text(encoding="utf-8")
+    assert 'check4ocp "${CLUSTER_NAME}" -V "${OCP_VERSION}"' in text
 
 
 def test_dump_obshell_dag_maps_numeric_state() -> None:
