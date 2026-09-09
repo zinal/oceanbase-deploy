@@ -232,6 +232,7 @@ def test_prepare_script_has_setcap() -> None:
     assert "/usr/bin/clockdiff" in text
     assert "/usr/lib/oceanbase/clockdiff.real" in text
     assert 'exec "$REAL" -o "$@"' in text
+    assert "-ef" in text
     register = (ROOT / "scripts" / "09-ocp-register.sh").read_text(encoding="utf-8")
     assert "ocp_clockdiff.py" in register
     assert "--clockdiff-only" in register
