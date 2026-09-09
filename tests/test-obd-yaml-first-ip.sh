@@ -72,7 +72,10 @@ fi
 
 bash -n "${ROOT}/scripts/04-deploy-cluster.sh"
 bash -n "${ROOT}/scripts/05-scale-out.sh"
+bash -n "${ROOT}/scripts/06-recover-observer.sh"
 bash -n "${ROOT}/scripts/09-ocp-register.sh"
 bash -n "${ROOT}/scripts/lib/common.sh"
 bash -n "${ROOT}/scripts/lib/recover-common.sh"
+grep -q "scale_out_observer" "${ROOT}/scripts/04-deploy-cluster.sh"
+grep -q "scale_out_observer" "${ROOT}/scripts/lib/common.sh"
 echo "OK test-obd-yaml-first-ip"

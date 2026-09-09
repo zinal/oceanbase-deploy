@@ -159,6 +159,29 @@ def server_config(component: dict[str, Any], entry: Any) -> dict[str, Any]:
     return config
 
 
+def observer_scale_out_spec(cfg: dict[str, Any]) -> dict[str, Any]:
+    """First observer in a single-node scale-out YAML: ip, ports, zone."""
+    key = oceanbase_component_key(cfg)
+    component = cfg[key]
+    servers = component_servers(component)
+    if len(servers) != 1:
+        raise ValueError(
+            f"observer scale-out YAML must contain exactly one server, got {len(servers)}"
+        )
+    entry = servers[0]
+    settings = server_config(component, entry)
+    zone = str(settings.get("zone") or "")
+    if not zone:
+        raise ValueError(f"scale-out observer {server_name(entry) or server_ip(entry)} has no zone")
+    return {
+        "ip": server_ip(entry),
+        "rpc_port": int(settings.get("rpc_port", 2882)),
+        "mysql_port": int(settings.get("mysql_port", 2881)),
+        "zone": zone,
+        "rootservice_list": str(settings.get("rootservice_list") or ""),
+    }
+
+
 def rootservice_list(
     desired_component: dict[str, Any],
     registered_ips: set[str],
@@ -321,6 +344,13 @@ def cmd_scale_out(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_spec(args: argparse.Namespace) -> None:
+    spec = observer_scale_out_spec(load_yaml(args.input))
+    print(
+        f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -339,6 +369,10 @@ def build_parser() -> argparse.ArgumentParser:
     scale_out.add_argument("--output-dir", type=Path, required=True)
     scale_out.add_argument("--manifest", type=Path, required=True)
     scale_out.set_defaults(func=cmd_scale_out)
+
+    spec = sub.add_parser("spec", help="print ip rpc_port mysql_port zone from a one-node YAML")
+    spec.add_argument("--input", type=Path, required=True)
+    spec.set_defaults(func=cmd_spec)
     return parser
 
 
