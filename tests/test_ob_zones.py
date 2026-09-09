@@ -194,6 +194,9 @@ def test_diagnose_script_help() -> None:
     assert "TAKE OVER MASTER" in text
     assert "Не убивайте obshell на всех" in text
     assert "dump_obshell_dag" in text
+    assert "obshell_ocs.py" in text
+    assert "Request.Header.NotFound" in text
+    assert "TAKE OVER FOLLOWER', instead of 'CLUSTER AGENT'" in text
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
     assert "diagnose-obd-start.sh" in deploy
@@ -225,6 +228,17 @@ def test_dump_obshell_dag_maps_numeric_state() -> None:
     assert "node n1  state=SUCCEED" in proc.stdout
 
 
+def test_obshell_ocs_header() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "tests" / "test_obshell_ocs.py")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK: 2 tests" in proc.stdout
+
+
 def main() -> None:
     tests = [
         test_three_zones_round_robin,
@@ -238,6 +252,7 @@ def main() -> None:
         test_check_obd_cli_rejects_thirty_zones,
         test_diagnose_script_help,
         test_dump_obshell_dag_maps_numeric_state,
+        test_obshell_ocs_header,
     ]
     for fn in tests:
         fn()
