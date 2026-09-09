@@ -28,6 +28,31 @@ if obd_yaml_first_ip "${tmp}/missing.yaml" >/dev/null 2>&1; then
   exit 1
 fi
 
+cat >"${tmp}/registered.yaml" <<'YAML'
+oceanbase-ce:
+  servers:
+    - name: server1
+      ip: 10.0.0.1
+obagent:
+  servers:
+    - name: server4
+      ip: 10.130.0.15
+    - 10.0.0.4
+YAML
+got="$(obd_yaml_component_ips "${tmp}/registered.yaml" obagent | tr '\n' ' ')"
+[[ "${got}" == "10.130.0.15 10.0.0.4 " ]] || {
+  echo "FAIL component ips: got '${got}'" >&2
+  exit 1
+}
+[[ -z "$(obd_yaml_component_ips "${tmp}/named.yaml" oceanbase-ce)" ]]
+
+CONFIG_FILE="${tmp}/deploy.yaml"
+cat >"${CONFIG_FILE}" <<'YAML'
+oceanbase:
+  deploy_user: obadmin
+YAML
+[[ "$(obagent_home_path)" == "/home/obadmin/obagent" ]]
+
 bash -n "${ROOT}/scripts/04-deploy-cluster.sh"
 bash -n "${ROOT}/scripts/05-scale-out.sh"
 bash -n "${ROOT}/scripts/lib/common.sh"
