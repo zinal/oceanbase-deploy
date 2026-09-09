@@ -212,6 +212,10 @@ OceanBase Cloud Platform (OCP):
   Пустой список кластеров в UI: ./scripts/deploy.sh ocp-register
 
 EOF
+  info "clockdiff wrapper на OCP-ВМ (до takeover Pre check for create host)..."
+  if ! bash "${LIB_DIR}/09-ocp-register.sh" --clockdiff-only; then
+    warn "ocp-clockdiff не удался — takeover может упасть на ICMP TIMESTAMP"
+  fi
   info "Регистрация кластера в OCP (export-to-ocp)..."
   if ! bash "${LIB_DIR}/09-ocp-register.sh"; then
     warn "export-to-ocp не удался. Повторите: ./scripts/deploy.sh ocp-register"

@@ -238,6 +238,12 @@ def test_prepare_script_has_setcap() -> None:
     assert "exit 0" in register
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "ocp-clockdiff" in deploy
+    deploy_case = deploy.split("\n  deploy)")[1].split("\n  tenant)")[0]
+    assert "run_ocp_clockdiff_if_enabled" in deploy_case
+    all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]
+    assert "run_ocp_clockdiff_if_enabled" in all_case
+    cluster = (ROOT / "scripts" / "04-deploy-cluster.sh").read_text(encoding="utf-8")
+    assert "--clockdiff-only" in cluster
 
 
 def main() -> None:

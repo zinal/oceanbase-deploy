@@ -36,6 +36,26 @@ run_python_step() {
   run_cmd python3 "${ROOT}/scripts/${script}" "$@"
 }
 
+# Wrapper clockdiff -o на OCP-ВМ до export-to-ocp (иначе Pre check = ICMP TIMESTAMP exit 1).
+run_ocp_clockdiff_if_enabled() {
+  if [[ "$(yaml_get ocp.enabled)" != "true" || "$(yaml_get vm_profiles.ocp.enabled)" != "true" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${GENERATED_DIR}/inventory.env" ]]; then
+    warn "нет ${GENERATED_DIR}/inventory.env — пропуск ocp-clockdiff"
+    return 0
+  fi
+  load_inventory
+  if [[ "${OCP_COUNT:-0}" -lt 1 ]]; then
+    warn "нет OCP_1_IP — пропуск ocp-clockdiff"
+    return 0
+  fi
+  info "=== 09-ocp-register.sh --clockdiff-only ==="
+  if ! run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" --clockdiff-only; then
+    warn "ocp-clockdiff не удался — takeover может упасть на Pre check for create host"
+  fi
+}
+
 case "${STEP}" in
   check)
     run_step 00-check-prerequisites.sh
@@ -54,6 +74,7 @@ case "${STEP}" in
     run_step 02-prepare-servers.sh
     # Перегенерация yaml: иначе start подхватит старый «zone на observer».
     run_python_step 03-generate-obd-config.py
+    run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
     ;;
   tenant)
@@ -85,6 +106,7 @@ case "${STEP}" in
     run_step 01-provision-vms.sh create
     run_step 02-prepare-servers.sh
     run_python_step 03-generate-obd-config.py
+    run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
     ;;
   destroy)
@@ -99,13 +121,13 @@ case "${STEP}" in
   provision  — создание ВМ в Yandex Cloud
   prepare    — подготовка серверов (диски, sysctl, chrony)
   config     — генерация obd-cluster.yaml
-  deploy     — подготовка серверов + развёртывание через OBD
+  deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
   join-observer — leftover observer / ERROR 4179: wipe одного IP и ADD SERVER
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   ocp-register — зарегистрировать oceanbase-ce в UI OCP (export-to-ocp)
-  ocp-clockdiff — CAP_NET_RAW для clockdiff на OCP-ВМ + параметр clock-diff.mode=1
+  ocp-clockdiff — wrapper clockdiff -o на OCP-ВМ (входит в deploy/all при OCP)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
   all        — полный цикл (по умолчанию)
