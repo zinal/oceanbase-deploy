@@ -50,8 +50,25 @@ CONFIG_FILE="${tmp}/deploy.yaml"
 cat >"${CONFIG_FILE}" <<'YAML'
 oceanbase:
   deploy_user: obadmin
+  home_path: /home/obadmin/observer
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
 YAML
 [[ "$(obagent_home_path)" == "/home/obadmin/obagent" ]]
+[[ "$(observer_home_path)" == "/home/obadmin/observer" ]]
+
+OBSERVER_1_IP=10.0.0.1
+OBSERVER_2_IP=10.0.0.2
+OBSERVER_3_IP=10.0.0.3
+observer_is_seed_ip 10.0.0.2
+if observer_is_seed_ip 10.130.0.8; then
+  echo "FAIL: scale-out IP treated as seed" >&2
+  exit 1
+fi
+if (reset_observer_for_scale_out 10.0.0.1); then
+  echo "FAIL: seed observer wipe was allowed" >&2
+  exit 1
+fi
 
 bash -n "${ROOT}/scripts/04-deploy-cluster.sh"
 bash -n "${ROOT}/scripts/05-scale-out.sh"

@@ -160,7 +160,9 @@ while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
   [[ -n "${batch_label}" ]] || continue
   info "Пакетный scale-out ${batch_label}..."
   if [[ "${observer_yaml}" != "-" ]]; then
-    info "Добавление observer из ${observer_yaml}"
+    observer_ip="$(obd_yaml_first_ip "${observer_yaml}")"
+    info "Очистка ${observer_ip} и добавление observer из ${observer_yaml}"
+    reset_observer_for_scale_out "${observer_ip}"
     run_obd cluster scale_out "${CLUSTER_NAME}" -c "${observer_yaml}"
   fi
   if [[ "${obagent_yaml}" != "-" ]]; then
