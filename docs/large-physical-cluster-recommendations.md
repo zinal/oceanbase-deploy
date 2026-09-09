@@ -520,6 +520,8 @@ python3 scripts/lib/obshell_ocs.py dag --host 10.130.0.44 --port 2886 \
 
 Не убивать obshell сразу на всех узлах: master уже выбран, массовый restart собьёт DAG. Если DAG `SUCCEED` (или identity стал `CLUSTER AGENT`) — `obd cluster start <deploy> -c obproxy-ce,obagent,ocp-server-ce`. Если DAG `FAILED` или часами `RUNNING` без прогресса — перезапустить **только** obshell master-узла.
 
+Dashboard `:2886` на FOLLOWER отвечает `'<ip>:2886' is 'TAKE OVER FOLLOWER', instead of 'CLUSTER AGENT', does not support this operation` — это отказ UI, не сбой observer. Кластерные операции UI делает только `CLUSTER AGENT`. Пока take-over идёт, открывайте `http://<MASTER_IP>:2886/` и смотрите лог/DAG на master, а не кнопки на случайном follower (`10.130.0.13` в примере — FOLLOWER).
+
 OBD-плагин `obshell_bootstrap` засчитывает только `TAKE OVER MASTER` (далее `wait_dag_succeed`) и `CLUSTER AGENT`. `TAKE OVER FOLLOWER` он игнорирует.
 
 Сбор признаков:

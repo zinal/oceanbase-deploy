@@ -524,6 +524,12 @@ take-over master уже выбран, массовый restart собьёт DAG.
 
 FOLLOWER на остальных узлах при живом MASTER — норма. Их lock/unlock без
 «create take over dag» в раннем логе не значит, что master тоже застрял.
+
+Dashboard на :2886 у FOLLOWER пишет
+  '<ip>:2886' is 'TAKE OVER FOLLOWER', instead of 'CLUSTER AGENT', does not support this operation
+Это отказ UI, не поломка observer. Не нажимать операции на случайном узле.
+Откройте http://<MASTER_IP>:${OBSHELL_PORT}/ — часть кнопок тоже молчит, пока identity
+не станет CLUSTER AGENT (после DAG take-over).
 EOF
   cleanup_tmp
   exit 4

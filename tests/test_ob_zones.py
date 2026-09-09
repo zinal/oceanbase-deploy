@@ -196,6 +196,7 @@ def test_diagnose_script_help() -> None:
     assert "dump_obshell_dag" in text
     assert "obshell_ocs.py" in text
     assert "Request.Header.NotFound" in text
+    assert "TAKE OVER FOLLOWER', instead of 'CLUSTER AGENT'" in text
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
     assert "diagnose-obd-start.sh" in deploy
