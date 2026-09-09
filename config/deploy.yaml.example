@@ -51,6 +51,9 @@ vm_defaults:
 vm_profiles:
   # OceanBase observer + obagent (основная нагрузка)
   observer:
+    # Все ВМ создаются и подготавливаются сразу. При count > 3 OBD сначала
+    # запускает 3 seed observer (по одному на zone), затем добавляет остальные
+    # одноузловыми scale_out в раундах по 3. Для равных zone count должен быть кратным 3.
     count: 3
     platform: standard-v3
     cores: 8                       # мин. 4 (OceanBase production)

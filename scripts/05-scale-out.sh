@@ -68,10 +68,41 @@ sed -i "s/^OBSERVER_COUNT=.*/OBSERVER_COUNT=${new_total}/" "${GENERATED_DIR}/inv
 wait_for_instances_ssh "${new_hosts[@]}"
 bash "${LIB_DIR}/02-prepare-servers.sh" "${new_hosts[@]}"
 
-python3 "${LIB_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/scale-out.yaml"
+FULL_OBD_CONFIG="${GENERATED_DIR}/obd-cluster.yaml"
+PLAN_DIR="${GENERATED_DIR}/manual-scale-out"
+PLAN_MANIFEST="${PLAN_DIR}/manifest.txt"
+python3 "${LIB_DIR}/03-generate-obd-config.py" --output "${FULL_OBD_CONFIG}"
 
-info "Масштабирование через OBD scale_out..."
-obd cluster scale_out "${deploy_name}" -c "${GENERATED_DIR}/scale-out.yaml"
+registered_config=""
+for candidate in \
+  "${HOME}/.obd/cluster/${deploy_name}/config.yaml" \
+  "${HOME}/.obd/cluster/${deploy_name}/config.yml" \
+  "${HOME}/.obd/cluster/${deploy_name}/inner_config.yaml" \
+  "${HOME}/.obd/cluster/${deploy_name}/inner_config.yml"; do
+  if [[ -f "${candidate}" ]]; then
+    registered_config="${candidate}"
+    break
+  fi
+done
+[[ -n "${registered_config}" ]] || die "Кластер ${deploy_name} не зарегистрирован в OBD"
+
+python3 "${LIB_DIR}/lib/ob_deploy_plan.py" scale-out \
+  --input "${FULL_OBD_CONFIG}" \
+  --registered-config "${registered_config}" \
+  --output-dir "${PLAN_DIR}" \
+  --manifest "${PLAN_MANIFEST}"
+
+while IFS='|' read -r batch_label observer_yaml obagent_yaml; do
+  [[ -n "${batch_label}" ]] || continue
+  info "Масштабирование через OBD, пакет ${batch_label}..."
+  if [[ "${observer_yaml}" != "-" ]]; then
+    obd cluster scale_out "${deploy_name}" -c "${observer_yaml}"
+  fi
+  if [[ "${obagent_yaml}" != "-" ]]; then
+    obd cluster scale_out "${deploy_name}" -c "${obagent_yaml}"
+  fi
+done < "${PLAN_MANIFEST}"
+
 obd cluster display "${deploy_name}"
 
 info "Добавлено ${ADD_COUNT} observer-узлов. Всего: ${new_total}"
