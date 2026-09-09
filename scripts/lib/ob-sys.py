@@ -111,6 +111,46 @@ def discover_root_password(cfg: dict[str, Any], deploy_name: str) -> str:
     return ""
 
 
+def discover_root_passwords(cfg: dict[str, Any], deploy_name: str) -> list[str]:
+    """Предпочитаемый пароль, затем пустой (bootstrap / OBD yaml без root_password)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in (discover_root_password(cfg, deploy_name), ""):
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def connect_sys_password(
+    endpoint: dict[str, Any],
+    cfg: dict[str, Any],
+    deploy_name: str,
+) -> str:
+    """Подобрать пароль/пользователя для SQL к observer. Мутирует endpoint['user']."""
+    last_err = ""
+    users: list[str] = []
+    current = str(endpoint.get("user") or "root")
+    users.append(current)
+    if endpoint.get("via") != "obproxy":
+        for extra in ("root", "root@sys"):
+            if extra not in users:
+                users.append(extra)
+    for user in users:
+        ep = dict(endpoint)
+        ep["user"] = user
+        for password in discover_root_passwords(cfg, deploy_name):
+            proc = run_sql(ep, password, "SELECT 1", ignore_error=True)
+            if proc.returncode == 0:
+                endpoint["user"] = user
+                return password
+            last_err = (proc.stderr or proc.stdout or "").strip()
+    raise RuntimeError(
+        f"Нет SQL к {endpoint.get('ip')}:{endpoint.get('port')} ({last_err or 'access denied / no client'})"
+    )
+
+
 def _find_key(node: Any, key: str) -> Any | None:
     if isinstance(node, dict):
         if key in node and node[key] not in (None, ""):
@@ -143,7 +183,7 @@ def pick_sql_endpoint(
         return {
             "ip": ip,
             "port": mysql_port,
-            "user": "root@sys",
+            "user": "root",
             "via": "observer",
             "name": name,
             "idx": idx,
@@ -328,11 +368,13 @@ def cmd_sql(args: argparse.Namespace) -> None:
         endpoint = {
             "ip": args.host,
             "port": int(args.port or cfg_int(cfg, "oceanbase.ports.mysql", 2881)),
-            "user": args.user or "root@sys",
+            "user": args.user or "root",
         }
     else:
         endpoint = pick_sql_endpoint(cfg, inv, args.skip_observer, args.skip_obproxy)
-    password = discover_root_password(cfg, inv.get("DEPLOY_NAME", ""))
+        if args.user:
+            endpoint["user"] = args.user
+    password = connect_sys_password(endpoint, cfg, inv.get("DEPLOY_NAME", ""))
     proc = run_sql(endpoint, password, args.sql, ignore_error=args.ignore_error)
     sys.stdout.write(proc.stdout)
     if proc.returncode != 0:
@@ -431,6 +473,8 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert remove_ip_from_obd_component(sample["obproxy-ce"], "10.0.1.1")
     assert sample["obproxy-ce"]["servers"] == ["10.0.1.2"]
     assert update_inventory_ip(inv, "OBSERVER", 2, "10.9.9.9")["OBSERVER_2_IP"] == "10.9.9.9"
+    cfg["ocp"] = {"root_password": "ChangeMe1!"}
+    assert discover_root_passwords(cfg, "ob-yc-prod") == ["ChangeMe1!", ""]
     print("self-test ok")
 
 

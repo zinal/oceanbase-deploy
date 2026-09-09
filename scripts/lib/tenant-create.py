@@ -227,7 +227,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     sys_endpoint = ob_sys.pick_sql_endpoint(cfg, inv)
-    sys_password = ob_sys.discover_root_password(cfg, deploy_name)
+    sys_password = ob_sys.connect_sys_password(sys_endpoint, cfg, deploy_name)
 
     tenant_name = tenant_cfg["tenant_name"]
     exists = tenant_exists(ob_sys, sys_endpoint, sys_password, tenant_name)
