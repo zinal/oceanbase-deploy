@@ -60,7 +60,10 @@ is_elf() {
 }
 
 install_clockdiff() {
-  if ! command -v clockdiff >/dev/null 2>&1 && ! is_elf /usr/sbin/clockdiff && ! is_elf /usr/bin/clockdiff; then
+  if ! command -v clockdiff >/dev/null 2>&1 \
+    && ! is_elf /usr/sbin/clockdiff \
+    && ! is_elf /usr/bin/clockdiff \
+    && ! is_elf /usr/lib/oceanbase/clockdiff.real; then
     echo "ERROR: clockdiff не установлен (пакет iputils-clockdiff / iputils)" >&2
     exit 1
   fi
@@ -69,23 +72,28 @@ install_clockdiff() {
   # CAP_NET_RAW снимает Operation not permitted, но Yandex Cloud часто режет
   # ICMP TIMESTAMP → exit 1 всё равно. Wrapper в /usr/bin добавляет `-o`
   # (IP timestamps = OCP mode 1), пока параметр в UI не сменён.
-  local dest="/usr/bin/clockdiff" real="/usr/lib/oceanbase/clockdiff.real" src=""
+  local dest="/usr/bin/clockdiff" real="/usr/lib/oceanbase/clockdiff.real" src="" cand
 
-  if is_elf /usr/sbin/clockdiff; then
-    src=/usr/sbin/clockdiff
-  elif is_elf /usr/bin/clockdiff; then
-    src=/usr/bin/clockdiff
-  elif is_elf /usr/lib/oceanbase/clockdiff.real; then
-    src=/usr/lib/oceanbase/clockdiff.real
-  fi
+  # После прошлого прогона /usr/bin — скрипт, /usr/sbin может быть symlink на него.
+  # Единственный ELF тогда уже clockdiff.real — не копировать файл сам в себя.
+  for cand in "${real}" /usr/sbin/clockdiff /usr/bin/clockdiff /bin/clockdiff; do
+    if is_elf "${cand}"; then
+      src="${cand}"
+      break
+    fi
+  done
   [[ -n "${src}" ]] || {
-    echo "ERROR: нет ELF clockdiff (sbin/bin)" >&2
+    echo "ERROR: нет ELF clockdiff (sbin/bin/real)" >&2
     exit 1
   }
 
   install -d -m 0755 /usr/lib/oceanbase
-  install -m 0755 "${src}" "${real}"
-  echo "clockdiff ELF ${src} → ${real}"
+  if [[ "${src}" -ef "${real}" ]]; then
+    echo "clockdiff ELF already ${real}"
+  else
+    install -m 0755 "${src}" "${real}"
+    echo "clockdiff ELF ${src} → ${real}"
+  fi
 
   if ! command -v setcap >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then

@@ -8,6 +8,7 @@ PREPARE="${ROOT}/scripts/lib/prepare-ocp-host.sh"
 grep -q '/usr/lib/oceanbase/clockdiff.real' "${PREPARE}"
 grep -q 'exec "$REAL" -o "$@"' "${PREPARE}"
 grep -q 'is_elf' "${PREPARE}"
+grep -q 'src.*-ef.*real' "${PREPARE}"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
