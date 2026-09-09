@@ -249,16 +249,23 @@ def test_scale_out_cli_writes_resumable_manifest() -> None:
         )
 
         lines = manifest.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 4
+        assert len(lines) == 2
         first_label, first_ob, first_agent = lines[0].split("|")
-        assert first_label == "server4-server6/server4"
-        assert first_ob == "-"
-        assert ips(PLAN.load_yaml(Path(first_agent))["obagent"]) == ["10.0.0.4"]
+        assert first_label == "server4-server6"
+        assert ips(PLAN.load_yaml(Path(first_ob))["oceanbase-ce"]) == [
+            "10.0.0.5",
+            "10.0.0.6",
+        ]
+        assert ips(PLAN.load_yaml(Path(first_agent))["obagent"]) == [
+            "10.0.0.4",
+            "10.0.0.5",
+            "10.0.0.6",
+        ]
 
         second_label, second_ob, second_agent = lines[1].split("|")
-        assert second_label == "server4-server6/server5"
-        assert ips(PLAN.load_yaml(Path(second_ob))["oceanbase-ce"]) == ["10.0.0.5"]
-        assert ips(PLAN.load_yaml(Path(second_agent))["obagent"]) == ["10.0.0.5"]
+        assert second_label == "server7-server7"
+        assert ips(PLAN.load_yaml(Path(second_ob))["oceanbase-ce"]) == ["10.0.0.7"]
+        assert ips(PLAN.load_yaml(Path(second_agent))["obagent"]) == ["10.0.0.7"]
 
 
 def test_scale_out_cli_joined_ips_keeps_leftover_observer() -> None:
@@ -291,7 +298,8 @@ def test_scale_out_cli_joined_ips_keeps_leftover_observer() -> None:
         )
         lines = manifest.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
-        _, ob_path, agent_path = lines[0].split("|")
+        label, ob_path, agent_path = lines[0].split("|")
+        assert label == "server4-server6"
         assert ips(PLAN.load_yaml(Path(ob_path))["oceanbase-ce"]) == ["10.0.0.6"]
         assert agent_path == "-"
 
@@ -338,6 +346,29 @@ def test_spec_cli_prints_fields() -> None:
         assert proc.stdout.strip() == "10.130.0.37 2882 2881 zone3"
 
 
+def test_spec_cli_prints_all_servers_in_batch() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "triple.yaml"
+        PLAN.dump_yaml(
+            PLAN.build_scale_out_plan(
+                full_config(count=6),
+                registered_config([1, 2, 3], [1, 2, 3]),
+            )[0]["oceanbase"],
+            path,
+        )
+        proc = subprocess.run(
+            ["python3", str(ROOT / "scripts/lib/ob_deploy_plan.py"), "spec", "--input", str(path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc.stdout.splitlines() == [
+            "10.0.0.4 2882 2881 zone1",
+            "10.0.0.5 2882 2881 zone2",
+            "10.0.0.6 2882 2881 zone3",
+        ]
+
+
 def test_one_node_cli_sets_seed_rootservice_list() -> None:
     with tempfile.TemporaryDirectory() as raw:
         src = Path(raw) / "full.yaml"
@@ -370,6 +401,48 @@ def test_one_node_cli_sets_seed_rootservice_list() -> None:
         assert len(PLAN.component_servers(PLAN.load_yaml(dst)["oceanbase-ce"])) == 1
 
 
+def test_filter_scaleout_drops_already_active_members() -> None:
+    batch = PLAN.build_scale_out_plan(
+        full_config(count=6),
+        registered_config([1, 2, 3], [1, 2, 3]),
+    )[0]["oceanbase"]
+    filtered = PLAN.filter_oceanbase_yaml(batch, {"10.0.0.5", "10.0.0.6"})
+    assert ips(filtered["oceanbase-ce"]) == ["10.0.0.5", "10.0.0.6"]
+    assert "server4" not in filtered["oceanbase-ce"]
+    assert filtered["oceanbase-ce"]["server5"]["zone"] == "zone2"
+    assert "rootservice_list" in filtered["oceanbase-ce"]["server6"]
+
+    with tempfile.TemporaryDirectory() as raw:
+        src = Path(raw) / "triple.yaml"
+        dst = Path(raw) / "pending.yaml"
+        PLAN.dump_yaml(batch, src)
+        proc = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/lib/ob_deploy_plan.py"),
+                "filter-scaleout",
+                "--input",
+                str(src),
+                "--output",
+                str(dst),
+                "--ips",
+                "10.0.0.5,10.0.0.6",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert proc.stdout.strip() == "10.0.0.5 10.0.0.6"
+        assert ips(PLAN.load_yaml(dst)["oceanbase-ce"]) == ["10.0.0.5", "10.0.0.6"]
+
+    try:
+        PLAN.filter_oceanbase_yaml(batch, {"10.9.9.9"})
+    except ValueError as exc:
+        assert "none of" in str(exc)
+    else:
+        raise AssertionError("filter-scaleout accepted IPs that are not in the YAML")
+
+
 def test_malformed_registered_config_fails_closed() -> None:
     registered = registered_config([1, 2, 3], [1, 2, 3])
     registered["oceanbase-ce"]["servers"].append({"name": "broken"})
@@ -395,6 +468,8 @@ if __name__ == "__main__":
     test_scale_out_cli_joined_ips_keeps_leftover_observer()
     test_observer_scale_out_spec_reads_named_node()
     test_spec_cli_prints_fields()
+    test_spec_cli_prints_all_servers_in_batch()
     test_one_node_cli_sets_seed_rootservice_list()
+    test_filter_scaleout_drops_already_active_members()
     test_malformed_registered_config_fails_closed()
     print("ok")

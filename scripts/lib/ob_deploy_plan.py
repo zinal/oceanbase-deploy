@@ -159,27 +159,40 @@ def server_config(component: dict[str, Any], entry: Any) -> dict[str, Any]:
     return config
 
 
-def observer_scale_out_spec(cfg: dict[str, Any]) -> dict[str, Any]:
-    """First observer in a single-node scale-out YAML: ip, ports, zone."""
+def observer_scale_out_specs(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Observers in a scale-out YAML: ip, ports, zone (one dict per server)."""
     key = oceanbase_component_key(cfg)
     component = cfg[key]
-    servers = component_servers(component)
-    if len(servers) != 1:
-        raise ValueError(
-            f"observer scale-out YAML must contain exactly one server, got {len(servers)}"
+    result: list[dict[str, Any]] = []
+    for entry in component_servers(component):
+        settings = server_config(component, entry)
+        zone = str(settings.get("zone") or "")
+        if not zone:
+            raise ValueError(
+                f"scale-out observer {server_name(entry) or server_ip(entry)} has no zone"
+            )
+        result.append(
+            {
+                "ip": server_ip(entry),
+                "rpc_port": int(settings.get("rpc_port", 2882)),
+                "mysql_port": int(settings.get("mysql_port", 2881)),
+                "zone": zone,
+                "rootservice_list": str(settings.get("rootservice_list") or ""),
+            }
         )
-    entry = servers[0]
-    settings = server_config(component, entry)
-    zone = str(settings.get("zone") or "")
-    if not zone:
-        raise ValueError(f"scale-out observer {server_name(entry) or server_ip(entry)} has no zone")
-    return {
-        "ip": server_ip(entry),
-        "rpc_port": int(settings.get("rpc_port", 2882)),
-        "mysql_port": int(settings.get("mysql_port", 2881)),
-        "zone": zone,
-        "rootservice_list": str(settings.get("rootservice_list") or ""),
-    }
+    if not result:
+        raise ValueError("observer scale-out YAML has no servers")
+    return result
+
+
+def observer_scale_out_spec(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Exactly one observer (join-empty / one-node YAML)."""
+    specs = observer_scale_out_specs(cfg)
+    if len(specs) != 1:
+        raise ValueError(
+            f"observer scale-out YAML must contain exactly one server, got {len(specs)}"
+        )
+    return specs[0]
 
 
 def rootservice_list(
@@ -326,41 +339,20 @@ def cmd_scale_out(args: argparse.Namespace) -> None:
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = []
-    ob_key = oceanbase_component_key(full_cfg)
     for round_number, batch in enumerate(plan, start=1):
         round_label = f"{batch['first']}-{batch['last']}"
         batch_ob = batch["oceanbase"]
         batch_agent = batch["obagent"]
-        for position, server in enumerate(batch["servers"], start=1):
-            ip = server_ip(server)
-            name = server_name(server) or ip
-            ob_path: Path | None = None
-            agent_path: Path | None = None
-
-            if batch_ob is not None:
-                node_ob = selected_component(batch_ob[ob_key], {ip}, keep_settings=False)
-                if node_ob is not None:
-                    ob_path = (
-                        args.output_dir
-                        / f"{round_number:02d}-{position:02d}-{name}-oceanbase.yaml"
-                    )
-                    dump_yaml({ob_key: node_ob}, ob_path)
-            if batch_agent is not None:
-                node_agent = selected_component(
-                    batch_agent["obagent"],
-                    {ip},
-                    keep_settings=False,
-                )
-                if node_agent is not None:
-                    agent_path = (
-                        args.output_dir
-                        / f"{round_number:02d}-{position:02d}-{name}-obagent.yaml"
-                    )
-                    dump_yaml({"obagent": node_agent}, agent_path)
-            if ob_path is not None or agent_path is not None:
-                lines.append(
-                    f"{round_label}/{name}|{ob_path or '-'}|{agent_path or '-'}"
-                )
+        ob_path: Path | None = None
+        agent_path: Path | None = None
+        if batch_ob is not None:
+            ob_path = args.output_dir / f"{round_number:02d}-{round_label}-oceanbase.yaml"
+            dump_yaml(batch_ob, ob_path)
+        if batch_agent is not None:
+            agent_path = args.output_dir / f"{round_number:02d}-{round_label}-obagent.yaml"
+            dump_yaml(batch_agent, agent_path)
+        if ob_path is not None or agent_path is not None:
+            lines.append(f"{round_label}|{ob_path or '-'}|{agent_path or '-'}")
 
     args.manifest.write_text(
         "".join(f"{line}\n" for line in lines),
@@ -368,15 +360,15 @@ def cmd_scale_out(args: argparse.Namespace) -> None:
     )
     print(
         f"Scale-out plan written: {args.manifest} "
-        f"({len(plan)} rounds, {len(lines)} single-node operations)"
+        f"({len(plan)} rounds, up to {SCALE_OUT_BATCH_SIZE} observers per OBD scale_out)"
     )
 
 
 def cmd_spec(args: argparse.Namespace) -> None:
-    spec = observer_scale_out_spec(load_yaml(args.input))
-    print(
-        f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']}"
-    )
+    for spec in observer_scale_out_specs(load_yaml(args.input)):
+        print(
+            f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']}"
+        )
 
 
 def build_one_node_config(full_cfg: dict[str, Any], ip: str) -> dict[str, Any]:
@@ -398,6 +390,32 @@ def cmd_one_node(args: argparse.Namespace) -> None:
     dump_yaml(cfg, args.output)
     spec = observer_scale_out_spec(cfg)
     print(f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']} -> {args.output}")
+
+
+def parse_keep_ips(raw: str) -> set[str]:
+    ips = {tok.strip() for tok in raw.replace(",", " ").split() if tok.strip()}
+    if not ips:
+        raise ValueError("filter-scaleout: empty --ips")
+    return ips
+
+
+def filter_oceanbase_yaml(cfg: dict[str, Any], keep_ips: set[str]) -> dict[str, Any]:
+    """Keep only listed observer IPs in a scale-out YAML (named overrides included)."""
+    ob_key = oceanbase_component_key(cfg)
+    filtered = selected_component(cfg[ob_key], keep_ips, keep_settings=True)
+    if filtered is None:
+        raise ValueError(
+            f"filter-scaleout: none of {sorted(keep_ips)} are in {ob_key} servers"
+        )
+    result = copy.deepcopy(cfg)
+    result[ob_key] = filtered
+    return result
+
+
+def cmd_filter_scaleout(args: argparse.Namespace) -> None:
+    cfg = filter_oceanbase_yaml(load_yaml(args.input), parse_keep_ips(args.ips))
+    dump_yaml(cfg, args.output)
+    print(" ".join(observer_ips(cfg)))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -429,7 +447,10 @@ def build_parser() -> argparse.ArgumentParser:
     ips_cmd.add_argument("--input", type=Path, required=True)
     ips_cmd.set_defaults(func=cmd_ips)
 
-    spec = sub.add_parser("spec", help="print ip rpc_port mysql_port zone from a one-node YAML")
+    spec = sub.add_parser(
+        "spec",
+        help="print ip rpc_port mysql_port zone (one line per observer in the YAML)",
+    )
     spec.add_argument("--input", type=Path, required=True)
     spec.set_defaults(func=cmd_spec)
 
@@ -441,6 +462,19 @@ def build_parser() -> argparse.ArgumentParser:
     one_node.add_argument("--ip", required=True)
     one_node.add_argument("--output", type=Path, required=True)
     one_node.set_defaults(func=cmd_one_node)
+
+    filt = sub.add_parser(
+        "filter-scaleout",
+        help="keep only listed observer IPs in a scale-out YAML (resume mid-round)",
+    )
+    filt.add_argument("--input", type=Path, required=True)
+    filt.add_argument("--output", type=Path, required=True)
+    filt.add_argument(
+        "--ips",
+        required=True,
+        help="observer IPs to keep (whitespace/comma-separated)",
+    )
+    filt.set_defaults(func=cmd_filter_scaleout)
     return parser
 
 

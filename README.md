@@ -175,12 +175,12 @@ vm_profiles:
 Для любого значения `vm_profiles.observer.count > 3` инфраструктурный шаг по-прежнему создаёт и подготавливает **все ВМ сразу**, но OceanBase разворачивается поэтапно:
 
 1. `obd cluster deploy/start` получает `generated/obd-seed.yaml` только с `observer-1..3` — по одному на `zone1..3`.
-2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д.; внутри раунда OBD получает три последовательных одноузловых YAML.
+2. После успешного OBShell take-over оставшиеся observer добавляются штатным `obd cluster scale_out` раундами `4..6`, `7..9` и т. д. Один вызов OBD получает YAML **до трёх** новых observer (по одному на zone1/2/3).
 3. OBAgent добавляется отдельным `scale_out` после observer того же пакета. Перед стартом создаётся `home_path/{run,bin,lib,conf,log}` (это делает `init` при первом `obd cluster start`, но не при `scale_out`), затем `obd cluster start -c obagent -s <ip>`. Без каталога `run/` агент падает с `fetch_admin_lock_failed`. Повторный запуск сначала поднимает уже зарегистрированные агенты и продолжает с отсутствующих компонентов.
 
 В каждый observer scale-out YAML также записывается `rootservice_list` трёх seed-узлов. Это обходит дефект OBD 3.5.3: его плагин OceanBase 4.6 не добавляет `obconfig_url` при запуске нового observer (`need_bootstrap=False`), из-за чего узел стартует с `server_list=[]`.
 
-Перед каждым observer `scale_out` узел очищается: leftover `observer`/`obshell`, `home_path`, data/redo. Иначе OBD видит pid и не стартует процесс с `rootservice_list`. Повторный `./scripts/deploy.sh deploy` смотрит **ACTIVE в `DBA_OB_SERVERS`**, а не только `~/.obd/cluster`: узел, который OBD уже записал после неудачного ADD SERVER, снова попадает в план.
+Перед `scale_out` очищаются **только ещё не ACTIVE** IP пакета (leftover `observer`/`obshell`, `home_path`, data/redo). Иначе OBD видит pid и не стартует процесс с `rootservice_list`. Уже ACTIVE члены (и seed) не стираются: если deploy оборвался посреди тройки и server4 уже в `DBA_OB_SERVERS`, повторный запуск выкинет его из YAML и доберёт только 5/6. Если SQL к seed недоступен, wipe не делается. Если пакетный ADD SERVER не довёл узел до ACTIVE, этот IP добирается отдельно (`join-empty-observer`), без повторного `scale_out` всего YAML. Повторный `./scripts/deploy.sh deploy` смотрит **ACTIVE в `DBA_OB_SERVERS`**, а не только `~/.obd/cluster`: узел, который OBD уже записал после неудачного ADD SERVER, снова попадает в план.
 
 OBD выполняет `ALTER SYSTEM ADD SERVER` с сессионным `ob_query_timeout=10s` (ERROR 4012 / OBD-5000 через ~10 с). Повторный `ADD SERVER` по уже запущенному узлу даёт **ERROR 4179** (non-empty): процесс записал clog, в `DBA_OB_SERVERS` его нет. Не повторяйте SQL и не вызывайте `06-recover-observer.sh --temporary` (`START SERVER` бесполезен). С jump host:
 

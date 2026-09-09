@@ -498,12 +498,12 @@ obshell bootstrap -
 
 1. Из полного `generated/obd-cluster.yaml` строится `generated/obd-seed.yaml` с `server1..server3`, по одному observer в каждой Zone.
 2. OBD выполняет `cluster deploy/start` seed-кластера и дожидается успешного OBShell take-over.
-3. Оставшиеся узлы добавляются `obd cluster scale_out` раундами по три: один в `zone1`, один в `zone2`, один в `zone3`. Каждый вызов OBD получает YAML только одного нового observer; три вызова выполняются последовательно.
+3. Оставшиеся узлы добавляются `obd cluster scale_out` раундами по три: один в `zone1`, один в `zone2`, один в `zone3`. Один вызов OBD получает YAML всех трёх новых observer (неполный последний пакет — сколько осталось).
 4. Для каждого пакета сначала добавляется `oceanbase-ce`, затем отдельным вызовом — `obagent`. Перед `obd cluster start <deploy> -c obagent -s <ip>` создаются каталоги `home_path/{run,bin,lib,conf,log}`: OBD не вызывает `init` при scale-out obagent, и без `run/` старт заканчивается `fetch_admin_lock_failed`. Без этого следующего `scale_out` падает на `status_check` (`obagent is not running`).
 
 YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. В named-настройки нового observer добавляется `rootservice_list` трёх seed-узлов. Это необходимо для OBD 3.5.3 с плагином OceanBase 4.6: `start_pre.py` добавляет вычисленный `obconfig_url` только при `need_bootstrap=True`, хотя для scale-out выставляется `need_bootstrap=False`. Без явного списка новый observer запускается без источника RootService (`server_list=[]`).
 
-Перед `scale_out` целевой observer очищается (процессы, `home_path`, data/redo). Seed-узлы не трогаются. Неудачный `ADD SERVER` оставляет запущенный observer: следующий `scale_out` без очистки видит pid и не подставляет `rootservice_list`.
+Перед `scale_out` очищаются только leftover observer пакета (процессы, `home_path`, data/redo). Seed и уже ACTIVE в `DBA_OB_SERVERS` не трогаются. Если раунд прервался после ADD SERVER server4, повторный `./scripts/deploy.sh deploy` сужает YAML до ещё не ACTIVE IP. Без SQL к seed wipe не выполняется. Неудачный `ADD SERVER` оставляет запущенный observer: следующий `scale_out` без очистки видит pid и не подставляет `rootservice_list`. Не-ACTIVE после пакета добираются по одному, без повторного scale_out всего YAML.
 
 `ALTER SYSTEM ADD SERVER` в OBD идёт с дефолтным `ob_query_timeout=10s`. На 6-м и последующих узлах SQL часто не укладывается: `OBD-5000` ровно через ~10 с (`ERROR 4012 … 10000000(us)`), хотя `Start observer ok` уже был. Если после этого сразу повторить `ADD SERVER` по **тому же** запущенному observer — `ERROR 4179 add non-empty server`: процесс успел записать clog и для кластера уже «не пустой», хотя в `DBA_OB_SERVERS` его нет.
 
