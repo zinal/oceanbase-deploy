@@ -508,12 +508,14 @@ obshell при этом бывает в двух рабочих состояни
 
 1. **Все агенты `TAKE OVER FOLLOWER`, БД `ocs` нет.** `/api/v1/info` → `"identity":"TAKE OVER FOLLOWER"`; в `obshell.log`: `Unknown database 'ocs'`, `The current database is not OCS`, lock/unlock take-over **без** `create take over dag`. Master не выбран — OBD крутит опрос всех IP (на 30 узлах один круг — десятки секунд, 200 кругов — час+). Дальше: Ctrl+C у `obd cluster start`, остановить только процессы obshell, поднять obshell **с одного** observer (чтобы он стал master и создал `ocs`), затем на остальных.
 
-2. **Есть `TAKE OVER MASTER`, БД `ocs` уже есть.** Пример `ob-yc-prod`: 29× FOLLOWER + 1× MASTER (`10.130.0.44`, последний observer в inventory). Плагин нашёл master и зашёл в `wait_dag_succeed` **без таймаута** — спиннер так и стоит на `obshell bootstrap -`. SSH только на observer 1–3 показывает ранний follower-лог (`Unknown database 'ocs'` до создания схемы) и **не** показывает master. Смотреть DAG и лог **на master**:
+2. **Есть `TAKE OVER MASTER`, БД `ocs` уже есть.** Пример `ob-yc-prod`: 29× FOLLOWER + 1× MASTER (`10.130.0.44`, последний observer в inventory). Плагин нашёл master и зашёл в `wait_dag_succeed` **без таймаута** — спиннер так и стоит на `obshell bootstrap -`. SSH только на observer 1–3 показывает ранний follower-лог (`Unknown database 'ocs'` до создания схемы) и **не** показывает master. Смотреть DAG и лог **на master**. Голый `curl` к `/api/v1/task/dag/maintain/agent` даёт **400 Request.Header.NotFound**: нужен заголовок `X-OCS-Header` (гибридное RSA-шифрование). Diagnose подписывает запрос сам; вручную:
 
 ```bash
-curl -sf 'http://<MASTER_IP>:2886/api/v1/task/dag/maintain/agent?show_details=true'
+python3 scripts/lib/obshell_ocs.py dag --host 10.130.0.44 --port 2886 \
+  --password '<ocp.root_password>' --password ''
 # SSH на master: /home/obadmin/observer/log_obshell/obshell.log
 # create take over dag / SUCCEED / FAILED / identity CLUSTER AGENT
+# SQL: SHOW TABLES FROM ocs;
 ```
 
 Не убивать obshell сразу на всех узлах: master уже выбран, массовый restart собьёт DAG. Если DAG `SUCCEED` (или identity стал `CLUSTER AGENT`) — `obd cluster start <deploy> -c obproxy-ce,obagent,ocp-server-ce`. Если DAG `FAILED` или часами `RUNNING` без прогресса — перезапустить **только** obshell master-узла.

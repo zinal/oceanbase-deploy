@@ -37,7 +37,8 @@ usage() {
   - obd display-trace (нужен Trace ID от start, не от deploy)
   - SQL __all_zone / __all_server / SHOW DATABASES (ocs)
   - identity obshell на всех observer
-  - DAG take-over на TAKE OVER MASTER (/api/v1/task/dag/maintain/agent)
+  - DAG take-over на TAKE OVER MASTER (X-OCS-Header, не голый curl)
+  - SQL SHOW TABLES FROM ocs
   - хвост obshell.log сначала на master, затем на выборке follower
 EOF
 }
@@ -330,6 +331,12 @@ if [[ "${LOCAL_ONLY}" != "true" ]]; then
       run_sql "${OBSERVER_1_IP}" "select distinct zone from oceanbase.__all_zone" || true
       echo "--- databases (ocs нужна obshell take-over) ---"
       run_sql "${OBSERVER_1_IP}" "show databases" || true
+      echo "--- ocs tables ---"
+      run_sql "${OBSERVER_1_IP}" "select table_name from information_schema.tables where table_schema='ocs' order by table_name" || true
+      echo "--- ocs agents / dags (имена таблиц зависят от версии obshell) ---"
+      run_sql "${OBSERVER_1_IP}" "select * from ocs.all_agent" || true
+      run_sql "${OBSERVER_1_IP}" "select id, name, state, operator, start_time, end_time from ocs.task_dag order by id desc limit 15" || true
+      run_sql "${OBSERVER_1_IP}" "select id, name, state, operator, start_time, end_time from ocs.dag_instance order by id desc limit 15" || true
       echo "--- __all_server status ---"
       run_sql "${OBSERVER_1_IP}" "select status, count(*) from oceanbase.__all_server group by status" || true
       echo "--- __all_server (ip, zone, status) ---"
@@ -377,23 +384,27 @@ if [[ "${LOCAL_ONLY}" != "true" ]]; then
   else
     echo "OBD при identity TAKE OVER MASTER вызывает wait_dag_succeed без таймаута."
     echo "Master: ${MASTER_IPS[*]}"
+    echo "DAG API требует X-OCS-Header (голый curl → 400 Request.Header.NotFound)."
     for ip in "${MASTER_IPS[@]}"; do
       echo "----- DAG ${ip}:${OBSHELL_PORT} -----"
-      dag_json=""
       dag_summary=""
-      if dag_json="$(curl -skf --max-time 8 "http://${ip}:${OBSHELL_PORT}/api/v1/task/dag/maintain/agent?show_details=true" 2>/dev/null)"; then
-        dag_summary="$(printf '%s' "${dag_json}" | dump_obshell_dag)"
-      elif dag_json="$(curl -skf --max-time 8 "https://${ip}:${OBSHELL_PORT}/api/v1/task/dag/maintain/agent?show_details=true" 2>/dev/null)"; then
-        dag_summary="$(printf '%s' "${dag_json}" | dump_obshell_dag)"
-      else
-        echo "DAG API недоступен (нужен пароль/шифрованный заголовок, либо DAG ещё не создан)."
-        echo "Повторите на jump host:"
-        echo "  curl -sf 'http://${ip}:${OBSHELL_PORT}/api/v1/task/dag/maintain/agent?show_details=true'"
-        echo "DAG_STATE=UNREACHABLE" | tee -a "${DAG_FILE}" >/dev/null
-        continue
+      dag_summary="$(
+        python3 "${LIB_DIR}/lib/obshell_ocs.py" dag \
+          --host "${ip}" --port "${OBSHELL_PORT}" \
+          --password "${ROOT_PASSWORD}" --password "" \
+          2>&1
+      )" || true
+      if [[ -n "${dag_summary}" ]]; then
+        printf '%s\n' "${dag_summary}"
+        printf '%s\n' "${dag_summary}" >> "${DAG_FILE}"
       fi
-      printf '%s\n' "${dag_summary}"
-      printf '%s\n' "${dag_summary}" >> "${DAG_FILE}"
+      if ! grep -qE '^DAG_STATE=(RUNNING|PENDING|READY|FAILED|SUCCEED|SUCCESS)' <<<"${dag_summary}"; then
+        echo "Если http 400 Request.Header.NotFound — заголовок не принят; смотрите SSH-лог master."
+        echo "  python3 scripts/lib/obshell_ocs.py dag --host ${ip} --port ${OBSHELL_PORT} --password '<ocp.root_password>' --password ''"
+        if ! grep -q '^DAG_STATE=' <<<"${dag_summary}"; then
+          echo "DAG_STATE=NEED_HEADER" | tee -a "${DAG_FILE}" >/dev/null
+        fi
+      fi
     done
   fi
 
@@ -497,8 +508,10 @@ take-over master уже выбран, массовый restart собьёт DAG.
 
 Что делать:
   1. Не destroy. Ctrl+C висящего obd cluster start можно, observer не трогать.
-  2. Снять DAG на master:
-       curl -sf 'http://<MASTER_IP>:${OBSHELL_PORT}/api/v1/task/dag/maintain/agent?show_details=true'
+  2. Голый curl к DAG API даёт 400 Request.Header.NotFound — нужен X-OCS-Header.
+     python3 scripts/lib/obshell_ocs.py dag --host <MASTER_IP> --port ${OBSHELL_PORT} \\
+       --password '<ocp.root_password>' --password ''
+     Либо SQL: SHOW TABLES FROM ocs; (агенты/DAG, если таблицы уже есть).
   3. SSH на master, хвост:
        ${HOME_PATH}/log_obshell/obshell.log
      Искать: create take over dag / SUCCEED / FAILED / identity CLUSTER AGENT
@@ -507,7 +520,7 @@ take-over master уже выбран, массовый restart собьёт DAG.
      (oceanbase-ce уже running)
   5. Если DAG RUNNING/PENDING — подождать; не рестартовать остальные obshell.
   6. Если DAG FAILED или часами RUNNING без прогресса — перезапустить ТОЛЬКО
-     obshell master-узла (не все 30), затем снова curl /api/v1/info и DAG.
+     obshell master-узла (не все 30), затем снова /api/v1/info и DAG.
 
 FOLLOWER на остальных узлах при живом MASTER — норма. Их lock/unlock без
 «create take over dag» в раннем логе не значит, что master тоже застрял.
