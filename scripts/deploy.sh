@@ -86,6 +86,9 @@ case "${STEP}" in
   ocp-clockdiff)
     run_cmd bash "${ROOT}/scripts/09-ocp-register.sh" --clockdiff
     ;;
+  obd-mirror)
+    run_cmd bash "${ROOT}/scripts/lib/prepare-obd-mirror.sh" --ensure
+    ;;
   diagnose)
     run_cmd bash "${ROOT}/scripts/diagnose-obd-start.sh" "${@:2}"
     ;;
@@ -130,6 +133,7 @@ case "${STEP}" in
   deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
+  obd-mirror — пакет oceanbase-ce из oceanbase.version (remote / All-in-One 5.0.1)
   join-observer — leftover observer / ERROR 4179: wipe одного IP и ADD SERVER
   ocp        — развёртывание OceanBase Cloud Platform (см. deploy-ocp.sh)
   ocp-register — зарегистрировать oceanbase-ce в UI OCP (export-to-ocp)

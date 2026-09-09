@@ -70,9 +70,10 @@ pip install -r requirements.txt
 # настройка Yandex Cloud
 curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
 yc init
-# установка obd
+# установка obd (All-in-One 5.0.1: OBD 4.5.0 и RPM oceanbase-ce 5.0.1)
 bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/download-center/opensource/oceanbase-all-in-one/installer.sh)"
 source ~/.oceanbase-all-in-one/bin/env.sh
+# если на хосте уже стоит All-in-One 4.6.x — см. раздел «Версия OceanBase 5.0.1»
 
 # 2. Конфигурация
 cp config/deploy.yaml.example config/deploy.yaml
@@ -87,6 +88,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 
 ```bash
 ./scripts/deploy.sh check       # зависимости, профили ВМ, сверка oceanbase с ресурсами ВМ
+./scripts/deploy.sh obd-mirror  # пакет oceanbase-ce 5.0.1 в зеркалах OBD (если ещё 4.6.0)
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
@@ -114,7 +116,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `yandex_cloud` | Инфраструктура YC: zone, subnet, SSH, **образ ОС**, network_acceleration |
 | `vm_defaults` | Общие defaults ВМ: platform, core_fraction |
 | `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp**, **runner** |
-| `oceanbase` | Параметры кластера, OBD, auto-tune |
+| `oceanbase` | Параметры кластера, OBD, **версия** (`version`, по умолчанию 5.0.1.0) |
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 | `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`) |
 
@@ -127,6 +129,38 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `olap` | Аналитика / real-time DW, колоночное хранение |
 | `htap` | Смешанные OLTP и OLAP (значение по умолчанию) |
 | `kv` | Key-value и wide-column нагрузки |
+
+### Версия OceanBase 5.0.1
+
+Новые кластера по умолчанию ставят **oceanbase-ce 5.0.1.0** (`oceanbase.version` в `config/deploy.yaml.example`). Уже работающие кластера 4.6.0 скрипты не апгрейдят.
+
+Почему на подготовленном инсталляционном хосте сейчас ставится 4.6.0: [All-in-One](https://www.oceanbase.com/product/oceanbase-all-in-one-rn/releaseNote) после установки **отключает remote-зеркала** и оставляет в `local` только RPM своей сборки. Пустой `oceanbase.version` → OBD берёт latest из local → 4.6.0. Флаг `obd cluster deploy -V` у OBD нет: версия пишется в `generated/obd-cluster.yaml` как `oceanbase-ce.version`.
+
+Чтобы новые кластера пошли на 5.0.1:
+
+1. В `config/deploy.yaml` задайте версию (уже есть в example):
+
+```yaml
+oceanbase:
+  version: "5.0.1.0"
+  enable_remote_mirror: true   # если пакета нет в local — включить remote
+```
+
+2. Обновите пакеты на инсталляционном хосте (один из способов):
+
+```bash
+# A. Рекомендуется: All-in-One 5.0.1 (OBD 4.5.0 + RPM 5.0.1 + совместимые obproxy/obagent)
+bash -c "$(curl -s https://obbusiness-private.oss-cn-shanghai.aliyuncs.com/download-center/opensource/oceanbase-all-in-one/installer.sh)"
+source ~/.oceanbase-all-in-one/bin/env.sh
+obd mirror list local | grep oceanbase-ce
+
+# B. Онлайн: включить community.stable (нужен доступ к mirrors.oceanbase.com)
+./scripts/deploy.sh obd-mirror
+# то же самое:
+#   obd mirror enable remote && obd mirror update
+```
+
+`./scripts/deploy.sh check` предупредит, если 5.0.1 нет в зеркалах. `deploy` перед `obd cluster deploy` сам вызовет `obd-mirror`. Совместимый набор All-in-One 5.0.1: OCP-CE 4.4.2, OBProxy 4.3.6 BP1, OBAgent 4.2.6.
 
 ```yaml
 yandex_cloud:
@@ -274,6 +308,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 01-provision-vms.sh      # yc compute instance create
 │   ├── 02-prepare-servers.sh    # sysctl, диски, chrony, пользователь
 │   ├── 03-generate-obd-config.py
+│   ├── lib/obd_version.py        # oceanbase.version → YAML / зеркала OBD
+│   ├── lib/prepare-obd-mirror.sh # пакет 5.0.1 в local или remote
 │   ├── lib/ob_deploy_plan.py    # 3-node seed и идемпотентные scale-out пакеты
 │   ├── 04-deploy-cluster.sh     # seed deploy/start → staged scale-out
 │   ├── diagnose-obd-start.sh    # зависание start: zone, display-trace, obshell

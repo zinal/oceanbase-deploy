@@ -57,7 +57,10 @@ if command -v yc >/dev/null 2>&1; then
   fi
 fi
 
-if command -v obd >/dev/null 2>&1; then
+source_obd_env || true
+if [[ -f "${LIB_DIR}/lib/prepare-obd-mirror.sh" ]]; then
+  bash "${LIB_DIR}/lib/prepare-obd-mirror.sh" --check-only
+elif command -v obd >/dev/null 2>&1; then
   info "OBD установлен: $(obd --version 2>/dev/null || obd -V 2>/dev/null || echo 'unknown')"
 else
   warn "OBD не установлен. Будет предложена установка на шаге 04-deploy-cluster.sh"

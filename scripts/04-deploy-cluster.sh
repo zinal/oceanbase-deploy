@@ -25,6 +25,7 @@ run_obd() {
 }
 
 install_obd_if_needed() {
+  source_obd_env || true
   if command -v obd >/dev/null 2>&1; then
     return 0
   fi
@@ -92,18 +93,21 @@ if err:
 PY
 fi
 
-ob_version="$(yaml_get oceanbase.version)"
+bash "${LIB_DIR}/lib/prepare-obd-mirror.sh" --ensure
+
+ob_version="$(python3 "${LIB_DIR}/lib/obd_version.py" requested --config "${CONFIG_FILE}")"
+if [[ -n "${ob_version}" ]]; then
+  info "oceanbase-ce ${ob_version} (из oceanbase.version → generated YAML, не obd -V)"
+else
+  info "oceanbase.version не задан — OBD возьмёт latest из доступных зеркал"
+fi
 
 if obd_cluster_registered "${CLUSTER_NAME}"; then
   warn "Кластер ${CLUSTER_NAME} уже развёрнут в OBD — пропуск obd cluster deploy"
   warn "Для пересоздания: obd cluster destroy ${CLUSTER_NAME} -f (удалит данные) или obd cluster redeploy ${CLUSTER_NAME}"
 else
   info "Развёртывание seed-кластера ${CLUSTER_NAME}: 3 observer (zone1/zone2/zone3)..."
-  if [[ -n "${ob_version}" && "${ob_version}" != "null" ]]; then
-    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_SEED_CONFIG}" -V "${ob_version}"
-  else
-    run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_SEED_CONFIG}"
-  fi
+  run_obd cluster deploy "${CLUSTER_NAME}" -c "${OBD_SEED_CONFIG}"
 fi
 
 info "Запуск seed-кластера и ожидание завершения OBShell take-over..."
