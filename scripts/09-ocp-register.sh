@@ -129,20 +129,26 @@ if ! run_remote "${OCP_1_IP}" "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_O
   < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
   warn "не удалось починить clockdiff на ${OCP_1_IP} — takeover может упасть на Pre check for create host"
 fi
+# HTML SPA на неизвестных /api/v2/... даёт WARN, не падение. setcap уже сделан.
 if ! python3 "${LIB_DIR}/lib/ocp_clockdiff.py" apply \
   --url "${OCP_URL}" --user "${OCP_USER}" --password "${OCP_PASSWORD}"; then
-  warn "Задайте в UI OCP: ocp.host.check.clock-diff.mode=1 (clockdiff -o) или ocp.host.check.clock-diff.enable=false"
+  warn "API параметров OCP недоступен (часто login HTML). Задайте в UI: ocp.host.check.clock-diff.mode=1 или ocp.host.check.clock-diff.enable=false"
 fi
 
 if [[ "${CLOCKDIFF_ONLY_CMD}" == "true" ]]; then
   cat <<EOF
 
-clockdiff на ${OCP_1_IP} обновлён. Дальше в UI OCP откройте задачу takeover
-(например /task/22) и Retry / повтор failed subtask «Pre check for create host».
+clockdiff на ${OCP_1_IP} обновлён (/usr/bin + CAP_NET_RAW). Дальше в UI OCP
+откройте задачу takeover (например http://${OCP_1_IP}:${OCP_PORT}/task/22)
+и Retry failed subtask «Pre check for create host». Не создавайте второй takeover.
+
+Проверка с OCP-ВМ (как JVM, без sudo):
+  sudo -u ${DEPLOY_USER} /usr/bin/clockdiff -o <observer-ip>
 
 Если ICMP TIMESTAMP в YC по-прежнему blocked:
   Системные параметры → ocp.host.check.clock-diff.mode = 1
   или ocp.host.check.clock-diff.enable = false
+  затем снова Retry той же задачи.
 
 Баннер «abnormal Cgroup configuration» на Ubuntu 22.04 (cgroup v2) —
 не причина падения pre-check. Изоляция CPU тенантов на v2 не работает;

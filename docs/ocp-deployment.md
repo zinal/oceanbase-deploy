@@ -177,6 +177,8 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 
 Затем в UI Retry задачи (например `/task/22`). Баннер про Cgroup на Ubuntu 22.04 — отдельно, не этот FAIL.
 
+`ERROR: Expecting value: line 1 column 1` после `OCP clockdiff ready for obadmin` — это не сбой clockdiff: хелпер параметров получил HTML страницы логина OCP вместо JSON. `setcap` уже применён. Retry той же задачи; при необходимости задайте `clock-diff.mode=1` в UI.
+
 Запасной путь — ручной Take over в UI (таблица ниже).
 
 Если export-to-ocp недоступен — в UI «Take over cluster»:
