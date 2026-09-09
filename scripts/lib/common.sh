@@ -115,6 +115,37 @@ inventory_host() {
   die "Не задан хост для ${prefix}_${idx} (ожидается ${name_var} или ${ip_var})"
 }
 
+# OBD check4ocp без -V берёт 3.1.1 и требует user.username=admin (OS/SSH).
+# Для OCP ≥ 4.2.0 эта проверка не нужна; SSH остаётся oceanbase.deploy_user.
+resolve_ocp_check_version() {
+  local cluster="${1:-}" cfg_ver api_payload=""
+  local -a yaml_args=()
+  cfg_ver="$(yaml_get ocp.version 2>/dev/null || true)"
+  [[ "${cfg_ver}" == "null" ]] && cfg_ver=""
+  if [[ -f "${GENERATED_DIR}/obd-cluster.yaml" ]]; then
+    yaml_args+=(--yaml "${GENERATED_DIR}/obd-cluster.yaml")
+  fi
+  if [[ -n "${cluster}" ]]; then
+    local f
+    for f in \
+      "${HOME}/.obd/cluster/${cluster}/config.yaml" \
+      "${HOME}/.obd/cluster/${cluster}/inner_config.yaml" \
+      "${HOME}/.obd/cluster/${cluster}/config.yml" \
+      "${HOME}/.obd/cluster/${cluster}/inner_config.yml"; do
+      if [[ -f "${f}" ]]; then
+        yaml_args+=(--yaml "${f}")
+      fi
+    done
+  fi
+  if [[ -n "${OCP_URL:-}" && -n "${OCP_USER:-}" && -n "${OCP_PASSWORD:-}" ]] && command -v curl >/dev/null 2>&1; then
+    api_payload="$(curl -fsS --max-time 8 -u "${OCP_USER}:${OCP_PASSWORD}" "${OCP_URL%/}/api/v2/info" 2>/dev/null || true)"
+  fi
+  python3 "${SCRIPT_DIR}/ocp_check_version.py" \
+    --config-version "${cfg_ver}" \
+    --api-payload "${api_payload}" \
+    "${yaml_args[@]}"
+}
+
 # OBD хранит метаданные развёртывания в ~/.obd/cluster/<deploy_name>.
 # `obd cluster list` иногда не показывает кластер (формат вывода, ANSI), хотя deploy уже выполнен.
 obd_cluster_registered() {

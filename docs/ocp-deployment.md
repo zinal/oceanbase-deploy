@@ -140,7 +140,23 @@ IP-адрес OCP-ВМ сохраняется в `generated/inventory.env` (`OCP
 ./scripts/deploy.sh ocp-register
 ```
 
-Это `obd cluster check4ocp` + `obd cluster export-to-ocp <deploy> -a http://<OCP_1_IP>:8080 -u admin -p …`. После этого в UI появляется задача takeover; по завершении виден кластер с `appname` (`oceanbase.cluster_name`, в gist — `obcluster`, `cluster_id=1`).
+Это `obd cluster check4ocp -V <версия OCP>` + `obd cluster export-to-ocp <deploy> -a http://<OCP_1_IP>:8080 -u admin -p …`. После этого в UI появляется задача takeover; по завершении виден кластер с `appname` (`oceanbase.cluster_name`, в gist — `obcluster`, `cluster_id=1`).
+
+`check4ocp` без `-V` в OBD по умолчанию считает OCP **3.1.1** и печатает:
+
+```text
+[ERROR] The current user must be the admin user. Run the edit-config command to modify the user.username field
+oceanbase-ce Check passed.
+```
+
+Это не поломка кластера и не ошибка SSH. `user.username` в конфиге OBD — OS-пользователь на ВМ (`obadmin`), не логин консоли OCP (`admin`). Проверка действует только для OCP < 4.2.0; для ocp-server-ce 4.2+ её снимает явный `-V`. **Не** меняйте `user.username` на `admin` — сломается SSH к observer.
+
+Скрипт `./scripts/deploy.sh ocp-register` сам резолвит версию (`ocp.version`, YAML OBD, `/api/v2/info`, иначе 4.4.2) и всегда вызывает `check4ocp -V`. Вручную:
+
+```bash
+obd cluster check4ocp ob-yc-prod -V 4.4.2
+obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp.admin_password>'
+```
 
 Если export-to-ocp недоступен — в UI «Take over cluster»:
 
