@@ -15,6 +15,7 @@
 | **ob-configserver** | Опционально | Очень низкая | 2 vCPU, 4 GB RAM или colocate | Метаданные конфигурации; по умолчанию на observer-1 |
 | **prometheus + grafana** | Да (если включены) | Средняя, disk I/O | 4 vCPU, 16 GB RAM | Сбор метрик не должен конкурировать с observer |
 | **OCP** (ocp-server-ce) | Да (если включён) | Средняя, JVM | 4 vCPU, 16 GB RAM | Веб-консоль управления кластером; отдельная ВМ |
+| **runner** (приложения / TPC-C) | Да (если включён) | CPU/RAM приложений | 8 vCPU, 32 GB RAM, 150 GB SSD | Нагрузка вне кластера; имена `ob-runner-N` |
 | **OBD** (control) | Локально | Низкая | 4 vCPU, 8 GB (если отдельная ВМ) | oceanbase-skills: достаточно управляющей машины оператора |
 
 ## Типы дисков Yandex Cloud
@@ -24,7 +25,7 @@
 | **Data** (SSTable, `data_dir`) | `network-ssd-nonreplicated` | Данные реплицируются между observer (3 реплики Paxos); отказ одного диска/узла перекрывается репликацией. Максимальная производительность без избыточности на уровне блока |
 | **Log** (clog/redo, `redo_dir`) | `network-ssd-nonreplicated` | Clog реплицируется между observer (majority persist Paxos); отказ одного диска/узла перекрывается репликацией. Максимальная производительность без избыточности на уровне блока |
 | **Boot** (observer) | `network-ssd-io-m3` | Бинарники и `home_path`; потеря усложняет восстановление |
-| **Boot** (obproxy, monitoring) | `network-ssd` | Достаточно для лёгких компонентов |
+| **Boot** (obproxy, monitoring, runner) | `network-ssd` | Достаточно для лёгких компонентов и приложений (runner: 150 GB) |
 | **Monitoring data** | `network-ssd-io-m3` | История метрик; потеря нежелательна |
 
 ### Ограничение Yandex Cloud

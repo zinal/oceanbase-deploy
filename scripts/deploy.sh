@@ -101,6 +101,9 @@ case "${STEP}" in
   recover-obproxy)
     run_cmd bash "${ROOT}/scripts/07-recover-obproxy.sh" "${@:2}"
     ;;
+  runner-haproxy)
+    run_cmd bash "${ROOT}/scripts/10-runner-haproxy.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -108,6 +111,9 @@ case "${STEP}" in
     run_python_step 03-generate-obd-config.py
     run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
+    if [[ "$(yaml_get vm_profiles.runner.enabled)" == "true" ]]; then
+      run_cmd bash "${ROOT}/scripts/10-runner-haproxy.sh"
+    fi
     ;;
   destroy)
     run_cmd bash "${ROOT}/scripts/99-destroy.sh" "${2:-}"
@@ -130,7 +136,8 @@ case "${STEP}" in
   ocp-clockdiff — wrapper /usr/sbin/clockdiff + выключить precheck в OCP (Retry takeover)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
-  all        — полный цикл (по умолчанию)
+  runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
+  all        — полный цикл (по умолчанию; runner-haproxy если vm_profiles.runner.enabled)
   destroy    — удаление ВМ [--destroy-obd]
 
 Пример:

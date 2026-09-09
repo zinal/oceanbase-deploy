@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash -n "${ROOT}/scripts/01-provision-vms.sh"
+bash -n "${ROOT}/scripts/10-runner-haproxy.sh"
 bash -n "${ROOT}/scripts/lib/yc-instance.sh"
 bash -n "${ROOT}/scripts/lib/yc-async.sh"
 
@@ -17,6 +18,8 @@ OBSERVER_1_NAME=ob-yc-prod-observer-1
 OBSERVER_25_NAME=ob-yc-prod-observer-25
 OBPROXY_1_NAME=ob-yc-prod-obproxy-1
 OCP_1_NAME=ob-yc-prod-ocp-1
+RUNNER_1_NAME=ob-runner-1
+RUNNER_5_NAME=ob-runner-5
 DEPLOY_NAME=ob-yc-prod
 SSH_USER=demo
 OBSERVER_COUNT=30
@@ -26,6 +29,8 @@ names=()
 collect_inventory_vm_names names "${inv}"
 got="$(printf '%s\n' "${names[@]}" | sort)"
 want="$(printf '%s\n' \
+  ob-runner-1 \
+  ob-runner-5 \
   ob-yc-prod-obproxy-1 \
   ob-yc-prod-observer-1 \
   ob-yc-prod-observer-25 \

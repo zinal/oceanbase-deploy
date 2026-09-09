@@ -92,6 +92,21 @@ vm_profiles:
     log_disk:
       enabled: false
 
+  runner:
+    enabled: true
+    count: 5
+    name_prefix: ob-runner
+    platform: standard-v3
+    cores: 8
+    memory_gb: 32
+    boot_disk:
+      type: network-ssd
+      size_gb: 150
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
 oceanbase:
   cluster_name: obcluster
   version: ""

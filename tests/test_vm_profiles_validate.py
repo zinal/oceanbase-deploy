@@ -16,6 +16,7 @@ from vm_profiles import (  # noqa: E402
     password_complexity_error,
     recommended_system_memory_gb,
     recommended_system_memory_range,
+    resolve_profile,
     validate_oceanbase_against_vms,
     validate_profiles,
 )
@@ -338,6 +339,48 @@ def test_example_yaml_has_no_errors() -> None:
     assert errors == [], errors
 
 
+def test_runner_resolve_defaults() -> None:
+    cfg = {
+        "vm_defaults": {"platform": "standard-v3", "core_fraction": 100},
+        "yandex_cloud": {
+            "image_folder_id": "standard-images",
+            "image_family": "ubuntu-2204-lts",
+        },
+        "vm_profiles": {"runner": {"enabled": True}},
+    }
+    profile = resolve_profile(cfg, "runner")
+    assert profile["cores"] == 8
+    assert profile["memory_gb"] == 32
+    assert profile["count"] == 5
+    assert profile["name_prefix"] == "ob-runner"
+    assert profile["boot_disk"] == {"type": "network-ssd", "size_gb": 150}
+
+
+def test_resolve_lines_count_unchanged() -> None:
+    """yc-instance.sh load_vm_params читает 15 строк из resolve --format lines."""
+    cfg = base_cfg()
+    profile = resolve_profile(cfg, "observer")
+    assert "name_prefix" in profile
+    lines = [
+        profile["platform"],
+        profile["cores"],
+        profile["memory_gb"],
+        profile["image_spec"],
+        profile["core_fraction"],
+        profile["boot_disk"].get("type", "network-ssd"),
+        profile["boot_disk"].get("size_gb", 50),
+        str(profile["data_disk"].get("enabled", False)).lower(),
+        profile["data_disk"].get("type", "network-ssd"),
+        profile["data_disk"].get("size_gb", 0),
+        profile["data_disk"].get("mount_point", "/data"),
+        str(profile["log_disk"].get("enabled", False)).lower(),
+        profile["log_disk"].get("type", "network-ssd-nonreplicated"),
+        profile["log_disk"].get("size_gb", 0),
+        profile["log_disk"].get("mount_point", "/data/log1"),
+    ]
+    assert len(lines) == 15
+
+
 def main() -> None:
     tests = [
         test_parse_size,
@@ -366,6 +409,8 @@ def main() -> None:
         test_ob_user_password_two_classes,
         test_ob_idc_name,
         test_example_yaml_has_no_errors,
+        test_runner_resolve_defaults,
+        test_resolve_lines_count_unchanged,
     ]
     for fn in tests:
         fn()

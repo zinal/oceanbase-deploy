@@ -20,7 +20,17 @@ observer_count="$(yaml_get vm_profiles.observer.count)"
 obproxy_count="$(yaml_get vm_profiles.obproxy.count)"
 monitoring_enabled="$(yaml_get vm_profiles.monitoring.enabled)"
 ocp_enabled="$(yaml_get vm_profiles.ocp.enabled)"
+runner_enabled="$(yaml_get vm_profiles.runner.enabled)"
 configserver_dedicated="$(yaml_get vm_profiles.configserver.dedicated)"
+
+runner_count=0
+runner_name_prefix="ob-runner"
+if [[ "${runner_enabled}" == "true" ]]; then
+  runner_count="$(yaml_get vm_profiles.runner.count)"
+  [[ -n "${runner_count}" && "${runner_count}" != "null" ]] || runner_count=5
+  runner_name_prefix="$(yaml_get vm_profiles.runner.name_prefix)"
+  [[ -n "${runner_name_prefix}" && "${runner_name_prefix}" != "null" ]] || runner_name_prefix="ob-runner"
+fi
 
 inventory="${GENERATED_DIR}/inventory.env"
 
@@ -28,9 +38,14 @@ declare -a VM_QUEUE=()
 
 queue_vms() {
   local role="$1" count="$2" prefix="$3"
+  local name_prefix="${4:-}"
   local i name
   for (( i=1; i<=count; i++ )); do
-    name="${deploy_name}-${prefix}-${i}"
+    if [[ -n "${name_prefix}" ]]; then
+      name="${name_prefix}-${i}"
+    else
+      name="${deploy_name}-${prefix}-${i}"
+    fi
     VM_QUEUE+=("${role}:${prefix}:${i}:${name}")
   done
 }
@@ -57,6 +72,7 @@ build_inventory_from_queue() {
   write_inventory "CONFIGSERVER_COUNT" "$([[ "${configserver_dedicated}" == "true" ]] && yaml_get vm_profiles.configserver.count || echo 0)"
   write_inventory "MONITOR_COUNT" "$([[ "${monitoring_enabled}" == "true" ]] && yaml_get vm_profiles.monitoring.count || echo 0)"
   write_inventory "OCP_COUNT" "$([[ "${ocp_enabled}" == "true" ]] && yaml_get vm_profiles.ocp.count || echo 0)"
+  write_inventory "RUNNER_COUNT" "${runner_count:-0}"
   write_inventory "DEPLOY_NAME" "${deploy_name}"
   write_inventory "SSH_USER" "$(yaml_get yandex_cloud.ssh_user)"
   write_inventory "CONFIGSERVER_DEDICATED" "${configserver_dedicated}"
@@ -218,6 +234,11 @@ case "${ACTION}" in
       ocp_count="$(yaml_get vm_profiles.ocp.count)"
       info "Планирование OCP-ВМ: ${ocp_count}"
       queue_vms "ocp" "${ocp_count}" "ocp"
+    fi
+
+    if [[ "${runner_enabled}" == "true" && "${runner_count}" -gt 0 ]]; then
+      info "Планирование runner-ВМ: ${runner_count} (${runner_name_prefix}-N)"
+      queue_vms "runner" "${runner_count}" "runner" "${runner_name_prefix}"
     fi
 
     provision_async
