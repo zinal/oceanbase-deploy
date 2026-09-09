@@ -50,7 +50,7 @@ prepare_ocp_vm() {
 
   info "Подготовка OCP-ВМ ${host}..."
 
-  if ! run_remote "${host}" "sudo env \
+  if ! run_remote_with_apt "${host}" "sudo env \
 ROLE='ocp' \
 DEPLOY_USER='${DEPLOY_USER}' \
 DATA_DISK_ENABLED='${need_data}' \
@@ -64,11 +64,11 @@ bash -s" < "${LIB_DIR}/lib/mount-role-disks.sh"
     die "Ошибка монтирования дисков на ${host}"
   fi
 
-  if ! run_remote "${host}" "sudo bash -s" <<REMOTE
+  if ! run_remote_with_apt "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 command -v mkfs.ext4 >/dev/null 2>&1 || {
-  apt-get update -qq
-  apt-get install -y -qq e2fsprogs
+  apt_get update -qq
+  apt_get install -y -qq e2fsprogs
 }
 swapoff -a 2>/dev/null || true
 sed -i.bak '/ swap / s/^/#/' /etc/fstab 2>/dev/null || true
@@ -78,12 +78,12 @@ REMOTE
   fi
 
   info "Установка chrony на ${host} (OCP)..."
-  if ! run_remote "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
+  if ! run_remote_with_apt "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
   then
     die "Ошибка установки chrony на ${host}"
   fi
 
-  if ! run_remote "${host}" "sudo env \
+  if ! run_remote_with_apt "${host}" "sudo env \
 DEPLOY_USER='${DEPLOY_USER}' \
 OCP_HOME='${OCP_HOME}' \
 OCP_SOFT_DIR='${OCP_SOFT_DIR}' \

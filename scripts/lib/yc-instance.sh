@@ -42,9 +42,11 @@ write_cloud_init() {
   local data_en="$5" data_mp="$6" log_en="$7" log_mp="$8"
   local data_dir="$9" redo_dir="${10}"
   local mount_script="${LIB_DIR}/mount-role-disks.sh"
+  local apt_retry="${LIB_DIR}/apt-retry.sh"
   require_file "${mount_script}"
+  require_file "${apt_retry}"
   python3 - "$cloud_init" "$ssh_user" "$ssh_key_file" "$role" \
-    "$data_en" "$data_mp" "$log_en" "$log_mp" "$data_dir" "$redo_dir" "$mount_script" <<'PY'
+    "$data_en" "$data_mp" "$log_en" "$log_mp" "$data_dir" "$redo_dir" "$mount_script" "$apt_retry" <<'PY'
 import sys, pathlib
 (
     out,
@@ -58,9 +60,10 @@ import sys, pathlib
     data_dir,
     redo_dir,
     mount_script,
-) = sys.argv[1:12]
+    apt_retry,
+) = sys.argv[1:13]
 pub = pathlib.Path(key_file).read_text().strip()
-mount_body = pathlib.Path(mount_script).read_text()
+mount_body = pathlib.Path(apt_retry).read_text() + "\n" + pathlib.Path(mount_script).read_text()
 content = f"""#cloud-config
 users:
   - name: {user}

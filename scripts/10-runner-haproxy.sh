@@ -40,11 +40,11 @@ declare -a HAP_LOGS=()
 install_haproxy_on_host() {
   local host="$1"
   info "HAProxy на ${host}..."
-  if ! run_remote "${host}" "sudo env DEBIAN_FRONTEND=noninteractive bash -s" <<'REMOTE'
+  if ! run_remote_with_apt "${host}" "sudo env DEBIAN_FRONTEND=noninteractive bash -s" <<'REMOTE'
 set -euo pipefail
 if ! command -v haproxy >/dev/null 2>&1; then
-  apt-get update -qq
-  apt-get install -y -qq haproxy
+  apt_get update -qq
+  apt_get install -y -qq haproxy
 fi
 install -d -m 0755 /etc/haproxy
 REMOTE

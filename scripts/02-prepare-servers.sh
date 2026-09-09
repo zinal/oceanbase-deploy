@@ -122,7 +122,7 @@ prepare_host() {
 
   info "Подготовка ${host} (${role})..."
 
-  if ! run_remote "${host}" "sudo env \
+  if ! run_remote_with_apt "${host}" "sudo env \
 ROLE='${role}' \
 DEPLOY_USER='${DEPLOY_USER}' \
 DATA_DISK_ENABLED='${need_data}' \
@@ -136,12 +136,12 @@ bash -s" < "${LIB_DIR}/lib/mount-role-disks.sh"
     die "Ошибка монтирования дисков на ${host} (${role})"
   fi
 
-  if ! run_remote "${host}" "sudo bash -s" <<REMOTE
+  if ! run_remote_with_apt "${host}" "sudo bash -s" <<REMOTE
 set -euo pipefail
 
 command -v mkfs.ext4 >/dev/null 2>&1 || {
-  apt-get update -qq
-  apt-get install -y -qq e2fsprogs
+  apt_get update -qq
+  apt_get install -y -qq e2fsprogs
 }
 
 cat >/etc/sysctl.d/99-oceanbase.conf <<'SYSCTL'
@@ -194,8 +194,8 @@ if [[ "${INSTALL_NODE_EXPORTER}" == "true" ]]; then
   NODE_EXPORTER_PORT="${NODE_EXPORTER_PORT}"
   NODE_EXPORTER_VERSION="${NODE_EXPORTER_VERSION}"
   if ! systemctl is-active --quiet node_exporter 2>/dev/null; then
-    apt-get update -qq
-    apt-get install -y -qq wget ca-certificates
+    apt_get update -qq
+    apt_get install -y -qq wget ca-certificates
     ARCH="\$(uname -m)"
     case "\${ARCH}" in
       x86_64) NE_ARCH=amd64 ;;
@@ -239,7 +239,7 @@ REMOTE
   fi
 
   info "Установка chrony на ${host} (${role})..."
-  if ! run_remote "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
+  if ! run_remote_with_apt "${host}" "sudo env NTP_SERVERS='${NTP_SERVERS}' bash -s" < "${LIB_DIR}/lib/prepare-chrony.sh"
   then
     die "Ошибка установки chrony на ${host} (${role})"
   fi
@@ -250,7 +250,7 @@ REMOTE
 prepare_ocp_host() {
   local host="$1"
   info "Установка Java и clockdiff на ${host} (OCP)..."
-  if ! run_remote "${host}" "sudo env \
+  if ! run_remote_with_apt "${host}" "sudo env \
 DEPLOY_USER='${DEPLOY_USER}' \
 OCP_HOME='${OCP_HOME}' \
 OCP_SOFT_DIR='${OCP_SOFT_DIR}' \

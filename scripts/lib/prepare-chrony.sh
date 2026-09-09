@@ -7,6 +7,16 @@
 
 set -euo pipefail
 
+if ! declare -F apt_get >/dev/null 2>&1; then
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    # shellcheck source=apt-retry.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/apt-retry.sh"
+  else
+    echo "ERROR: apt_get не определён — prepend scripts/lib/apt-retry.sh" >&2
+    exit 1
+  fi
+fi
+
 NTP_SERVERS="${NTP_SERVERS:-}"
 
 # Рекомендованные NTP для Compute Cloud:
@@ -30,8 +40,8 @@ chrony_service_name() {
 
 install_chrony() {
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq chrony
+    apt_get update -qq
+    apt_get install -y -qq chrony
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q chrony
   elif command -v dnf >/dev/null 2>&1; then

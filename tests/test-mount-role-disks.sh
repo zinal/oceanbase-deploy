@@ -216,6 +216,7 @@ source "${SCRIPT}"
 ROLE=obproxy DATA_DISK_ENABLED=false LOG_DISK_ENABLED=false \
   MARKER_FILE="${tmp}/missing-marker" \
   FSTAB_FILE="${tmp}/fstab-unused" \
-  bash -s < "${SCRIPT}" || fail "bash -s для obproxy должен завершиться успешно"
+  bash -s < <(cat "${ROOT}/scripts/lib/apt-retry.sh" "${SCRIPT}") \
+  || fail "bash -s для obproxy должен завершиться успешно"
 
 echo "OK test-mount-role-disks"

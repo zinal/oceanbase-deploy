@@ -4,6 +4,16 @@
 
 set -euo pipefail
 
+if ! declare -F apt_get >/dev/null 2>&1; then
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    # shellcheck source=apt-retry.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/apt-retry.sh"
+  else
+    echo "ERROR: apt_get не определён — prepend scripts/lib/apt-retry.sh" >&2
+    exit 1
+  fi
+fi
+
 DEPLOY_USER="${DEPLOY_USER:-}"
 OCP_HOME="${OCP_HOME:-/home/obadmin/ocp}"
 OCP_SOFT_DIR="${OCP_SOFT_DIR:-/ocp-data/software}"
@@ -19,8 +29,8 @@ require_root() {
 
 install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq ca-certificates curl wget iputils-clockdiff libcap2-bin
+    apt_get update -qq
+    apt_get install -y -qq ca-certificates curl wget iputils-clockdiff libcap2-bin
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q java-11-openjdk-headless iputils libcap
   else
@@ -39,7 +49,7 @@ install_java() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y -qq openjdk-11-jdk-headless
+    apt_get install -y -qq openjdk-11-jdk-headless
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q java-11-openjdk-headless
   fi
@@ -99,7 +109,7 @@ install_clockdiff() {
 
   if ! command -v setcap >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
-      apt-get install -y -qq libcap2-bin
+      apt_get install -y -qq libcap2-bin
     elif command -v yum >/dev/null 2>&1; then
       yum install -y -q libcap
     fi
@@ -170,8 +180,8 @@ require_root
 
 if [[ "${CLOCKDIFF_ONLY:-}" == "true" ]]; then
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq iputils-clockdiff libcap2-bin
+    apt_get update -qq
+    apt_get install -y -qq iputils-clockdiff libcap2-bin
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q iputils libcap
   fi
