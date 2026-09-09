@@ -32,6 +32,7 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 | `04-deploy-cluster.sh` | cluster lifecycle (deploy, start, display) |
 | `diagnose-obd-start.sh` | зависание start / obshell bootstrap, zone layout |
 | `08-create-tenant.sh` | tenant-management (create tenant, user, database) |
+| `09-ocp-register.sh` | OCP CE takeover (`check4ocp`, `export-to-ocp`) |
 | `05-scale-out.sh` | scale_out |
 
 ## Безопасность (из cluster-management)

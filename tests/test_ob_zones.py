@@ -201,6 +201,16 @@ def test_diagnose_script_help() -> None:
     deploy_case = deploy.split("deploy)")[1].split("tenant)")[0]
     assert "diagnose-obd-start.sh" in deploy
     assert "03-generate-obd-config.py" in deploy_case
+    assert "09-ocp-register.sh" in deploy
+    assert "ocp-register" in deploy
+
+
+def test_ocp_register_script_help() -> None:
+    script = ROOT / "scripts" / "09-ocp-register.sh"
+    assert script.is_file()
+    out = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True, check=True)
+    assert "export-to-ocp" in out.stdout
+    assert "ocp-server-ce" in out.stdout
 
 
 def test_dump_obshell_dag_maps_numeric_state() -> None:
@@ -251,6 +261,7 @@ def main() -> None:
         test_too_many_zones_detected_in_obd_yaml,
         test_check_obd_cli_rejects_thirty_zones,
         test_diagnose_script_help,
+        test_ocp_register_script_help,
         test_dump_obshell_dag_maps_numeric_state,
         test_obshell_ocs_header,
     ]
