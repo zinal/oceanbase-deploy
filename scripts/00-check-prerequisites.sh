@@ -81,6 +81,7 @@ ocp_vm_enabled="$(yaml_get vm_profiles.ocp.enabled)"
 if [[ "${ocp_enabled}" == "true" || "${ocp_vm_enabled}" == "true" ]]; then
   if [[ "${ocp_enabled}" != "true" || "${ocp_vm_enabled}" != "true" ]]; then
     warn "OCP: для развёртывания нужны оба флага — ocp.enabled и vm_profiles.ocp.enabled"
+    warn "ocp.root_password всё равно попадёт в oceanbase-ce (пароль root@sys), даже без OCP-ВМ"
   else
     info "OCP включён: будет использована отдельная ВМ (vm_profiles.ocp)"
     python3 "${LIB_DIR}/lib/vm_profiles.py" resolve ocp --config "${CONFIG_FILE}" >/dev/null

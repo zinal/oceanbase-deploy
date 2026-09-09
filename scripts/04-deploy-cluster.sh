@@ -131,6 +131,17 @@ elif ! run_obd cluster start "${CLUSTER_NAME}"; then
   die "obd cluster start ${CLUSTER_NAME} не завершился успешно"
 fi
 
+if [[ -z "$(sql_client_bin)" ]]; then
+  die "Нет mysql/obclient в PATH — SQL к seed observer невозможен (OBD start при этом может быть ok). Установите mysql-client или obclient."
+fi
+if ! wait_seed_sys_sql 90; then
+  warn "OBD считает кластер running, но SQL к seed observer нет: $(observer_sys_sql_fail_hint)"
+  warn "Частая причина: ocp.root_password задан, а в OBD yaml его нет (OCP VM выключен) — root@sys пустой."
+  warn "Проверьте: mysql -h${OBSERVER_1_IP:-<OBSERVER_1_IP>} -P$(yaml_get oceanbase.ports.mysql) -uroot"
+  warn "          (сначала пустой пароль, затем ocp.root_password)"
+  die "Нет SQL к seed observer после start — scale-out остановлен. ./scripts/deploy.sh diagnose"
+fi
+
 registered_obd_config() {
   local cluster_dir="${HOME}/.obd/cluster/${CLUSTER_NAME}"
   local candidate

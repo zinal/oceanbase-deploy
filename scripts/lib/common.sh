@@ -469,35 +469,114 @@ REMOTE
 # OBD Cursor не ставит ob_query_timeout: ALTER SYSTEM ADD SERVER падает за 10s (ERROR 4012).
 OB_ADD_SERVER_TIMEOUT_US="${OB_ADD_SERVER_TIMEOUT_US:-3600000000}"
 
+# Рабочие учётки root@sys после первого успешного SELECT 1 (пароль может быть пустым).
+OB_SYS_SQL_READY=0
+OB_SYS_SQL_USER=""
+OB_SYS_SQL_PASS=""
+OB_SYS_SQL_CLIENT=""
+OB_SYS_SQL_LAST_ERR=""
+OB_SYS_SQL_EMPTY_WARNED=0
+
 sql_client_bin() {
-  if command -v mysql >/dev/null 2>&1; then
-    printf '%s' mysql
-  elif command -v obclient >/dev/null 2>&1; then
-    printf '%s' obclient
-  else
-    printf ''
+  local c bundled=() old_nullglob
+  for c in obclient mysql; do
+    if command -v "${c}" >/dev/null 2>&1; then
+      printf '%s' "${c}"
+      return 0
+    fi
+  done
+  old_nullglob="$(shopt -p nullglob)"
+  shopt -s nullglob
+  bundled=( "${HOME}/.obd/repository/obclient/"*/obclient/bin/obclient )
+  eval "${old_nullglob}"
+  if ((${#bundled[@]} > 0)) && [[ -x "${bundled[-1]}" ]]; then
+    printf '%s' "${bundled[-1]}"
+    return 0
   fi
+  printf ''
 }
 
 observer_sys_user() {
-  printf '%s' "${OB_SYS_USER:-root@sys}"
+  printf '%s' "${OB_SYS_USER:-root}"
+}
+
+observer_sys_users() {
+  if [[ -n "${OB_SYS_USER:-}" ]]; then
+    printf '%s\n' "${OB_SYS_USER}"
+    return 0
+  fi
+  # Прямой observer:2881 — sys по умолчанию; root@sys ломает MariaDB (--user=root@host).
+  printf '%s\n' "root"
+  printf '%s\n' "root@sys"
+}
+
+# Кандидаты пароля root@sys: config, затем пустой (bootstrap / OBD yaml без root_password).
+observer_root_password_candidates() {
+  local p
+  if [[ -n "${OB_ROOT_PASSWORD:-}" ]]; then
+    printf '%s\n' "${OB_ROOT_PASSWORD}"
+  fi
+  p="$(yaml_get ocp.root_password 2>/dev/null || true)"
+  if [[ -n "${p}" && "${p}" != "null" && "${p}" != "${OB_ROOT_PASSWORD:-}" ]]; then
+    printf '%s\n' "${p}"
+  fi
+  printf '%s\n' ""
+}
+
+observer_mysql_port() {
+  local port
+  port="$(yaml_get oceanbase.ports.mysql)"
+  [[ -n "${port}" && "${port}" != "null" ]] || port=2881
+  printf '%s' "${port}"
+}
+
+observer_mysql_exec() {
+  local host="$1" sql="$2" mode="$3" user="$4" pass="$5" client="$6" port="$7"
+  if [[ -n "${pass}" ]]; then
+    MYSQL_PWD="${pass}" "${client}" -h"${host}" -P"${port}" -u"${user}" --connect-timeout=8 "${mode}" "${sql}"
+  else
+    env -u MYSQL_PWD "${client}" -h"${host}" -P"${port}" -u"${user}" --connect-timeout=8 "${mode}" "${sql}"
+  fi
 }
 
 observer_mysql_on_host() {
   local host="$1" sql="$2" mode="${3:--Nse}"
-  local client port pass user
+  local client port user pass err configured
   client="$(sql_client_bin)"
-  [[ -n "${client}" ]] || return 1
-  port="$(yaml_get oceanbase.ports.mysql)"
-  [[ -n "${port}" && "${port}" != "null" ]] || port=2881
-  pass="$(yaml_get ocp.root_password)"
-  [[ "${pass}" == "null" ]] && pass=""
-  user="$(observer_sys_user)"
-  if [[ -n "${pass}" ]]; then
-    MYSQL_PWD="${pass}" "${client}" -h"${host}" -P"${port}" --user="${user}" --connect-timeout=8 "${mode}" "${sql}"
-  else
-    "${client}" -h"${host}" -P"${port}" --user="${user}" --connect-timeout=8 "${mode}" "${sql}"
+  if [[ -z "${client}" ]]; then
+    OB_SYS_SQL_LAST_ERR="нет mysql/obclient в PATH (и нет ~/.obd/repository/obclient)"
+    return 1
   fi
+  port="$(observer_mysql_port)"
+
+  if [[ "${OB_SYS_SQL_READY}" -eq 1 ]]; then
+    observer_mysql_exec "${host}" "${sql}" "${mode}" \
+      "${OB_SYS_SQL_USER}" "${OB_SYS_SQL_PASS}" "${OB_SYS_SQL_CLIENT}" "${port}"
+    return
+  fi
+
+  while IFS= read -r user; do
+    [[ -n "${user}" ]] || continue
+    while IFS= read -r pass; do
+      err="$(observer_mysql_exec "${host}" "SELECT 1" "-Nse" "${user}" "${pass}" "${client}" "${port}" 2>&1 >/dev/null)" && {
+        OB_SYS_SQL_READY=1
+        OB_SYS_SQL_USER="${user}"
+        OB_SYS_SQL_PASS="${pass}"
+        OB_SYS_SQL_CLIENT="${client}"
+        if [[ -z "${pass}" && "${OB_SYS_SQL_EMPTY_WARNED}" -eq 0 ]]; then
+          configured="$(yaml_get ocp.root_password 2>/dev/null || true)"
+          if [[ -n "${configured}" && "${configured}" != "null" ]]; then
+            warn "root@sys принимает пустой пароль, хотя в config задан ocp.root_password. Так бывает, если OBD yaml без root_password (OCP VM выключен). Пароль не меняем — иначе OBD scale_out отвалится. SQL идёт с пустым."
+            OB_SYS_SQL_EMPTY_WARNED=1
+          fi
+        fi
+        observer_mysql_exec "${host}" "${sql}" "${mode}" "${user}" "${pass}" "${client}" "${port}"
+        return
+      }
+      OB_SYS_SQL_LAST_ERR="${err:-отказ ${client} -h${host} -P${port} -u${user}}"
+    done < <(observer_root_password_candidates)
+  done < <(observer_sys_users)
+  return 1
 }
 
 observer_sys_sql() {
@@ -505,11 +584,34 @@ observer_sys_sql() {
   local ip
   for ip in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
     [[ -n "${ip}" ]] || continue
-    if observer_mysql_on_host "${ip}" "${sql}" -Nse 2>/dev/null; then
+    if observer_mysql_on_host "${ip}" "${sql}" -Nse; then
       return 0
     fi
   done
   return 1
+}
+
+wait_seed_sys_sql() {
+  local timeout="${1:-90}" elapsed=0
+  while (( elapsed < timeout )); do
+    if observer_sys_sql "SELECT 1" >/dev/null; then
+      return 0
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+  return 1
+}
+
+observer_sys_sql_fail_hint() {
+  local port client
+  port="$(observer_mysql_port)"
+  client="$(sql_client_bin)"
+  if [[ -z "${client}" ]]; then
+    printf '%s' "нет mysql/obclient в PATH"
+    return
+  fi
+  printf '%s' "${OB_SYS_SQL_LAST_ERR:-${client} не подключился к ${OBSERVER_1_IP:-?}:${port} (пустой пароль или ocp.root_password; пользователь root / root@sys)}"
 }
 
 raise_sys_query_timeout() {
@@ -662,8 +764,8 @@ scale_out_observer() {
     zones+=("${zone}")
   done < <(obd_yaml_observer_spec "${yaml}")
   [[ "${#ips[@]}" -ge 1 ]] || die "не разобрать observer spec из ${yaml}"
-  if ! observer_sys_sql "SELECT 1" >/dev/null 2>&1; then
-    die "Нет SQL к seed observer — не очищаем узлы из ${yaml} (риск стереть уже вступивший). Почините root@sys и повторите deploy."
+  if ! observer_sys_sql "SELECT 1" >/dev/null; then
+    die "Нет SQL к seed observer — не очищаем узлы из ${yaml} (риск стереть уже вступивший). $(observer_sys_sql_fail_hint). Почините root@sys и повторите deploy."
   fi
   raise_sys_query_timeout || true
   local idx

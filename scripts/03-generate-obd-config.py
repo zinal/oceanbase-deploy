@@ -72,6 +72,33 @@ def ocp_enabled(cfg: dict) -> bool:
     return bool(ocp.get("enabled")) and bool(profiles.get("ocp", {}).get("enabled", False))
 
 
+def apply_oceanbase_sys_passwords(obd_global: dict, cfg: dict) -> None:
+    """ocp.root_password / proxyro_password — пароли oceanbase-ce, не только OCP.
+
+    OBD пишет их в ALTER USER после bootstrap. Если секция ocp.* задана, а
+    vm_profiles.ocp.enabled=false, пароли всё равно нужны: иначе root@sys
+    остаётся пустым, а SQL scale-out ходит с ocp.root_password и падает.
+    """
+    ocp = ocp_cfg(cfg)
+    if not ocp:
+        return
+    vp = _vm_profiles_mod()
+    if ocp.get("root_password"):
+        err = vp.password_complexity_error(
+            "ocp.root_password", ocp.get("root_password"), required=False, min_classes=2
+        )
+        if err:
+            raise ValueError(err.removeprefix("ERROR: "))
+        obd_global["root_password"] = ocp["root_password"]
+    if ocp.get("proxyro_password"):
+        err = vp.password_complexity_error(
+            "ocp.proxyro_password", ocp.get("proxyro_password"), required=False, min_classes=2
+        )
+        if err:
+            raise ValueError(err.removeprefix("ERROR: "))
+        obd_global["proxyro_password"] = ocp["proxyro_password"]
+
+
 def monitoring_cfg(cfg: dict) -> dict:
     return cfg.get("monitoring", {}) or {}
 
@@ -297,6 +324,7 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                 "enable_syslog_wf": False,
             },
         })
+        apply_oceanbase_sys_passwords(obd_ob["global"], cfg)
         if ocp_enabled(cfg):
             ocp = ocp_cfg(cfg)
             meta = ocp.get("meta_tenant", {}) or {}
@@ -321,21 +349,6 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                     "ocp_monitor_db": monitor.get("database", "monitor_database"),
                 }
             )
-            vp = _vm_profiles_mod()
-            if ocp.get("root_password"):
-                err = vp.password_complexity_error(
-                    "ocp.root_password", ocp.get("root_password"), required=False, min_classes=2
-                )
-                if err:
-                    raise ValueError(err.removeprefix("ERROR: "))
-                obd_ob["global"]["root_password"] = ocp["root_password"]
-            if ocp.get("proxyro_password"):
-                err = vp.password_complexity_error(
-                    "ocp.proxyro_password", ocp.get("proxyro_password"), required=False, min_classes=2
-                )
-                if err:
-                    raise ValueError(err.removeprefix("ERROR: "))
-                obd_ob["global"]["proxyro_password"] = ocp["proxyro_password"]
         for sname, override in server_overrides.items():
             obd_ob[sname] = override
         zone_err = ob_zones.too_many_zones_error(
