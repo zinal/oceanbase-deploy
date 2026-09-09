@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -173,6 +176,60 @@ def test_without_obagent_does_not_create_agent_batches() -> None:
     assert plan[0]["obagent"] is None
 
 
+def test_scale_out_cli_writes_resumable_manifest() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        full_path = root / "full.yaml"
+        registered_path = root / "registered.yaml"
+        manifest = root / "plan" / "manifest.txt"
+        PLAN.dump_yaml(full_config(count=7), full_path)
+        PLAN.dump_yaml(registered_config([1, 2, 3, 4], [1, 2, 3]), registered_path)
+
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "lib" / "ob_deploy_plan.py"),
+                "scale-out",
+                "--input",
+                str(full_path),
+                "--registered-config",
+                str(registered_path),
+                "--output-dir",
+                str(root / "plan"),
+                "--manifest",
+                str(manifest),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+        first_label, first_ob, first_agent = lines[0].split("|")
+        assert first_label == "server4-server6"
+        assert ips(PLAN.load_yaml(Path(first_ob))["oceanbase-ce"]) == [
+            "10.0.0.5",
+            "10.0.0.6",
+        ]
+        assert ips(PLAN.load_yaml(Path(first_agent))["obagent"]) == [
+            "10.0.0.4",
+            "10.0.0.5",
+            "10.0.0.6",
+        ]
+
+
+def test_malformed_registered_config_fails_closed() -> None:
+    registered = registered_config([1, 2, 3], [1, 2, 3])
+    registered["oceanbase-ce"]["servers"].append({"name": "broken"})
+    try:
+        PLAN.build_scale_out_plan(full_config(count=6), registered)
+    except ValueError as exc:
+        assert "invalid OBD server entry" in str(exc)
+    else:
+        raise AssertionError("malformed OBD metadata was treated as an empty cluster")
+
+
 if __name__ == "__main__":
     test_seed_keeps_three_zones_and_service_components()
     test_scale_out_plan_uses_balanced_triples()
@@ -180,4 +237,6 @@ if __name__ == "__main__":
     test_scale_out_plan_is_empty_when_cluster_is_complete()
     test_seed_rejects_invalid_layout()
     test_without_obagent_does_not_create_agent_batches()
+    test_scale_out_cli_writes_resumable_manifest()
+    test_malformed_registered_config_fails_closed()
     print("ok")

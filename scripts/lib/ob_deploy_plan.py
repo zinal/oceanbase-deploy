@@ -139,10 +139,7 @@ def registered_component_ips(cfg: dict[str, Any], component_key: str) -> set[str
     component = cfg.get(component_key)
     if not isinstance(component, dict):
         return set()
-    try:
-        return {server_ip(entry) for entry in component_servers(component)}
-    except ValueError:
-        return set()
+    return {server_ip(entry) for entry in component_servers(component)}
 
 
 def chunks(items: list[Any], size: int) -> list[list[Any]]:
