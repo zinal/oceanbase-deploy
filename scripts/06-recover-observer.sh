@@ -162,6 +162,14 @@ recover_observer_temporary() {
 
   confirm_or_die "Временно восстановить ${OLD_NAME} (${OLD_IP})? ВМ и диски сохраняются."
 
+  if [[ "${SKIP_SQL}" != "true" ]]; then
+    local member_status
+    member_status="$(observer_cluster_status "${OLD_IP}" 2>/dev/null || true)"
+    if [[ -z "${member_status}" ]]; then
+      die "Узла ${OLD_IP} нет в DBA_OB_SERVERS. Это leftover observer (ERROR 4179), не временный отказ. START SERVER бесполезен. Используйте: ./scripts/join-empty-observer.sh ${INDEX} --yes"
+    fi
+  fi
+
   ensure_instance_running "${OLD_NAME}"
   live_ip="$(get_instance_ip "${OLD_NAME}")"
   [[ -n "${live_ip}" ]] || die "Нет IP у ${OLD_NAME}"

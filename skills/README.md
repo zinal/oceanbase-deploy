@@ -34,6 +34,8 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 | `08-create-tenant.sh` | tenant-management (create tenant, user, database) |
 | `09-ocp-register.sh` | OCP CE takeover (`check4ocp`, `export-to-ocp`) |
 | `05-scale-out.sh` | scale_out |
+| `join-empty-observer.sh` | leftover observer / ERROR 4179 ADD SERVER |
+| `06-recover-observer.sh` | node failure / replace |
 
 ## Безопасность (из cluster-management)
 

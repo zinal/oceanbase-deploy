@@ -444,21 +444,33 @@ sql_client_bin() {
   fi
 }
 
-observer_sys_sql() {
-  local sql="$1"
-  local client ip port pass
+observer_sys_user() {
+  printf '%s' "${OB_SYS_USER:-root@sys}"
+}
+
+observer_mysql_on_host() {
+  local host="$1" sql="$2" mode="${3:--Nse}"
+  local client port pass user
   client="$(sql_client_bin)"
   [[ -n "${client}" ]] || return 1
   port="$(yaml_get oceanbase.ports.mysql)"
   [[ -n "${port}" && "${port}" != "null" ]] || port=2881
   pass="$(yaml_get ocp.root_password)"
   [[ "${pass}" == "null" ]] && pass=""
+  user="$(observer_sys_user)"
+  if [[ -n "${pass}" ]]; then
+    MYSQL_PWD="${pass}" "${client}" -h"${host}" -P"${port}" --user="${user}" --connect-timeout=8 "${mode}" "${sql}"
+  else
+    "${client}" -h"${host}" -P"${port}" --user="${user}" --connect-timeout=8 "${mode}" "${sql}"
+  fi
+}
+
+observer_sys_sql() {
+  local sql="$1"
+  local ip
   for ip in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
     [[ -n "${ip}" ]] || continue
-    if "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=8 -Nse "${sql}" 2>/dev/null; then
-      return 0
-    fi
-    if [[ -n "${pass}" ]] && MYSQL_PWD="${pass}" "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=8 -Nse "${sql}" 2>/dev/null; then
+    if observer_mysql_on_host "${ip}" "${sql}" -Nse 2>/dev/null; then
       return 0
     fi
   done
@@ -495,21 +507,14 @@ wait_observer_active() {
 
 add_observer_server_sql() {
   local ip="$1" rpc="$2" zone="$3"
-  local client port pass seed out
-  client="$(sql_client_bin)"
-  [[ -n "${client}" ]] || return 1
-  port="$(yaml_get oceanbase.ports.mysql)"
-  [[ -n "${port}" && "${port}" != "null" ]] || port=2881
-  pass="$(yaml_get ocp.root_password)"
-  [[ "${pass}" == "null" ]] && pass=""
+  local seed out sql
+  sql="SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}"
   info "ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone} (ob_query_timeout=${OB_ADD_SERVER_TIMEOUT_US})"
   for seed in "${OBSERVER_1_IP:-}" "${OBSERVER_2_IP:-}" "${OBSERVER_3_IP:-}"; do
     [[ -n "${seed}" ]] || continue
     out=""
-    if [[ -n "${pass}" ]]; then
-      out="$(MYSQL_PWD="${pass}" "${client}" -h"${seed}" -P"${port}" -uroot --connect-timeout=8 -e "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}" 2>&1)" && return 0
-    else
-      out="$("${client}" -h"${seed}" -P"${port}" -uroot --connect-timeout=8 -e "SET SESSION ob_query_timeout = ${OB_ADD_SERVER_TIMEOUT_US}; ALTER SYSTEM ADD SERVER '${ip}:${rpc}' ZONE ${zone}" 2>&1)" && return 0
+    if out="$(observer_mysql_on_host "${seed}" "${sql}" -e 2>&1)"; then
+      return 0
     fi
     if grep -qiE 'already exist|duplicate' <<<"${out}"; then
       return 0
@@ -525,17 +530,9 @@ add_observer_server_sql() {
 
 wait_host_mysql() {
   local ip="$1"
-  local port="${2:-2881}"
-  local client pass elapsed=0
-  client="$(sql_client_bin)"
-  [[ -n "${client}" ]] || return 1
-  pass="$(yaml_get ocp.root_password)"
-  [[ "${pass}" == "null" ]] && pass=""
+  local elapsed=0
   while (( elapsed < 90 )); do
-    if "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=5 -Nse "select 1" >/dev/null 2>&1; then
-      return 0
-    fi
-    if [[ -n "${pass}" ]] && MYSQL_PWD="${pass}" "${client}" -h"${ip}" -P"${port}" -uroot --connect-timeout=5 -Nse "select 1" >/dev/null 2>&1; then
+    if observer_mysql_on_host "${ip}" "select 1" -Nse >/dev/null 2>&1; then
       return 0
     fi
     sleep 3
@@ -561,7 +558,7 @@ join_empty_observer() {
     warn "obd cluster start -s ${ip} не удался (узла может не быть в OBD config)"
     return 1
   fi
-  wait_host_mysql "${ip}" "${mysql_port}" || warn "${ip}:${mysql_port} ещё не отвечает — ADD SERVER всё равно"
+  wait_host_mysql "${ip}" || warn "${ip}:${mysql_port} ещё не отвечает — ADD SERVER всё равно"
   add_observer_server_sql "${ip}" "${rpc}" "${zone}" || return 1
   wait_observer_active "${ip}"
 }

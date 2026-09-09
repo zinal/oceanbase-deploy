@@ -275,6 +275,38 @@ def test_spec_cli_prints_fields() -> None:
         assert proc.stdout.strip() == "10.130.0.37 2882 2881 zone3"
 
 
+def test_one_node_cli_sets_seed_rootservice_list() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        src = Path(raw) / "full.yaml"
+        dst = Path(raw) / "server6.yaml"
+        PLAN.dump_yaml(full_config(count=6), src)
+        proc = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/lib/ob_deploy_plan.py"),
+                "one-node",
+                "--input",
+                str(src),
+                "--ip",
+                "10.0.0.6",
+                "--output",
+                str(dst),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "10.0.0.6 2882 2881 zone3" in proc.stdout
+        spec = PLAN.observer_scale_out_spec(PLAN.load_yaml(dst))
+        assert spec["ip"] == "10.0.0.6"
+        assert spec["zone"] == "zone3"
+        assert spec["rootservice_list"].startswith("10.0.0.1:2882:2881")
+        assert "10.0.0.2:2882:2881" in spec["rootservice_list"]
+        assert "10.0.0.3:2882:2881" in spec["rootservice_list"]
+        assert PLAN.server_ip(PLAN.component_servers(PLAN.load_yaml(dst)["oceanbase-ce"])[0]) == "10.0.0.6"
+        assert len(PLAN.component_servers(PLAN.load_yaml(dst)["oceanbase-ce"])) == 1
+
+
 def test_malformed_registered_config_fails_closed() -> None:
     registered = registered_config([1, 2, 3], [1, 2, 3])
     registered["oceanbase-ce"]["servers"].append({"name": "broken"})
@@ -297,5 +329,6 @@ if __name__ == "__main__":
     test_scale_out_cli_writes_resumable_manifest()
     test_observer_scale_out_spec_reads_named_node()
     test_spec_cli_prints_fields()
+    test_one_node_cli_sets_seed_rootservice_list()
     test_malformed_registered_config_fails_closed()
     print("ok")

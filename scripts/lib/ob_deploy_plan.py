@@ -351,6 +351,27 @@ def cmd_spec(args: argparse.Namespace) -> None:
     )
 
 
+def build_one_node_config(full_cfg: dict[str, Any], ip: str) -> dict[str, Any]:
+    """Single-node scale-out YAML for one observer IP, with seed rootservice_list."""
+    ob_key = oceanbase_component_key(full_cfg)
+    desired_ob = full_cfg[ob_key]
+    ob_block = selected_component(desired_ob, {ip}, keep_settings=False)
+    if ob_block is None:
+        raise ValueError(f"no observer with ip {ip} in OBD config")
+    seed_ips = {
+        server_ip(entry) for entry in component_servers(desired_ob)[:SEED_OBSERVER_COUNT]
+    }
+    set_rootservice_list(ob_block, rootservice_list(desired_ob, seed_ips))
+    return {ob_key: ob_block}
+
+
+def cmd_one_node(args: argparse.Namespace) -> None:
+    cfg = build_one_node_config(load_yaml(args.input), args.ip)
+    dump_yaml(cfg, args.output)
+    spec = observer_scale_out_spec(cfg)
+    print(f"{spec['ip']} {spec['rpc_port']} {spec['mysql_port']} {spec['zone']} -> {args.output}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -373,6 +394,15 @@ def build_parser() -> argparse.ArgumentParser:
     spec = sub.add_parser("spec", help="print ip rpc_port mysql_port zone from a one-node YAML")
     spec.add_argument("--input", type=Path, required=True)
     spec.set_defaults(func=cmd_spec)
+
+    one_node = sub.add_parser(
+        "one-node",
+        help="write a one-observer scale-out YAML (ERROR 4179 join) from the full config",
+    )
+    one_node.add_argument("--input", type=Path, required=True)
+    one_node.add_argument("--ip", required=True)
+    one_node.add_argument("--output", type=Path, required=True)
+    one_node.set_defaults(func=cmd_one_node)
     return parser
 
 

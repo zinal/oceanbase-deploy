@@ -507,7 +507,18 @@ YAML каждого `scale_out` содержит только отсутству
 
 `ALTER SYSTEM ADD SERVER` в OBD идёт с дефолтным `ob_query_timeout=10s`. На 6-м и последующих узлах SQL часто не укладывается: `OBD-5000` ровно через ~10 с (`ERROR 4012 … 10000000(us)`), хотя `Start observer ok` уже был. Если после этого сразу повторить `ADD SERVER` по **тому же** запущенному observer — `ERROR 4179 add non-empty server`: процесс успел записать clog и для кластера уже «не пустой», хотя в `DBA_OB_SERVERS` его нет.
 
-Нельзя: `ADD SERVER` без wipe. Нужно остановить observer **только на этом IP**, очистить `home_path` / `data_dir` / `redo_dir`, поднять процесс заново и сразу `ADD SERVER` с `ob_query_timeout=3600s`. Seed (`observer-1..3`) не трогать.
+Нельзя: `ADD SERVER` без wipe; `06-recover-observer.sh --temporary` (`START SERVER` бесполезен, узла нет в кластере). Нужно остановить observer **только на этом IP**, очистить `home_path` / `data_dir` / `redo_dir`, поднять процесс заново и сразу `ADD SERVER` с `ob_query_timeout=3600s`. Seed (`observer-1..3`) не трогать.
+
+```bash
+# server6 / 10.130.0.37 — не seed 10.130.0.34/21/28 и не уже ACTIVE .15/.8
+./scripts/join-empty-observer.sh 6 --yes
+# или
+./scripts/deploy.sh join-observer 10.130.0.37 --yes
+```
+
+После `STATUS=ACTIVE` продолжайте `./scripts/deploy.sh deploy` (obagent для этого узла и оставшиеся observer).
+
+Ручной эквивалент, только `10.130.0.37`:
 
 ```bash
 # только 10.130.0.37 — не seed 10.130.0.34/21/28
@@ -528,7 +539,7 @@ SET GLOBAL ob_query_timeout = 3600000000;
 ```bash
 obd cluster start ob-yc-prod -c oceanbase-ce -s 10.130.0.37
 # сразу, пока узел empty:
-obclient -h10.130.0.34 -P2881 -uroot@sys -p -e \
+obclient -hob-yc-prod-observer-1 -P2881 -uroot@sys -p'ChangeMe1!' -e \
   "SET SESSION ob_query_timeout=3600000000; ALTER SYSTEM ADD SERVER '10.130.0.37:2882' ZONE zone3;"
 ```
 
