@@ -4,6 +4,16 @@
 
 set -euo pipefail
 
+if ! declare -F apt_get >/dev/null 2>&1; then
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    # shellcheck source=apt-retry.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/apt-retry.sh"
+  else
+    echo "ERROR: apt_get не определён — prepend scripts/lib/apt-retry.sh" >&2
+    exit 1
+  fi
+fi
+
 MARKER_FILE="${MARKER_FILE:-/etc/oceanbase-deploy-role-marker}"
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 DISK_WAIT_SECONDS="${DISK_WAIT_SECONDS:-90}"
@@ -264,8 +274,8 @@ prepare_data_paths() {
 ensure_mkfs() {
   command -v mkfs.ext4 >/dev/null 2>&1 || {
     if command -v apt-get >/dev/null 2>&1; then
-      apt-get update -qq
-      apt-get install -y -qq e2fsprogs
+      apt_get update -qq
+      apt_get install -y -qq e2fsprogs
     fi
   }
 }

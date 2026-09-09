@@ -2,9 +2,12 @@
 # Синтаксис prepare-chrony и разбор yandex_cloud.ntp_servers.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bash -n "${ROOT}/scripts/lib/apt-retry.sh"
 bash -n "${ROOT}/scripts/lib/prepare-chrony.sh"
 bash -n "${ROOT}/scripts/02-prepare-servers.sh"
 bash -n "${ROOT}/scripts/02-prepare-ocp.sh"
+grep -q 'apt_get install' "${ROOT}/scripts/lib/prepare-chrony.sh"
+grep -q 'run_remote_with_apt' "${ROOT}/scripts/02-prepare-servers.sh"
 
 # shellcheck source=../scripts/lib/common.sh
 source "${ROOT}/scripts/lib/common.sh"

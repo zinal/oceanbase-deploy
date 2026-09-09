@@ -67,7 +67,7 @@ DEPLOY_USER="$(yaml_get oceanbase.deploy_user)"
 
 install_ocp_clockdiff_wrapper() {
   info "clockdiff на OCP-ВМ ${OCP_1_IP}: wrapper в /usr/sbin и /usr/bin (-o + CAP_NET_RAW)"
-  if ! run_remote "${OCP_1_IP}" \
+  if ! run_remote_with_apt "${OCP_1_IP}" \
     "sudo env DEPLOY_USER='${DEPLOY_USER}' CLOCKDIFF_ONLY=true CLOCKDIFF_TEST_IP='${OBSERVER_1_IP:-127.0.0.1}' bash -s" \
     < "${LIB_DIR}/lib/prepare-ocp-host.sh"; then
     die "не удалось установить clockdiff wrapper на ${OCP_1_IP}"
