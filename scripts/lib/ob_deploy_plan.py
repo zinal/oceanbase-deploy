@@ -142,6 +142,63 @@ def registered_component_ips(cfg: dict[str, Any], component_key: str) -> set[str
     return {server_ip(entry) for entry in component_servers(component)}
 
 
+def server_config(component: dict[str, Any], entry: Any) -> dict[str, Any]:
+    """Return global, inline, and named settings for one server."""
+    config = copy.deepcopy(component.get("global") or {})
+    if isinstance(entry, dict):
+        config.update(
+            {
+                key: copy.deepcopy(value)
+                for key, value in entry.items()
+                if key not in {"name", "ip"}
+            }
+        )
+    name = server_name(entry)
+    if name and isinstance(component.get(name), dict):
+        config.update(copy.deepcopy(component[name]))
+    return config
+
+
+def rootservice_list(
+    desired_component: dict[str, Any],
+    registered_ips: set[str],
+) -> str:
+    """Build a stable discovery list from the first registered server per zone."""
+    candidates: list[str] = []
+    seen_zones: set[str] = set()
+    for entry in component_servers(desired_component):
+        if server_ip(entry) not in registered_ips:
+            continue
+        config = server_config(desired_component, entry)
+        zone = str(config.get("zone") or "")
+        if zone and zone in seen_zones:
+            continue
+        if zone:
+            seen_zones.add(zone)
+        rpc_port = int(config.get("rpc_port", 2882))
+        mysql_port = int(config.get("mysql_port", 2881))
+        candidates.append(f"{server_ip(entry)}:{rpc_port}:{mysql_port}")
+        if len(candidates) == SEED_OBSERVER_COUNT:
+            break
+    if not candidates:
+        raise ValueError("cannot build rootservice_list: no registered observers")
+    return ";".join(candidates)
+
+
+def set_rootservice_list(component: dict[str, Any], value: str) -> None:
+    """Set discovery explicitly on each new node for OBD scale-out startup."""
+    for entry in component_servers(component):
+        name = server_name(entry)
+        if not name:
+            raise ValueError(
+                "scale-out observer entries must have names to set rootservice_list"
+            )
+        override = component.setdefault(name, {})
+        if not isinstance(override, dict):
+            raise ValueError(f"invalid settings for scale-out observer {name}")
+        override["rootservice_list"] = value
+
+
 def chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[pos : pos + size] for pos in range(0, len(items), size)]
 
@@ -158,6 +215,7 @@ def build_scale_out_plan(
         raise ValueError("full OBD config contains fewer than three observers")
 
     registered_ob_ips = registered_component_ips(registered_cfg, ob_key)
+    rs_list = rootservice_list(desired_ob, registered_ob_ips)
     registered_agent_ips = registered_component_ips(registered_cfg, "obagent")
     desired_agent = full_cfg.get("obagent")
     desired_agent_by_ip: dict[str, Any] = {}
@@ -176,6 +234,11 @@ def build_scale_out_plan(
             if ip in desired_agent_by_ip and ip not in registered_agent_ips
         }
         ob_block = selected_component(desired_ob, missing_ob_ips, keep_settings=False)
+        if ob_block is not None:
+            # OBD 3.5.3's OceanBase 4.6 start_pre only injects cfg_url while
+            # bootstrapping. During scale-out that leaves a fresh observer with
+            # no RootService discovery source, so ADD SERVER times out.
+            set_rootservice_list(ob_block, rs_list)
         agent_block = None
         if isinstance(desired_agent, dict):
             agent_block = selected_component(

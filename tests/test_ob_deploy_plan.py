@@ -126,6 +126,10 @@ def test_scale_out_plan_uses_balanced_triples() -> None:
         plan[0]["oceanbase"]["oceanbase-ce"][f"server{idx}"]["zone"]
         for idx in range(4, 7)
     ] == ["zone1", "zone2", "zone3"]
+    assert {
+        plan[0]["oceanbase"]["oceanbase-ce"][f"server{idx}"]["rootservice_list"]
+        for idx in range(4, 7)
+    } == {"10.0.0.1:2882:2881;10.0.0.2:2882:2881;10.0.0.3:2882:2881"}
     assert "global" not in plan[0]["oceanbase"]["oceanbase-ce"]
     assert ips(plan[1]["oceanbase"]["oceanbase-ce"]) == [
         "10.0.0.7",
@@ -147,6 +151,18 @@ def test_scale_out_plan_resumes_components_independently() -> None:
         "10.0.0.5",
         "10.0.0.6",
     ]
+
+
+def test_rootservice_list_uses_one_registered_server_per_zone() -> None:
+    plan = PLAN.build_scale_out_plan(
+        full_config(count=9),
+        registered_config([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]),
+    )
+
+    assert (
+        plan[0]["oceanbase"]["oceanbase-ce"]["server7"]["rootservice_list"]
+        == "10.0.0.1:2882:2881;10.0.0.2:2882:2881;10.0.0.3:2882:2881"
+    )
 
 
 def test_scale_out_plan_is_empty_when_cluster_is_complete() -> None:
@@ -232,6 +248,7 @@ if __name__ == "__main__":
     test_seed_keeps_three_zones_and_service_components()
     test_scale_out_plan_uses_balanced_triples()
     test_scale_out_plan_resumes_components_independently()
+    test_rootservice_list_uses_one_registered_server_per_zone()
     test_scale_out_plan_is_empty_when_cluster_is_complete()
     test_seed_rejects_invalid_layout()
     test_without_obagent_does_not_create_agent_batches()

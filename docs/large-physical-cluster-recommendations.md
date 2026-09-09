@@ -501,7 +501,9 @@ obshell bootstrap -
 3. Оставшиеся узлы добавляются `obd cluster scale_out` раундами по три: один в `zone1`, один в `zone2`, один в `zone3`. Каждый вызов OBD получает YAML только одного нового observer; три вызова выполняются последовательно.
 4. Для каждого пакета сначала добавляется `oceanbase-ce`, затем отдельным вызовом — `obagent`.
 
-YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
+YAML каждого `scale_out` содержит только отсутствующие узлы и не повторяет `global` исходного кластера. В named-настройки нового observer добавляется `rootservice_list` трёх seed-узлов. Это необходимо для OBD 3.5.3 с плагином OceanBase 4.6: `start_pre.py` добавляет вычисленный `obconfig_url` только при `need_bootstrap=True`, хотя для scale-out выставляется `need_bootstrap=False`. Без явного списка новый observer запускается без источника RootService (`server_list=[]`), а `ALTER SYSTEM ADD SERVER` ждёт его регистрации и завершается таймаутом.
+
+План сравнивается с `~/.obd/cluster/<deploy>/config.yaml`, поэтому после прерывания повторный `./scripts/deploy.sh deploy` продолжает с ещё не зарегистрированных observer/OBAgent.
 
 Причина staged-порядка — дефект ExecutorPool OBShell 4.2.5.0–4.5.1.0: локальный take-over DAG крупного уже работающего кластера создаёт десятки READY-подзадач, а bounded-очередь и mutex могут взаимно заблокировать producer и workers. Это не ограничение OceanBase на число observer. После take-over штатные cluster DAG хранятся и координируются иначе, поэтому дальнейший `scale_out` является поддерживаемым способом собрать крупный кластер.
 
