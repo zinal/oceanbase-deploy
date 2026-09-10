@@ -55,6 +55,7 @@ def test_show_covers_pin_keys() -> None:
     assert "target_db_server" in joined
     assert "proxy_primary_zone_name" in joined
     assert "enable_transaction_internal_routing" in joined
+    assert "server_protocol" in joined
 
 
 def test_parse_and_match() -> None:

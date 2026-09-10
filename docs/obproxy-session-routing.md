@@ -108,14 +108,7 @@ Bind на Execute **не отменяет** четыре других якоря
 
 1. **`COM_STMT_PREPARE` / `BEGIN` / `SET` без ключа партиции.** Значений ещё нет → fallback. Логин с `enable_primary_zone=true` часто попадает на один и тот же observer (у вас `.11`, у него же 2 LS-лидера). ODP держит там server-session: в `gv$ob_processlist` это Sleep/Prepare, не обязательно горячий DML.
 
-2. **Транзакция без intra-txn роута.** Пока `enable_transaction_internal_routing=false`, все операторы **внутри** транзакции принудительно идут на узел, где транзакция открылась ([принудительная маршрутизация](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776)). TPC-C шлёт `BEGIN` или `SET autocommit=0` без ключа → открытие на `.11` → весь New Order/Payment как remote/dist **на `.11`**. Bind уже не важен: Execute не имеет права сменить узел. С 4.1 это снимается так:
-
-   ```sql
-   ALTER PROXYCONFIG SET enable_ob_protocol_v2 = true;
-   ALTER PROXYCONFIG SET enable_transaction_internal_routing = true;
-   ```
-
-   После включения `ob_trx_idle_timeout` на ODP не действует.
+2. **Транзакция без intra-txn роута.** Пока `enable_transaction_internal_routing=false`, все операторы **внутри** транзакции принудительно идут на узел, где транзакция открылась ([принудительная маршрутизация](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776)). На 5.0.1 этот флаг часто уже `True` — тогда якорь не он. `enable_ob_protocol_v2` с ODP 4.3.4 **заброшен** и не действует (вместо него `server_protocol`); выставлять его в False/True на 5.0.1 не нужно.
 
 3. **`enable_cached_server=true`.** Любой SQL, у которого партицию посчитать не вышло (нет ключа, функция, слишком длинный текст), уходит в `USE_CACHED_SESSION` — снова `.11`.
 
@@ -166,7 +159,7 @@ ORDER BY stmts DESC;
 | Что видно | Вывод |
 |---|---|
 | Много `request_type=5`, мало Execute, `command=Sleep` | висят Prepare/логин, DML размазан — снимите `enable_cached_server` и переоткройте пул |
-| Много `plan_type=2/3` и `partition_hit=0` на Execute | `.11` координатор транзакций — включите intra-txn роут + even fallback |
+| Много `plan_type=2/3` и `partition_hit=0` на Execute | `.11` координатор: проверьте `enable_transaction_internal_routing` и even fallback |
 | Много `plan_type=1` и те же INSERT, что на полке | на `.11` просто больше tablet-лидеров — смотрите `DBA_OB_TABLE_LOCATIONS` |
 
 **C. Что за SQL на горячем узле:**
@@ -196,6 +189,28 @@ ALTER PROXYCONFIG SET route_diagnosis_level = 4;
 Потом верните уровень (обычно `0` или `1`), лог иначе раздувается.
 
 Нужен `enable_sql_audit=true` (кластер) и `ob_enable_sql_audit=1` в тенанте, иначе audit пустой.
+
+### Разбор живого PROXYCONFIG (ODP на 5.0.1)
+
+Типичный вывод `root@proxysys`:
+
+| Параметр | Живое значение | Вывод |
+|---|---|---|
+| `enable_cached_server` | **True** | нет table entry → `USE_CACHED_SESSION` (логин / Prepare / SQL без ключа) |
+| `enable_primary_zone` | **True** | логин и failed calc → Primary Zone; вместе с кэшем сессии это один observer |
+| `enable_transaction_internal_routing` | True | intra-txn роут уже есть, DML с ключом может уходить на другие узлы (полка 85–93) |
+| `enable_ob_protocol_v2` | False, *deprecated* | не трогать; смотреть `server_protocol` |
+| `target_db_server` | пусто | нет pin на IP |
+| `proxy_primary_zone_name` | пусто | нет pin на одну Zone |
+
+Достаточно на **каждом** obproxy:
+
+```sql
+ALTER PROXYCONFIG SET enable_cached_server = false;
+ALTER PROXYCONFIG SET enable_primary_zone = false;  -- even; для чистого TP можно оставить true
+```
+
+Перезапуск ODP не нужен. Старые клиентские соединения держат кэш — переоткройте пул и снова снимите `gv$ob_processlist`. Вершина `.11` должна сползти к полке; хвост 4–27 этими флагами не лечится.
 
 Типичный перекос: оба флага `true` (дефолт многих сборок). Логин попал на один узел Primary Zone, дальше весь «непосчитанный» SQL и распределённые запросы липнут к нему. Один observer становится координатором, CPU растёт, остальные простаивают.
 

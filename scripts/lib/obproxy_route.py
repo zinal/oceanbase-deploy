@@ -39,7 +39,11 @@ ROUTING_MODES: dict[str, dict[str, str]] = {
 PIN_KEYS = ("target_db_server", "proxy_primary_zone_name")
 ROUTE_KEYS = ("enable_cached_server", "enable_primary_zone")
 # Транзакция без intra-txn роута прибивает весь DML к узлу BEGIN/PREPARE.
-TRX_KEYS = ("enable_transaction_internal_routing", "enable_ob_protocol_v2")
+TRX_KEYS = (
+    "enable_transaction_internal_routing",
+    "enable_ob_protocol_v2",
+    "server_protocol",
+)
 
 # Кластерные запросы diagnose: сессии ≠ лидеры clog ≠ unit'ы.
 CLUSTER_DIAGNOSE_QUERIES: list[tuple[str, str]] = [
