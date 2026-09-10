@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Регрессия: apt_get ждёт dpkg lock и повторяет при unattended-upgrades.
+# Регрессия: apt_get повторяет при lock-ошибке apt, без предварительной проверки lock.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,6 +28,16 @@ fi
 grep -q 'apt-retry.sh' "${ROOT}/scripts/lib/yc-instance.sh" \
   || fail "cloud-init должен встраивать apt-retry.sh в mount-скрипт"
 
+echo "=== нет предварительной проверки lock (иначе prepare висит) ==="
+if grep -E '^[^#]*\b(fuser|flock|pgrep|lslocks)\b' "${ROOT}/scripts/lib/apt-retry.sh"; then
+  fail "не проверять lock через fuser/flock/pgrep — только вывод apt"
+fi
+if grep -E '^[^#]*(wait_apt_lock|apt_lock_busy|apt_lock_paths|apt_flock_held)' "${ROOT}/scripts/lib/apt-retry.sh"; then
+  fail "не ждать lock заранее — только повтор по ошибке apt"
+fi
+grep -q 'APT_LOCK_RETRIES' "${ROOT}/scripts/lib/apt-retry.sh" \
+  || fail "нужен счётчик максимального числа повторов"
+
 echo "=== apt_output_is_lock_error распознаёт lock unattended-upgr ==="
 cat >"${tmp}/lock.err" <<'EOF'
 E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1992 (unattended-upgr)
@@ -40,50 +50,8 @@ if apt_output_is_lock_error "${tmp}/other.err"; then
   fail "обычная ошибка apt не должна считаться lock"
 fi
 
-echo "=== wait_apt_lock_until ждёт, пока hook держит lock ==="
-printf '0' >"${tmp}/busy-calls"
-apt_lock_busy_hook() {
-  local n
-  n="$(cat "${tmp}/busy-calls")"
-  printf '%s' "$((n + 1))" >"${tmp}/busy-calls"
-  (( n < 3 ))
-}
-APT_LOCK_POLL=0
-wait_apt_lock_until "$((SECONDS + 5))" 0
-unset -f apt_lock_busy_hook
-[[ "$(cat "${tmp}/busy-calls")" == "4" ]] || fail "ожидалось 4 проверки lock (3 busy + 1 free), got $(cat "${tmp}/busy-calls")"
-
-echo "=== apt_lock_busy не true из-за pgrep -f (иначе prepare висит по 10 мин на каждый apt_get) ==="
-if grep -E '^[[:space:]]*pgrep[[:space:]]+-f' "${ROOT}/scripts/lib/apt-retry.sh"; then
-  fail "pgrep -f самоматчится и всегда считает lock занятым"
-fi
-if pgrep -x unattended-upgr >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1; then
-  echo "skip: на хосте реально крутится apt/dpkg"
-else
-  if apt_lock_busy; then
-    fail "apt_lock_busy=true без unattended-upgr/apt-get — ложное ожидание ${APT_LOCK_TIMEOUT}с"
-  fi
-fi
-
-echo "=== первый apt_get не ждёт lock, даже если busy-hook всегда true ==="
-apt_lock_busy_hook() { return 0; }
-APT_LOCK_TIMEOUT=8
-APT_GET_RETRY_SLEEP=0
-cat >"${tmp}/fake-apt-ok" <<'EOF'
-#!/usr/bin/env bash
-echo "ok-first $*"
-EOF
-chmod +x "${tmp}/fake-apt-ok"
-APT_GET_CMD="${tmp}/fake-apt-ok"
-started="${SECONDS}"
-out="$(apt_get install -y -qq chrony)"
-(( SECONDS - started < 3 )) || fail "первый apt_get ждал lock (${SECONDS} vs ${started})"
-grep -q 'ok-first' <<<"${out}" || fail "первый apt_get должен сразу вызвать apt: ${out}"
-unset -f apt_lock_busy_hook
-
 echo "=== apt_get повторяет после lock и затем успех ==="
-export APT_SKIP_LOCK_WAIT=1
-APT_LOCK_TIMEOUT=30
+APT_LOCK_RETRIES=5
 APT_GET_RETRY_SLEEP=0
 printf '2' >"${tmp}/fails"
 : >"${tmp}/args"
@@ -111,9 +79,30 @@ grep -q 'ok install -y -qq chrony' <<<"${out}" || fail "после lock долж
 attempts="$(wc -l < "${tmp}/args")"
 [[ "${attempts}" -eq 3 ]] || fail "ожидалось 3 вызова apt (2 lock + успех), got ${attempts}"
 
-echo "=== apt_get не ретраит чужие ошибки ==="
+echo "=== apt_get останавливается после APT_LOCK_RETRIES ==="
+: >"${tmp}/args"
 cat >"${tmp}/fake-apt-get" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_APT_ARGS}"
+echo "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1992 (unattended-upgr)" >&2
+exit 100
+EOF
+chmod +x "${tmp}/fake-apt-get"
+APT_LOCK_RETRIES=2
+APT_GET_RETRY_SLEEP=0
+APT_GET_CMD="${tmp}/fake-apt-get"
+if out="$(apt_get install -y -qq chrony 2>&1)"; then
+  fail "после исчерпания повторов должна быть ошибка"
+fi
+grep -q 'не освободился после 2 повтор' <<<"${out}" || fail "ожидалось сообщение о лимите повторов: ${out}"
+attempts="$(wc -l < "${tmp}/args")"
+[[ "${attempts}" -eq 3 ]] || fail "1 попытка + 2 повтора = 3 вызова, got ${attempts}"
+
+echo "=== apt_get не ретраит чужие ошибки ==="
+: >"${tmp}/args"
+cat >"${tmp}/fake-apt-get" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_APT_ARGS}"
 echo "E: Unable to locate package chrony" >&2
 exit 100
 EOF
@@ -122,5 +111,7 @@ if out="$(apt_get install -y -qq chrony 2>&1)"; then
   fail "не lock-ошибка должна пробрасываться"
 fi
 grep -q 'Unable to locate package chrony' <<<"${out}" || fail "должна быть исходная ошибка apt"
+attempts="$(wc -l < "${tmp}/args")"
+[[ "${attempts}" -eq 1 ]] || fail "чужая ошибка не должна ретраиться, got ${attempts}"
 
 echo "OK test-apt-retry"

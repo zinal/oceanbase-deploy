@@ -274,7 +274,7 @@ run_remote() {
     "${user}@${host}" "$@"
 }
 
-# Remote bash -s + apt-retry.sh: ждём dpkg lock (unattended-upgrades на свежей Ubuntu).
+# Remote bash -s + apt-retry.sh: повтор apt при dpkg lock (unattended-upgrades на свежей Ubuntu).
 run_remote_with_apt() {
   local host="$1"; shift
   local helper="${SCRIPT_DIR}/apt-retry.sh"
