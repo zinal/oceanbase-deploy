@@ -2,7 +2,7 @@
 
 Лидеры лог-стримов / партиций могут быть размазаны по кластеру, а **SQL всё равно идёт на один observer**. Это не баланс лидеров и не HAProxy перед прокси: ODP сам выбирает observer для сессии, когда не может точно посчитать Leader.
 
-Официальный разбор: [распределённый SQL весь уходит на один узел](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000003265247), [маршрутизация ODP](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776), [best practices](https://www.oceanbase.com/docs/common-best-practices-1000000001591716).
+Официальный разбор: [распределённый SQL весь уходит на один узел](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000003265247), [маршрутизация ODP](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776), [влияние PS на роут](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000050282), [best practices](https://www.oceanbase.com/docs/common-best-practices-1000000001591716).
 
 ## Почему `gv$ob_log_stat` здесь не помогает
 
@@ -73,6 +73,34 @@ ORDER BY tablet_leaders DESC;
    - `enable_primary_zone=true` — на observer из Primary Zone тенанта (логин тоже часто туда);
    - `enable_cached_server=true` — **повторно на тот же observer, что в предыдущей сессии**.
 3. Если оба параметра `false` — **случайный** observer из доступных.
+
+### Prepared statements: текст или значения параметров?
+
+ODP **умеет** считать партицию по bind-значениям на этапе Execute, а не только по литералам в тексте. Текст с `?` нужен, чтобы понять таблицу и какие колонки — ключ партиции; сами значения берутся из пакета Execute.
+
+| Этап | Что видит ODP | Точный роут на Leader |
+|---|---|---|
+| `COM_STMT_PREPARE` / `PREPARE … FROM '… ? …'` | только шаблон, значений нет | нет → fallback (Primary Zone / кэш сессии / random) |
+| `COM_STMT_EXECUTE` (бинарный протокол JDBC `useServerPrepStmts=true`) | шаблон + значения из bind | да, если ключ партиции в параметрах и ODP их разобрал |
+| Текстовый `EXECUTE stmt USING @a, @b` | шаблон + session-переменные | да (официальный пример `explain route execute … using`) |
+| `COM_QUERY` с литералами (`useServerPrepStmts=false`) | значения уже в тексте | да, как обычный SQL |
+
+ODP **не** приклеивает Execute к тому observer, куда ушёл Prepare. Штатный путь — [синхронизировать состояние Prepare](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000050282) на выбранный узел и послать Execute туда, куда указывает партиция. Иначе распределённый PS был бы бесполезен.
+
+Ограничения те же, что у текстового SQL: ключа нет в условии, функция на ключе, которую парсер ODP не считает (`abs`, `now`, …), слишком длинный SQL (буфер разбора), несколько ключей range, которые ODP не складывает. Тогда Execute тоже идёт в fallback — отсюда горячая вершина вроде `10.130.0.11`.
+
+Проверка на живом Execute (не на `EXPLAIN ROUTE … WHERE c1=?` без значений):
+
+```sql
+-- текстовый PS
+EXPLAIN ROUTE EXECUTE stmt0 USING @a, @b\G
+-- в PARTITION_ID_CALC_DONE должно быть partitions:"(p…)", не (p-1)
+
+-- бинарный PS: смотреть obproxy_diagnosis.log на COM_STMT_EXECUTE
+-- EXPR_PARSE / RESOLVE_TOKEN с реальными числами, parse_sql с подставленными значениями
+```
+
+`EXPLAIN ROUTE SELECT … WHERE c1=?` без Execute **не** доказывает, что bind не работает: в этом запросе значений просто нет.
 
 Типичный перекос: оба флага `true` (дефолт многих сборок). Логин попал на один узел Primary Zone, дальше весь «непосчитанный» SQL и распределённые запросы липнут к нему. Один observer становится координатором, CPU растёт, остальные простаивают.
 
