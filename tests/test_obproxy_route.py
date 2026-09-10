@@ -42,6 +42,8 @@ def test_diagnose_queries_cover_units_and_tablets() -> None:
     assert "DBA_OB_UNITS" in joined
     assert "DBA_OB_TABLE_LOCATIONS" in joined
     assert "gv$ob_processlist" in joined
+    assert "gv$ob_sql_audit" in joined
+    assert "request_type = 5" in joined
     assert "tenant_type = 'USER'" in joined
 
 
@@ -52,6 +54,7 @@ def test_show_covers_pin_keys() -> None:
     assert "enable_primary_zone" in joined
     assert "target_db_server" in joined
     assert "proxy_primary_zone_name" in joined
+    assert "enable_transaction_internal_routing" in joined
 
 
 def test_parse_and_match() -> None:
