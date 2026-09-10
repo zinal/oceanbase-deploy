@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Ожидание dpkg/apt lock и повтор apt-get.
-# На свежей Ubuntu в YC lock часто держит unattended-upgr — prepare без этого падает.
+# Повтор apt-get при dpkg/apt lock (unattended-upgrades / packagekitd на свежей Ubuntu).
+#
+# Не проверяем lock заранее: fuser/pgrep/flock дают ложный busy (packagekitd держит fd,
+# unattended-upgrade-shutdown совпадает с comm unattended-upgr) и prepare «висит».
+# Смотрим вывод apt: lock → пауза и повтор до APT_LOCK_RETRIES.
 #
 # Только функции: можно source и prepend перед remote `bash -s`.
 
@@ -8,72 +11,9 @@ if declare -F apt_get >/dev/null 2>&1; then
   return 0 2>/dev/null || exit 0
 fi
 
-# Общий дедлайн на ожидание + ретраи (unattended-upgrades на первом буте — минуты).
-APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
-APT_LOCK_POLL="${APT_LOCK_POLL:-5}"
+# Повторы после первой lock-ошибки. 60×10с ≈ 10 мин на unattended-upgrades при первом буте.
+APT_LOCK_RETRIES="${APT_LOCK_RETRIES:-60}"
 APT_GET_RETRY_SLEEP="${APT_GET_RETRY_SLEEP:-10}"
-
-apt_lock_paths() {
-  printf '%s\n' \
-    /var/lib/dpkg/lock-frontend \
-    /var/lib/dpkg/lock \
-    /var/lib/apt/lists/lock \
-    /var/cache/apt/archives/lock
-}
-
-# Тесты подменяют через apt_lock_busy_hook или APT_SKIP_LOCK_WAIT=1.
-# Не использовать pgrep -f: паттерн есть в argv самого pgrep, lock всегда «занят»,
-# каждый apt_get молча ждёт APT_LOCK_TIMEOUT (prepare «висит»).
-apt_lock_busy() {
-  if [[ "${APT_SKIP_LOCK_WAIT:-}" == "1" ]]; then
-    return 1
-  fi
-  if declare -F apt_lock_busy_hook >/dev/null 2>&1; then
-    if apt_lock_busy_hook; then
-      return 0
-    fi
-    return 1
-  fi
-
-  local path
-  while IFS= read -r path; do
-    [[ -e "${path}" ]] || continue
-    if command -v fuser >/dev/null 2>&1; then
-      if command -v timeout >/dev/null 2>&1; then
-        timeout 2 fuser "${path}" >/dev/null 2>&1 && return 0
-      else
-        fuser "${path}" >/dev/null 2>&1 && return 0
-      fi
-    fi
-  done < <(apt_lock_paths)
-
-  if command -v pgrep >/dev/null 2>&1; then
-    # Только точное имя процесса (15 символов: unattended-upgr). Не pgrep -f.
-    pgrep -x unattended-upgr >/dev/null 2>&1 && return 0
-    pgrep -x apt-get >/dev/null 2>&1 && return 0
-    pgrep -x dpkg >/dev/null 2>&1 && return 0
-  fi
-  return 1
-}
-
-wait_apt_lock_until() {
-  local deadline="$1"
-  local poll="${2:-${APT_LOCK_POLL}}"
-  local started="${SECONDS}"
-  local last_log=-30
-
-  while apt_lock_busy; do
-    if (( SECONDS >= deadline )); then
-      echo "WARN: dpkg/apt lock не освободился за $((SECONDS - started))с — пробуем apt-get" >&2
-      return 0
-    fi
-    if (( last_log < 0 || SECONDS - last_log >= 30 )); then
-      echo "Ожидание освобождения dpkg/apt lock ($((SECONDS - started))с, часто unattended-upgrades)..." >&2
-      last_log="${SECONDS}"
-    fi
-    sleep "${poll}"
-  done
-}
 
 apt_output_is_lock_error() {
   grep -qiE \
@@ -81,20 +21,14 @@ apt_output_is_lock_error() {
     "$1"
 }
 
-# Обёртка apt-get: ждём lock, при занятости — повтор до APT_LOCK_TIMEOUT.
+# Обёртка apt-get: при lock-ошибке — пауза и повтор.
 apt_get() {
-  local timeout="${APT_LOCK_TIMEOUT}"
-  local poll="${APT_LOCK_POLL}"
+  local retries="${APT_LOCK_RETRIES}"
   local retry_sleep="${APT_GET_RETRY_SLEEP}"
-  local deadline=$((SECONDS + timeout))
   local tmp rc attempt=0
   tmp="$(mktemp)"
 
   while true; do
-    # Первый заход сразу в apt-get: ложный busy не должен жечь весь таймаут.
-    if (( attempt > 0 )); then
-      wait_apt_lock_until "${deadline}" "${poll}"
-    fi
     rc=0
     DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}" \
       "${APT_GET_CMD:-apt-get}" "$@" >"${tmp}" 2>&1 || rc=$?
@@ -109,13 +43,13 @@ apt_get() {
       return "${rc}"
     fi
     cat "${tmp}" >&2
-    if (( SECONDS >= deadline )); then
-      echo "ERROR: apt-get: dpkg/apt lock не освободился за ${timeout}с" >&2
+    if (( attempt >= retries )); then
+      echo "ERROR: apt-get: dpkg/apt lock не освободился после ${retries} повтор(ов)" >&2
       rm -f "${tmp}"
       return "${rc}"
     fi
     attempt=$((attempt + 1))
-    echo "WARN: apt lock занят (попытка ${attempt}, часто unattended-upgrades), повтор через ${retry_sleep}с..." >&2
+    echo "WARN: apt lock занят (повтор ${attempt}/${retries}, часто unattended-upgrades), пауза ${retry_sleep}с..." >&2
     sleep "${retry_sleep}"
   done
 }
