@@ -10,7 +10,7 @@
 
 Скрипт устанавливает пакет `haproxy` на каждый хост из `RUNNER_*` и записывает конфиг по образцу [bench/tpcc/haproxy.cfg](../bench/tpcc/haproxy.cfg): frontend на `127.0.0.1:2883`, backend — **имена** obproxy (`OBPROXY_*_NAME`), не IP. Прикладные клиенты на runner подключаются к `127.0.0.1:2883` (как в TPC-C profile).
 
-Нужны `vm_profiles.runner.enabled: true` (и уже выполненный `provision`). `./scripts/deploy.sh all` вызывает тот же шаг, если runner включены.
+Нужны `vm_profiles.runner.enabled: true` (и уже выполненный `provision`). `./scripts/deploy.sh all` всегда вызывает тот же шаг; без runner-ВМ он завершается пропуском.
 
 ## Схема
 

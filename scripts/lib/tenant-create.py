@@ -183,6 +183,26 @@ def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
 
 
+def user_and_database_sql(username: str, user_password: str, database: str) -> list[str]:
+    """SQL для application user: БД, пользователь, права на создание объектов.
+
+    В OceanBase MySQL-режиме ``GRANT ALL ON db.*`` — права на уже существующие
+    объекты БД; CREATE TABLE / CREATE TABLEGROUP требуют глобальный CREATE
+    (``*.*``). Иначе schema-loader даёт ERROR 1227 (нужен CREATE).
+    Тенант изолирует пользователя: глобальный GRANT не выходит за пределы тенанта.
+    """
+    db = sql_identifier(database)
+    user = sql_identifier(username)
+    pwd = sql_literal(user_password)
+    return [
+        f"CREATE DATABASE IF NOT EXISTS {db}",
+        f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {pwd}",
+        f"GRANT ALL PRIVILEGES ON *.* TO {user}",
+        f"GRANT CREATE ON *.* TO {user}",
+        f"GRANT ALL PRIVILEGES ON {db}.* TO {user}",
+    ]
+
+
 def setup_user_and_database(
     ob_sys: Any,
     endpoint: dict[str, Any],
@@ -191,15 +211,7 @@ def setup_user_and_database(
     user_password: str,
     database: str,
 ) -> None:
-    db = sql_identifier(database)
-    user = sql_identifier(username)
-    pwd = sql_literal(user_password)
-    statements = [
-        f"CREATE DATABASE IF NOT EXISTS {db}",
-        f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {pwd}",
-        f"GRANT ALL PRIVILEGES ON {db}.* TO {user}",
-    ]
-    for sql in statements:
+    for sql in user_and_database_sql(username, user_password, database):
         ob_sys.run_sql(endpoint, root_password, sql)
 
 
@@ -302,6 +314,9 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert resolve_optimize("htap") == "htap"
     assert sql_identifier("tpcc") == "`tpcc`"
     assert sql_literal("a'b") == "'a''b'"
+    grants = user_and_database_sql("tpcc", "x", "tpcc")
+    assert any("GRANT ALL PRIVILEGES ON *.*" in s for s in grants)
+    assert any("GRANT CREATE ON *.*" in s for s in grants)
     issues = validate_tenant_cfg({"mode": "bad", **{k: v for k, v in DEFAULTS.items() if k != "mode"}})
     assert any("tenant.mode" in i for i in issues)
     for mode in TENANT_OPTIMIZE_MODES:

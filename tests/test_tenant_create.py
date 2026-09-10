@@ -74,6 +74,17 @@ def test_sql_helpers() -> None:
     assert tenant_create.sql_identifier("tpcc") == "`tpcc`"
 
 
+def test_user_and_database_sql_grants_global_create() -> None:
+    """OceanBase: GRANT ALL ON db.* недостаточно для CREATE TABLE (ERROR 1227)."""
+    stmts = tenant_create.user_and_database_sql("tpcc", "s3cret", "tpcc")
+    joined = ";\n".join(stmts)
+    assert "CREATE DATABASE IF NOT EXISTS `tpcc`" in joined
+    assert "CREATE USER IF NOT EXISTS `tpcc` IDENTIFIED BY 's3cret'" in joined
+    assert "GRANT ALL PRIVILEGES ON *.* TO `tpcc`" in joined
+    assert "GRANT CREATE ON *.* TO `tpcc`" in joined
+    assert "GRANT ALL PRIVILEGES ON `tpcc`.* TO `tpcc`" in joined
+
+
 def test_cli_config_after_subcommand() -> None:
     """08-create-tenant.sh вызывает: validate --config FILE, create --config FILE --inventory FILE."""
     parser = tenant_create.build_parser()
@@ -109,6 +120,7 @@ if __name__ == "__main__":
     test_validate_bad_name()
     test_vm_profiles_integration()
     test_sql_helpers()
+    test_user_and_database_sql_grants_global_create()
     test_cli_config_after_subcommand()
     test_cli_config_before_subcommand()
     tenant_create.cmd_self_test(type("Args", (), {})())

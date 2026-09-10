@@ -8,11 +8,21 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${LIB_DIR}/lib/common.sh"
 
+SKIP_IF_NONE=false
+if [[ "${1:-}" == "--skip-if-none" ]]; then
+  SKIP_IF_NONE=true
+  shift
+fi
+
 require_file "${CONFIG_FILE}"
 load_inventory
 ensure_generated_dir
 
 if [[ "${RUNNER_COUNT:-0}" -lt 1 ]]; then
+  if [[ "${SKIP_IF_NONE}" == "true" ]]; then
+    info "Нет runner-ВМ в inventory (RUNNER_COUNT=0) — пропуск HAProxy"
+    exit 0
+  fi
   die "Нет runner-ВМ в inventory (RUNNER_COUNT=0). Включите vm_profiles.runner.enabled и выполните provision"
 fi
 if [[ "${OBPROXY_COUNT:-0}" -lt 1 ]]; then
