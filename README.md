@@ -297,6 +297,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
 │   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
 │   ├── obproxy-session-routing.md     # равномерные сессии ODP (не один observer)
+│   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
 ├── config/

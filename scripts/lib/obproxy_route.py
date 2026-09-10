@@ -38,6 +38,12 @@ ROUTING_MODES: dict[str, dict[str, str]] = {
 
 PIN_KEYS = ("target_db_server", "proxy_primary_zone_name")
 ROUTE_KEYS = ("enable_cached_server", "enable_primary_zone")
+# Транзакция без intra-txn роута прибивает весь DML к узлу BEGIN/PREPARE.
+TRX_KEYS = (
+    "enable_transaction_internal_routing",
+    "enable_ob_protocol_v2",
+    "server_protocol",
+)
 
 # Кластерные запросы diagnose: сессии ≠ лидеры clog ≠ unit'ы.
 CLUSTER_DIAGNOSE_QUERIES: list[tuple[str, str]] = [
@@ -52,8 +58,24 @@ CLUSTER_DIAGNOSE_QUERIES: list[tuple[str, str]] = [
         "GROUP BY svr_ip ORDER BY sessions DESC",
     ),
     (
-        "SQL audit по observer (gv$sql_audit)",
-        "SELECT svr_ip, COUNT(*) AS stmts FROM gv$sql_audit "
+        "Сессии по command (Sleep/Prepare vs Query)",
+        "SELECT svr_ip, command, COUNT(*) AS sessions "
+        "FROM gv$ob_processlist "
+        "WHERE user LIKE 'tpcc%' OR info LIKE 'INSERT%' "
+        "GROUP BY svr_ip, command ORDER BY sessions DESC",
+    ),
+    (
+        "SQL audit 5.0: Prepare/Execute и local/remote/dist",
+        "SELECT svr_ip, "
+        "SUM(request_type = 5) AS prepares, "
+        "SUM(request_type = 6) AS executes, "
+        "SUM(plan_type = 1) AS local_plan, "
+        "SUM(plan_type = 2) AS remote_plan, "
+        "SUM(plan_type = 3) AS dist_plan, "
+        "SUM(partition_hit = 0) AS part_miss, "
+        "COUNT(*) AS stmts "
+        "FROM gv$ob_sql_audit "
+        "WHERE is_inner_sql = 0 "
         "GROUP BY svr_ip ORDER BY stmts DESC",
     ),
     (
@@ -104,7 +126,7 @@ def apply_statements(mode: str) -> list[str]:
 
 
 def show_statements() -> list[str]:
-    keys = ROUTE_KEYS + PIN_KEYS
+    keys = ROUTE_KEYS + TRX_KEYS + PIN_KEYS
     return [f"SHOW PROXYCONFIG LIKE '{key}'" for key in keys]
 
 
@@ -214,7 +236,7 @@ def apply_on_endpoint(
 
 def print_proxyconfig(label: str, values: dict[str, str]) -> None:
     print(f"{label}:")
-    for key in ROUTE_KEYS + PIN_KEYS:
+    for key in ROUTE_KEYS + TRX_KEYS + PIN_KEYS:
         print(f"  {key} = {values.get(key, '<нет в выводе>')}")
 
 

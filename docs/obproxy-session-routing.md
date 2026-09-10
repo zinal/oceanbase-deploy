@@ -2,7 +2,7 @@
 
 Лидеры лог-стримов / партиций могут быть размазаны по кластеру, а **SQL всё равно идёт на один observer**. Это не баланс лидеров и не HAProxy перед прокси: ODP сам выбирает observer для сессии, когда не может точно посчитать Leader.
 
-Официальный разбор: [распределённый SQL весь уходит на один узел](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000003265247), [маршрутизация ODP](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776), [best practices](https://www.oceanbase.com/docs/common-best-practices-1000000001591716).
+Официальный разбор: [распределённый SQL весь уходит на один узел](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000003265247), [маршрутизация ODP](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776), [влияние PS на роут](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000050282), [best practices](https://www.oceanbase.com/docs/common-best-practices-1000000001591716).
 
 ## Почему `gv$ob_log_stat` здесь не помогает
 
@@ -73,6 +73,144 @@ ORDER BY tablet_leaders DESC;
    - `enable_primary_zone=true` — на observer из Primary Zone тенанта (логин тоже часто туда);
    - `enable_cached_server=true` — **повторно на тот же observer, что в предыдущей сессии**.
 3. Если оба параметра `false` — **случайный** observer из доступных.
+
+### Prepared statements: текст или значения параметров?
+
+ODP **умеет** считать партицию по bind-значениям на этапе Execute, а не только по литералам в тексте. Текст с `?` нужен, чтобы понять таблицу и какие колонки — ключ партиции; сами значения берутся из пакета Execute.
+
+| Этап | Что видит ODP | Точный роут на Leader |
+|---|---|---|
+| `COM_STMT_PREPARE` / `PREPARE … FROM '… ? …'` | только шаблон, значений нет | нет → fallback (Primary Zone / кэш сессии / random) |
+| `COM_STMT_EXECUTE` (бинарный протокол JDBC `useServerPrepStmts=true`) | шаблон + значения из bind | да, если ключ партиции в параметрах и ODP их разобрал |
+| Текстовый `EXECUTE stmt USING @a, @b` | шаблон + session-переменные | да (официальный пример `explain route execute … using`) |
+| `COM_QUERY` с литералами (`useServerPrepStmts=false`) | значения уже в тексте | да, как обычный SQL |
+
+ODP **не** приклеивает Execute к тому observer, куда ушёл Prepare. Штатный путь — [синхронизировать состояние Prepare](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000050282) на выбранный узел и послать Execute туда, куда указывает партиция. Иначе распределённый PS был бы бесполезен.
+
+Ограничения те же, что у текстового SQL: ключа нет в условии, функция на ключе, которую парсер ODP не считает (`abs`, `now`, …), слишком длинный SQL (буфер разбора), несколько ключей range, которые ODP не складывает. Тогда Execute тоже идёт в fallback — отсюда горячая вершина вроде `10.130.0.11`.
+
+Проверка на живом Execute (не на `EXPLAIN ROUTE … WHERE c1=?` без значений):
+
+```sql
+-- текстовый PS
+EXPLAIN ROUTE EXECUTE stmt0 USING @a, @b\G
+-- в PARTITION_ID_CALC_DONE должно быть partitions:"(p…)", не (p-1)
+
+-- бинарный PS: смотреть obproxy_diagnosis.log на COM_STMT_EXECUTE
+-- EXPR_PARSE / RESOLVE_TOKEN с реальными числами, parse_sql с подставленными значениями
+```
+
+`EXPLAIN ROUTE SELECT … WHERE c1=?` без Execute **не** доказывает, что bind не работает: в этом запросе значений просто нет.
+
+## Почему тогда прибито к одному серверу (5.0.1)
+
+Bind на Execute **не отменяет** четыре других якоря. На TPC-C + 5.0.1 типичная картина «320 на `.11` и полка 85–93» как раз из них, а не из «ODP не видит `?`».
+
+1. **`COM_STMT_PREPARE` / `BEGIN` / `SET` без ключа партиции.** Значений ещё нет → fallback. Логин с `enable_primary_zone=true` часто попадает на один и тот же observer (у вас `.11`, у него же 2 LS-лидера). ODP держит там server-session: в `gv$ob_processlist` это Sleep/Prepare, не обязательно горячий DML.
+
+2. **Транзакция без intra-txn роута.** Пока `enable_transaction_internal_routing=false`, все операторы **внутри** транзакции принудительно идут на узел, где транзакция открылась ([принудительная маршрутизация](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000000517776)). На 5.0.1 этот флаг часто уже `True` — тогда якорь не он. `enable_ob_protocol_v2` с ODP 4.3.4 **заброшен** и не действует (вместо него `server_protocol`); выставлять его в False/True на 5.0.1 не нужно.
+
+3. **`enable_cached_server=true`.** Любой SQL, у которого партицию посчитать не вышло (нет ключа, функция, слишком длинный текст), уходит в `USE_CACHED_SESSION` — снова `.11`.
+
+4. **Холодный хвост 4–27** — не pin ODP, а мало unit/tablet-лидеров.
+
+`gv$ob_processlist` сам по себе не доказывает, что DML прибит: на координаторе висят Prepare и idle-сессии. Смотрите `gv$ob_sql_audit` (`request_type`, `plan_type`, `partition_hit`).
+
+### Что снять на 5.0.1
+
+Готовый пакет: [`docs/sql/obproxy-route-diag-501.sql`](sql/obproxy-route-diag-501.sql). Кратко.
+
+**A. На каждом obproxy (`:2883`):**
+
+```sql
+SHOW PROXYCONFIG LIKE 'enable_cached_server';
+SHOW PROXYCONFIG LIKE 'enable_primary_zone';
+SHOW PROXYCONFIG LIKE 'enable_transaction_internal_routing';
+SHOW PROXYCONFIG LIKE 'enable_ob_protocol_v2';
+SHOW PROXYCONFIG LIKE 'target_db_server';
+SHOW PROXYCONFIG LIKE 'proxy_primary_zone_name';
+```
+
+**B. В тенанте `tpcc` — сессии vs SQL:**
+
+```sql
+SELECT svr_ip, command, COUNT(*) AS sess
+FROM gv$ob_processlist
+WHERE user LIKE 'tpcc%'
+GROUP BY svr_ip, command
+ORDER BY sess DESC;
+
+SELECT svr_ip,
+       SUM(request_type = 5) AS prepares,
+       SUM(request_type = 6) AS executes,
+       SUM(plan_type = 1)    AS local_plan,
+       SUM(plan_type = 2)    AS remote_plan,
+       SUM(plan_type = 3)    AS dist_plan,
+       SUM(partition_hit = 0) AS part_miss,
+       COUNT(*) AS stmts
+FROM gv$ob_sql_audit
+WHERE is_inner_sql = 0
+GROUP BY svr_ip
+ORDER BY stmts DESC;
+```
+
+Как читать audit на `.11`:
+
+| Что видно | Вывод |
+|---|---|
+| Много `request_type=5`, мало Execute, `command=Sleep` | висят Prepare/логин, DML размазан — снимите `enable_cached_server` и переоткройте пул |
+| Много `plan_type=2/3` и `partition_hit=0` на Execute | `.11` координатор: проверьте `enable_transaction_internal_routing` и even fallback |
+| Много `plan_type=1` и те же INSERT, что на полке | на `.11` просто больше tablet-лидеров — смотрите `DBA_OB_TABLE_LOCATIONS` |
+
+**C. Что за SQL на горячем узле:**
+
+```sql
+SELECT LEFT(query_sql, 80) AS sql_head, request_type, plan_type, partition_hit, COUNT(*) AS n
+FROM gv$ob_sql_audit
+WHERE is_inner_sql = 0 AND svr_ip = '10.130.0.11'
+GROUP BY LEFT(query_sql, 80), request_type, plan_type, partition_hit
+ORDER BY n DESC
+LIMIT 30;
+```
+
+Если сверху `BEGIN` / `PREPARE` / `SET` / `INSERT` без ключа — это якорь 1–2. Если обычный `INSERT INTO bmsql_oorder …` с `plan_type=2` — транзакционный pin.
+
+**D. ODP-диагноз одного живого Execute** (на прокси, кратковременно):
+
+```sql
+ALTER PROXYCONFIG SET route_diagnosis_level = 4;
+```
+
+В `~/obproxy/log/obproxy_diagnosis.log` на `COM_STMT_EXECUTE` ищите `ROUTE_INFO`:
+
+- `USE_PARTITION_LOCATION_LOOKUP` + `partitions:"(p…)"` — bind сработал;
+- `USE_CACHED_SESSION` / `USE_LAST_SESSION` — fallback или pin транзакции (`in_transaction:true`).
+
+Потом верните уровень (обычно `0` или `1`), лог иначе раздувается.
+
+Нужен `enable_sql_audit=true` (кластер) и `ob_enable_sql_audit=1` в тенанте, иначе audit пустой.
+
+### Разбор живого PROXYCONFIG (ODP на 5.0.1)
+
+Типичный вывод `root@proxysys`:
+
+| Параметр | Живое значение | Вывод |
+|---|---|---|
+| `enable_cached_server` | **True** | нет table entry → `USE_CACHED_SESSION` (логин / Prepare / SQL без ключа) |
+| `enable_primary_zone` | **True** | логин и failed calc → Primary Zone; вместе с кэшем сессии это один observer |
+| `enable_transaction_internal_routing` | True | intra-txn роут уже есть, DML с ключом может уходить на другие узлы (полка 85–93) |
+| `enable_ob_protocol_v2` | False, *deprecated* | не трогать; смотреть `server_protocol` |
+| `target_db_server` | пусто | нет pin на IP |
+| `proxy_primary_zone_name` | пусто | нет pin на одну Zone |
+
+Достаточно на **каждом** obproxy:
+
+```sql
+ALTER PROXYCONFIG SET enable_cached_server = false;
+ALTER PROXYCONFIG SET enable_primary_zone = false;  -- even; для чистого TP можно оставить true
+```
+
+Перезапуск ODP не нужен. Старые клиентские соединения держат кэш — переоткройте пул и снова снимите `gv$ob_processlist`. Вершина `.11` должна сползти к полке; хвост 4–27 этими флагами не лечится.
 
 Типичный перекос: оба флага `true` (дефолт многих сборок). Логин попал на один узел Primary Zone, дальше весь «непосчитанный» SQL и распределённые запросы липнут к нему. Один observer становится координатором, CPU растёт, остальные простаивают.
 
