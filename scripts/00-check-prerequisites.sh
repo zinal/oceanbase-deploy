@@ -73,7 +73,7 @@ if [[ "${runner_enabled}" == "true" ]]; then
   [[ -n "${runner_count}" && "${runner_count}" != "null" ]] || runner_count=5
   runner_prefix="$(yaml_get vm_profiles.runner.name_prefix)"
   [[ -n "${runner_prefix}" && "${runner_prefix}" != "null" ]] || runner_prefix="ob-runner"
-  info "Runner-ВМ включены: ${runner_count} шт. (${runner_prefix}-N), HAProxy: ./scripts/deploy.sh runner-haproxy"
+  info "Runner-ВМ включены: ${runner_count} шт. (${runner_prefix}-N), HAProxy: шаг all или ./scripts/deploy.sh runner-haproxy"
 fi
 
 ocp_enabled="$(yaml_get ocp.enabled)"

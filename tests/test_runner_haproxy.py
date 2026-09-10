@@ -133,6 +133,21 @@ def test_runner_profile_defaults() -> None:
     assert profile["data_disk"].get("enabled") not in (True, "true")
 
 
+def test_deploy_all_always_calls_runner_haproxy() -> None:
+    """./scripts/deploy.sh all должен вызывать 10-runner-haproxy.sh без yaml-условия."""
+    deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]
+    assert "10-runner-haproxy.sh" in all_case
+    assert "run_step 10-runner-haproxy.sh" in all_case
+    assert "--skip-if-none" in all_case
+    # Не прячем шаг за yaml_get: иначе all молча пропускает HAProxy.
+    gated = [line for line in all_case.splitlines() if "yaml_get vm_profiles.runner.enabled" in line]
+    assert gated == [], gated
+    script = (ROOT / "scripts" / "10-runner-haproxy.sh").read_text(encoding="utf-8")
+    assert "--skip-if-none" in script
+    assert "пропуск HAProxy" in script
+
+
 def test_example_yaml_runner_optional() -> None:
     import yaml
 
@@ -157,6 +172,7 @@ def main() -> None:
         test_render_matches_example_shape,
         test_runner_profile_defaults,
         test_example_yaml_runner_optional,
+        test_deploy_all_always_calls_runner_haproxy,
     ]
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

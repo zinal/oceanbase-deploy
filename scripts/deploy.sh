@@ -114,9 +114,8 @@ case "${STEP}" in
     run_python_step 03-generate-obd-config.py
     run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
-    if [[ "$(yaml_get vm_profiles.runner.enabled)" == "true" ]]; then
-      run_cmd bash "${ROOT}/scripts/10-runner-haproxy.sh"
-    fi
+    # Всегда вызываем шаг: сам скрипт пропускает установку, если runner-ВМ нет.
+    run_step 10-runner-haproxy.sh --skip-if-none
     ;;
   destroy)
     run_cmd bash "${ROOT}/scripts/99-destroy.sh" "${2:-}"
@@ -141,7 +140,7 @@ case "${STEP}" in
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
   runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
-  all        — полный цикл (по умолчанию; runner-haproxy если vm_profiles.runner.enabled)
+  all        — полный цикл (по умолчанию, включая runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
 Пример:

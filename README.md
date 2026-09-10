@@ -217,13 +217,13 @@ vm_profiles:
       size_gb: 150
 ```
 
-При `vm_profiles.runner.enabled: true` `provision` создаёт ВМ `ob-runner-1` … `ob-runner-N` (префикс задаётся `name_prefix`, по умолчанию `ob-runner`). Они не входят в OBD. После кластера поставьте HAProxy на каждый runner:
+При `vm_profiles.runner.enabled: true` `provision` создаёт ВМ `ob-runner-1` … `ob-runner-N` (префикс задаётся `name_prefix`, по умолчанию `ob-runner`). Они не входят в OBD. HAProxy на каждый runner ставит `./scripts/deploy.sh all` (после кластера) или отдельно:
 
 ```bash
 ./scripts/deploy.sh runner-haproxy
 ```
 
-HAProxy слушает `127.0.0.1:2883` и балансирует на **имена** obproxy из inventory (`OBPROXY_*_NAME`), не на IP. Образец конфига — [bench/tpcc/haproxy.cfg](bench/tpcc/haproxy.cfg). `./scripts/deploy.sh all` вызывает этот шаг, если runner включены.
+HAProxy слушает `127.0.0.1:2883` и балансирует на **имена** obproxy из inventory (`OBPROXY_*_NAME`), не на IP. Образец конфига — [bench/tpcc/haproxy.cfg](bench/tpcc/haproxy.cfg). Если runner-ВМ нет, шаг в `all` пропускается.
 
 Кластер всегда состоит из **трёх zone**, observer распределяются между ними по кругу (`1,4,7…` → `zone1`, `2,5,8…` → `zone2`, `3,6,9…` → `zone3`). Zone — единица репликации Paxos, а не метка узла: sys-тенант получает по реплике на zone, и больше семи zone кластер не забутстрапится.
 

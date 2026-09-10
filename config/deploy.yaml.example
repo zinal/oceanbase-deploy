@@ -145,7 +145,7 @@ vm_profiles:
       enabled: false
 
   # ВМ для прикладной нагрузки (TPC-C и т.п.). Имена: ob-runner-1 .. ob-runner-N.
-  # Не входят в OBD-кластер. HAProxy: ./scripts/deploy.sh runner-haproxy
+  # Не входят в OBD-кластер. HAProxy: шаг all или ./scripts/deploy.sh runner-haproxy
   runner:
     enabled: false
     count: 5
