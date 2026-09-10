@@ -74,6 +74,32 @@ def test_sql_helpers() -> None:
     assert tenant_create.sql_identifier("tpcc") == "`tpcc`"
 
 
+def test_cli_config_after_subcommand() -> None:
+    """08-create-tenant.sh вызывает: validate --config FILE, create --config FILE --inventory FILE."""
+    parser = tenant_create.build_parser()
+    cfg = "/home/demo/oceanbase-deploy/config/deploy.yaml"
+    inv = "/home/demo/oceanbase-deploy/generated/inventory.env"
+
+    args = parser.parse_args(["validate", "--config", cfg])
+    assert args.command == "validate"
+    assert args.config == cfg
+    assert args.func is tenant_create.cmd_validate
+
+    args = parser.parse_args(["create", "--config", cfg, "--inventory", inv])
+    assert args.command == "create"
+    assert args.config == cfg
+    assert args.inventory == inv
+    assert args.func is tenant_create.cmd_create
+
+
+def test_cli_config_before_subcommand() -> None:
+    parser = tenant_create.build_parser()
+    cfg = "/tmp/deploy.yaml"
+    args = parser.parse_args(["--config", cfg, "validate"])
+    assert args.config == cfg
+    assert args.command == "validate"
+
+
 if __name__ == "__main__":
     test_defaults()
     test_mode_mapping()
@@ -83,5 +109,7 @@ if __name__ == "__main__":
     test_validate_bad_name()
     test_vm_profiles_integration()
     test_sql_helpers()
+    test_cli_config_after_subcommand()
+    test_cli_config_before_subcommand()
     tenant_create.cmd_self_test(type("Args", (), {})())
     print("ok")
