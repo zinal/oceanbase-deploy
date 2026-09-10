@@ -123,6 +123,25 @@ def test_ensure_root_password_from_empty() -> None:
     tenant_create.verify_tenant_login(fake, ep, "Wanted!")
 
 
+def test_print_connect_help_uses_obclient() -> None:
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    cfg = tenant_create.resolve_tenant_cfg({})
+    ep = {
+        "ip": "ob-yc-prod-observer-1",
+        "port": 2881,
+        "user": "root@tpcc",
+        "via": "observer",
+    }
+    with redirect_stdout(buf):
+        tenant_create.print_connect_help(cfg, ep, "obcluster", 2883)
+    text = buf.getvalue()
+    assert "obclient -hob-yc-prod-observer-1 -P2881 -uroot@tpcc" in text
+    assert "mysql -h" not in text
+
+
 def test_cli_config_after_subcommand() -> None:
     """08-create-tenant.sh вызывает: validate --config FILE, create --config FILE --inventory FILE."""
     parser = tenant_create.build_parser()
@@ -164,6 +183,7 @@ if __name__ == "__main__":
     test_sql_helpers()
     test_password_candidates()
     test_ensure_root_password_from_empty()
+    test_print_connect_help_uses_obclient()
     test_cli_config_after_subcommand()
     test_cli_config_before_subcommand()
     tenant_create.cmd_self_test(type("Args", (), {})())

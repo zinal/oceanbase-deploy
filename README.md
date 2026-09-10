@@ -443,17 +443,21 @@ obd cluster restart ob-yc-prod
 
 ### SQL (клиенты)
 
+Предпочтительно **obclient** (кладёт OBD, скрипты ищут его первыми). Системный `mysql` из MariaDB 11+ требует SSL (`ERROR 2026`); `--ssl-mode=DISABLED` у него нет — либо `--skip-ssl`, либо obclient.
+
+Если `obclient` не в PATH: `~/.obd/repository/obclient/*/obclient/bin/obclient`.
+
 Через OBProxy (порт `oceanbase.ports.obproxy`, по умолчанию 2883):
 
 ```bash
-mysql -h"${OBPROXY_1_IP}" -P2883 -uroot -p
+obclient -h"${OBPROXY_1_IP}" -P2883 -uroot -p
 # пароль root@sys — ocp.root_password в config/deploy.yaml (сразу после bootstrap может быть пустым)
 ```
 
 Напрямую на observer (2881), для диагностики:
 
 ```bash
-mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p
+obclient -h"${OBSERVER_1_IP}" -P2881 -uroot -p
 ```
 
 User tenant после `./scripts/deploy.sh tenant` — пользователь и БД из секции `tenant`.
@@ -463,10 +467,13 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 Подключение (кавычки обязательны, если в пароле есть `!`):
 
 ```bash
-# root тенанта напрямую на observer
-mysql -h"${OBSERVER_1_IP}" -P2881 -uroot@tpcc -p"${TENANT_ROOT_PASSWORD}"
-# application user через OBProxy
-mysql -h"${OBPROXY_1_IP}" -P2883 -utpcc@tpcc#obcluster -p"${TENANT_USER_PASSWORD}"
+# root тенанта на observer — сначала пустой пароль (дефолт после CREATE TENANT)
+obclient -h"${OBSERVER_1_IP}" -P2881 -uroot@tpcc -e 'SELECT 1'
+obclient -h"${OBSERVER_1_IP}" -P2881 -uroot@tpcc -p"${TENANT_ROOT_PASSWORD}" -e 'SELECT 1'
+# через OBProxy нужен #cluster_name (oceanbase.cluster_name)
+obclient -h"${OBPROXY_1_IP}" -P2883 -uroot@tpcc#obcluster -p"${TENANT_ROOT_PASSWORD}"
+# application user
+obclient -h"${OBPROXY_1_IP}" -P2883 -utpcc@tpcc#obcluster -p"${TENANT_USER_PASSWORD}"
 ```
 
 Если `Access denied` — сначала пустой пароль (`MYSQL_PWD=`), затем значение из config. Сброс к значениям из yaml:
@@ -538,7 +545,7 @@ obd cluster export-to-ocp ob-yc-prod -a http://<OCP_1_IP>:8080 -u admin -p '<ocp
 Проверка, что meta не на OCP-ВМ:
 
 ```bash
-mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p -e \
+obclient -h"${OBSERVER_1_IP}" -P2881 -uroot -p -e \
   "SELECT tenant_name, status FROM oceanbase.DBA_OB_TENANTS;"
 # ожидаются ocp_meta и ocp_monitor рядом с sys
 ```

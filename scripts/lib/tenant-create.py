@@ -284,16 +284,17 @@ def print_connect_help(
         app_user = f"{tenant_cfg['username']}@{tenant_name}"
         app_port = int(endpoint["port"])
     print()
-    print("Подключение (пароль в одинарных кавычках: в bash `!` — history expansion):")
+    print("Подключение через obclient (пароль в кавычках: в bash `!` — history expansion):")
     print(
-        f"  mysql -h{endpoint['ip']} -P{endpoint['port']} "
-        f"-u{endpoint['user']} -p'<tenant.root_password>'"
+        f"  obclient -h{endpoint['ip']} -P{endpoint['port']} "
+        f"-u{endpoint['user']} -p'<tenant.root_password>' -e 'SELECT 1'"
     )
     print(
-        f"  mysql -h{endpoint['ip']} -P{app_port} "
+        f"  obclient -h{endpoint['ip']} -P{app_port} "
         f"-u{app_user} -p'<tenant.user_password>'"
     )
     print("  Пароли — tenant.root_password / tenant.user_password в config/deploy.yaml")
+    print("  Системный mysql (MariaDB 11+): не --ssl-mode=DISABLED, а --skip-ssl либо obclient")
 
 
 def _load_tenant_context(

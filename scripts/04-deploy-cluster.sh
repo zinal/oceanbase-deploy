@@ -242,7 +242,7 @@ cat <<EOF
 Кластер развёрнут.
 
 Подключение через OBProxy (если включён):
-  mysql -h<obproxy_ip> -P$(yaml_get oceanbase.ports.obproxy) -uroot -p
+  obclient -h<obproxy_ip> -P$(yaml_get oceanbase.ports.obproxy) -uroot -p
 
 Obshell dashboard (порт $(yaml_get oceanbase.ports.obshell)):
   http://<observer_ip>:$(yaml_get oceanbase.ports.obshell)
