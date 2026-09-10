@@ -107,6 +107,9 @@ case "${STEP}" in
   runner-haproxy)
     run_cmd bash "${ROOT}/scripts/10-runner-haproxy.sh" "${@:2}"
     ;;
+  obproxy-route)
+    run_cmd bash "${ROOT}/scripts/11-obproxy-route.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -140,6 +143,7 @@ case "${STEP}" in
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
   runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
+  obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
   all        — полный цикл (по умолчанию, включая runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
