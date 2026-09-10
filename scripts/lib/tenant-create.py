@@ -309,16 +309,33 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     print("self-test ok")
 
 
+def _add_io_args(parser: argparse.ArgumentParser, *, with_defaults: bool) -> None:
+    """--config/--inventory: на родителе с дефолтами, на подкомандах с SUPPRESS.
+
+    Иначе argparse не принимает флаги после подкоманды (`validate --config ...`),
+    а дефолты подпарсера затирают значение, заданное до подкоманды.
+    """
+    if with_defaults:
+        parser.add_argument("--config", default=str(REPO_ROOT / "config" / "deploy.yaml"))
+        parser.add_argument(
+            "--inventory", default=str(REPO_ROOT / "generated" / "inventory.env")
+        )
+        return
+    parser.add_argument("--config", default=argparse.SUPPRESS)
+    parser.add_argument("--inventory", default=argparse.SUPPRESS)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=str(REPO_ROOT / "config" / "deploy.yaml"))
-    parser.add_argument("--inventory", default=str(REPO_ROOT / "generated" / "inventory.env"))
+    _add_io_args(parser, with_defaults=True)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_create = sub.add_parser("create", help="Создать тенант, пользователя и БД")
+    _add_io_args(p_create, with_defaults=False)
     p_create.set_defaults(func=cmd_create)
 
     p_val = sub.add_parser("validate", help="Проверить секцию tenant в config")
+    _add_io_args(p_val, with_defaults=False)
     p_val.set_defaults(func=cmd_validate)
 
     p_test = sub.add_parser("self-test", help="Локальные проверки без кластера")
