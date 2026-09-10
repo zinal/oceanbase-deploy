@@ -158,9 +158,9 @@ def build_tenant_endpoint(
     raise RuntimeError("Нет SQL-endpoint в inventory для подключения к тенанту")
 
 
-def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
+def obd_tenant_create_cmd(deploy_name: str, tenant_cfg: dict[str, str]) -> list[str]:
     optimize = resolve_optimize(tenant_cfg["mode"])
-    cmd = [
+    return [
         "obd",
         "cluster",
         "tenant",
@@ -172,9 +172,15 @@ def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
         tenant_cfg["root_password"],
         "-o",
         optimize,
+        "--primary-zone",
+        "RANDOM",
         "-s",
         "ob_tcp_invited_nodes='%'",
     ]
+
+
+def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
+    cmd = obd_tenant_create_cmd(deploy_name, tenant_cfg)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
@@ -223,6 +229,70 @@ def verify_tenant_login(
     ob_sys.run_sql(endpoint, password, "SELECT 1")
 
 
+def tenant_primary_zone_sql(stdout: str) -> str:
+    """Первое поле табличного SELECT PRIMARY_ZONE (одна строка)."""
+    for line in (stdout or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        return text.split("\t")[0].strip().strip("'\"")
+    return ""
+
+
+def ensure_tenant_primary_zone_random(
+    ob_sys: Any,
+    endpoint: dict[str, Any],
+    sys_password: str,
+    tenant_name: str,
+) -> None:
+    """PRIMARY_ZONE=RANDOM, иначе ODP с enable_primary_zone тянет SQL в одну Zone."""
+    ident = sql_identifier(tenant_name)
+    quoted = sql_literal(tenant_name)
+    proc = ob_sys.run_sql(
+        endpoint,
+        sys_password,
+        f"SELECT primary_zone FROM oceanbase.DBA_OB_TENANTS WHERE TENANT_NAME={quoted}",
+    )
+    current = tenant_primary_zone_sql(proc.stdout or "")
+    if current.upper() == "RANDOM":
+        print(f"PRIMARY_ZONE тенанта {tenant_name} уже RANDOM")
+        return
+    print(f"PRIMARY_ZONE тенанта {tenant_name}={current or '<пусто>'} — ALTER TENANT … RANDOM")
+    ob_sys.run_sql(
+        endpoint,
+        sys_password,
+        f"ALTER TENANT {ident} PRIMARY_ZONE='RANDOM'",
+    )
+
+
+def apply_obproxy_even_routing(cfg: dict[str, Any], inv: dict[str, str]) -> None:
+    """После создания тенанта выставить случайный fallback ODP на каждом obproxy."""
+    spec = importlib.util.spec_from_file_location("obproxy_route", LIB_DIR / "obproxy_route.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Не удалось загрузить obproxy_route.py")
+    route = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(route)
+    if not inv.get("OBPROXY_COUNT") or int(inv.get("OBPROXY_COUNT", "0") or 0) < 1:
+        print("OBPROXY_COUNT=0 — пропуск ALTER PROXYCONFIG")
+        return
+    print("Маршрутизация ODP (even: enable_cached_server=false, enable_primary_zone=false)...")
+    ob_sys = _load_ob_sys()
+    deploy_name = inv.get("DEPLOY_NAME", "")
+    endpoints = route.pick_obproxy_endpoints(ob_sys, cfg, inv)
+    for endpoint in endpoints:
+        label = route.format_proxy_label(endpoint)
+        try:
+            password = route.connect_proxy(ob_sys, endpoint, cfg, deploy_name)
+            before = route.fetch_proxyconfig(ob_sys, endpoint, password)
+            if route.settings_match(before, "even"):
+                print(f"  {label}: уже even")
+                continue
+            route.apply_on_endpoint(ob_sys, endpoint, password, "even")
+            print(f"  {label}: ALTER PROXYCONFIG even")
+        except Exception as exc:
+            print(f"  WARN: {label}: {exc} — ./scripts/deploy.sh obproxy-route apply")
+
+
 def cmd_create(args: argparse.Namespace) -> None:
     ob_sys = _load_ob_sys()
     cfg = ob_sys.load_yaml(Path(args.config))
@@ -260,6 +330,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     )
     verify_tenant_login(ob_sys, tenant_endpoint, tenant_cfg["root_password"])
 
+    ensure_tenant_primary_zone_random(ob_sys, sys_endpoint, sys_password, tenant_name)
+    apply_obproxy_even_routing(cfg, inv)
+
     print(
         f"Создание пользователя {tenant_cfg['username']} и БД {tenant_cfg['database']}..."
     )
@@ -287,6 +360,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         f"-u{tenant_cfg['username']}@{tenant_name}#{cluster} -p"
     )
     print(f"  (пароль пользователя — tenant.user_password в config/deploy.yaml)")
+    print("Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route")
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
@@ -321,6 +395,8 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert any("tenant.mode" in i for i in issues)
     for mode in TENANT_OPTIMIZE_MODES:
         assert validate_tenant_cfg({**DEFAULTS, "mode": mode}) == []
+    assert tenant_primary_zone_sql("RANDOM\n") == "RANDOM"
+    assert tenant_primary_zone_sql("'zone1'\n") == "zone1"
     print("self-test ok")
 
 

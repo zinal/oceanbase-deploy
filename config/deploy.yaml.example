@@ -228,6 +228,8 @@ tenant:
   #   kv           — key-value и wide-column нагрузки
   # Алиас: oltp = express_oltp
   mode: htap
+  # PRIMARY_ZONE тенанта скрипт выставляет RANDOM (лидеры по всем Zone).
+  # Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route
 
 oceanbase:
   cluster_name: obcluster

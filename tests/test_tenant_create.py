@@ -103,6 +103,19 @@ def test_cli_config_after_subcommand() -> None:
     assert args.func is tenant_create.cmd_create
 
 
+def test_obd_tenant_create_sets_primary_zone_random() -> None:
+    cmd = tenant_create.obd_tenant_create_cmd(
+        "ob-yc-prod", tenant_create.resolve_tenant_cfg({"tenant": {"mode": "oltp"}})
+    )
+    assert cmd[cmd.index("--primary-zone") + 1] == "RANDOM"
+    assert "-o" in cmd and cmd[cmd.index("-o") + 1] == "express_oltp"
+
+
+def test_tenant_primary_zone_sql() -> None:
+    assert tenant_create.tenant_primary_zone_sql("RANDOM") == "RANDOM"
+    assert tenant_create.tenant_primary_zone_sql("zone1\tACTIVE\n") == "zone1"
+
+
 def test_cli_config_before_subcommand() -> None:
     parser = tenant_create.build_parser()
     cfg = "/tmp/deploy.yaml"
@@ -122,6 +135,8 @@ if __name__ == "__main__":
     test_sql_helpers()
     test_user_and_database_sql_grants_global_create()
     test_cli_config_after_subcommand()
+    test_obd_tenant_create_sets_primary_zone_random()
+    test_tenant_primary_zone_sql()
     test_cli_config_before_subcommand()
     tenant_create.cmd_self_test(type("Args", (), {})())
     print("ok")

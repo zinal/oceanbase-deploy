@@ -95,6 +95,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
+./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
 ./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
 ```
 
@@ -295,6 +296,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── component-vm-sizing.md         # анализ профилей ВМ по компонентам
 │   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
 │   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
+│   ├── obproxy-session-routing.md     # равномерные сессии ODP (не один observer)
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
 ├── config/
@@ -317,6 +319,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 08-create-tenant.sh      # user tenant + user + database
 │   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
 │   ├── 10-runner-haproxy.sh     # HAProxy на runner-ВМ (backend — имена obproxy)
+│   ├── 11-obproxy-route.sh      # ALTER PROXYCONFIG на каждом obproxy
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -459,6 +462,8 @@ mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p
 User tenant после `./scripts/deploy.sh tenant` — пользователь и БД из секции `tenant`.
 
 При нескольких obproxy клиенты с runner ходят через HAProxy на localhost: [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md), `./scripts/deploy.sh runner-haproxy`.
+
+Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md), `./scripts/deploy.sh obproxy-route apply`.
 
 ### obshell (dashboard агента)
 

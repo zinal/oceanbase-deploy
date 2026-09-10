@@ -273,6 +273,7 @@ CPU растёт с QPS, RAM — с числом соединений. 4C8G — 
 
 - только **L4/TCP**, не HTTP reverse proxy;
 - **без session affinity** в официальном F5-примере — `obproxy` сам держит сессию к бэкенду;
+- если SQL всё равно сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), см. [obproxy-session-routing.md](obproxy-session-routing.md);
 - idle timeout LB **не короче**, чем у приложений и `obproxy`;
 - клиенты смотрят в **один VIP:порт**, а не в список из 20 proxy;
 - прямые подключения к `observer:2881` в продакшене не рекомендуются.
