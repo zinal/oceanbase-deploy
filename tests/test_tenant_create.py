@@ -72,6 +72,55 @@ def test_vm_profiles_integration() -> None:
 def test_sql_helpers() -> None:
     assert tenant_create.sql_literal("a'b") == "'a''b'"
     assert tenant_create.sql_identifier("tpcc") == "`tpcc`"
+    assert (
+        tenant_create.alter_user_password_sql("root", "ChangeMe!")
+        == "ALTER USER `root` IDENTIFIED BY 'ChangeMe!'"
+    )
+    setup = tenant_create.user_setup_sql("tpcc", "Secret'1", "tpcc")
+    assert "CREATE DATABASE IF NOT EXISTS `tpcc`" in setup
+    assert "CREATE USER IF NOT EXISTS `tpcc` IDENTIFIED BY 'Secret''1'" in setup
+    assert "ALTER USER `tpcc` IDENTIFIED BY 'Secret''1'" in setup
+
+
+def test_password_candidates() -> None:
+    assert tenant_create.tenant_password_candidates({"root_password": "x"}) == ["x", ""]
+    assert tenant_create.tenant_password_candidates({"root_password": ""}) == [""]
+
+
+class _FakeSql:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.root_set = False
+
+    def run_sql(self, endpoint, password, sql, ignore_error=False):  # noqa: ANN001
+        self.calls.append((password, sql))
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        if sql == "SELECT 1":
+            ok = password == "" or (self.root_set and password == "Wanted!")
+            Proc.returncode = 0 if ok else 1
+            Proc.stderr = "" if ok else "Access denied"
+            if not ok and not ignore_error:
+                raise RuntimeError(Proc.stderr)
+            return Proc()
+        if sql.startswith("ALTER USER `root`"):
+            self.root_set = True
+        return Proc()
+
+
+def test_ensure_root_password_from_empty() -> None:
+    fake = _FakeSql()
+    ep = {"ip": "10.0.0.1", "port": 2881, "user": "root@tpcc"}
+    cfg = {"root_password": "Wanted!"}
+    current = tenant_create.connect_tenant_password(fake, ep, cfg)
+    assert current == ""
+    tenant_create.ensure_root_password(fake, ep, current, "Wanted!")
+    assert fake.root_set
+    tenant_create.verify_tenant_login(fake, ep, "Wanted!")
 
 
 def test_cli_config_after_subcommand() -> None:
@@ -91,6 +140,10 @@ def test_cli_config_after_subcommand() -> None:
     assert args.inventory == inv
     assert args.func is tenant_create.cmd_create
 
+    args = parser.parse_args(["passwd", "--config", cfg, "--inventory", inv])
+    assert args.command == "passwd"
+    assert args.func is tenant_create.cmd_passwd
+
 
 def test_cli_config_before_subcommand() -> None:
     parser = tenant_create.build_parser()
@@ -109,6 +162,8 @@ if __name__ == "__main__":
     test_validate_bad_name()
     test_vm_profiles_integration()
     test_sql_helpers()
+    test_password_candidates()
+    test_ensure_root_password_from_empty()
     test_cli_config_after_subcommand()
     test_cli_config_before_subcommand()
     tenant_create.cmd_self_test(type("Args", (), {})())

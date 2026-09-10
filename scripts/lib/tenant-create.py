@@ -183,6 +183,67 @@ def run_obd_tenant_create(deploy_name: str, tenant_cfg: dict[str, str]) -> None:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
 
 
+def alter_user_password_sql(username: str, password: str) -> str:
+    return f"ALTER USER {sql_identifier(username)} IDENTIFIED BY {sql_literal(password)}"
+
+
+def user_setup_sql(username: str, user_password: str, database: str) -> list[str]:
+    db = sql_identifier(database)
+    user = sql_identifier(username)
+    pwd = sql_literal(user_password)
+    return [
+        f"CREATE DATABASE IF NOT EXISTS {db}",
+        f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {pwd}",
+        # IF NOT EXISTS не меняет пароль уже существующего пользователя.
+        alter_user_password_sql(username, user_password),
+        f"GRANT ALL PRIVILEGES ON {db}.* TO {user}",
+    ]
+
+
+def tenant_password_candidates(tenant_cfg: dict[str, str]) -> list[str]:
+    """tenant.root_password, затем пустой (дефолт OBD после CREATE TENANT)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in (tenant_cfg.get("root_password") or "", ""):
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def connect_tenant_password(
+    ob_sys: Any,
+    endpoint: dict[str, Any],
+    tenant_cfg: dict[str, str],
+) -> str:
+    last_err = ""
+    for password in tenant_password_candidates(tenant_cfg):
+        proc = ob_sys.run_sql(endpoint, password, "SELECT 1", ignore_error=True)
+        if proc.returncode == 0:
+            return password
+        last_err = (proc.stderr or proc.stdout or "").strip()
+    raise RuntimeError(
+        "Нет SQL к тенанту "
+        f"{endpoint.get('user')} @ {endpoint.get('ip')}:{endpoint.get('port')}. "
+        "Сначала попробуйте пустой пароль root@<tenant> на observer:2881, "
+        "затем ALTER USER root IDENTIFIED BY '<tenant.root_password>'. "
+        f"Последняя ошибка: {last_err or 'access denied'}"
+    )
+
+
+def ensure_root_password(
+    ob_sys: Any,
+    endpoint: dict[str, Any],
+    current_password: str,
+    desired: str,
+) -> None:
+    if current_password == desired:
+        return
+    print("Пароль root тенанта не совпадает с tenant.root_password — ставлю из config...")
+    ob_sys.run_sql(endpoint, current_password, alter_user_password_sql("root", desired))
+
+
 def setup_user_and_database(
     ob_sys: Any,
     endpoint: dict[str, Any],
@@ -191,15 +252,7 @@ def setup_user_and_database(
     user_password: str,
     database: str,
 ) -> None:
-    db = sql_identifier(database)
-    user = sql_identifier(username)
-    pwd = sql_literal(user_password)
-    statements = [
-        f"CREATE DATABASE IF NOT EXISTS {db}",
-        f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {pwd}",
-        f"GRANT ALL PRIVILEGES ON {db}.* TO {user}",
-    ]
-    for sql in statements:
+    for sql in user_setup_sql(username, user_password, database):
         ob_sys.run_sql(endpoint, root_password, sql)
 
 
@@ -211,21 +264,89 @@ def verify_tenant_login(
     ob_sys.run_sql(endpoint, password, "SELECT 1")
 
 
-def cmd_create(args: argparse.Namespace) -> None:
+def print_connect_help(
+    tenant_cfg: dict[str, str],
+    endpoint: dict[str, Any],
+    cluster: str,
+    proxy_port: int,
+) -> None:
+    tenant_name = tenant_cfg["tenant_name"]
+    print()
+    print("Тенант готов.")
+    print(f"  Tenant:   {tenant_name}")
+    print(f"  Mode:     {tenant_cfg['mode']} (obd -o {resolve_optimize(tenant_cfg['mode'])})")
+    print(f"  Database: {tenant_cfg['database']}")
+    print(f"  User:     {tenant_cfg['username']}")
+    if endpoint.get("via") == "obproxy":
+        app_user = f"{tenant_cfg['username']}@{tenant_name}#{cluster}"
+        app_port = proxy_port
+    else:
+        app_user = f"{tenant_cfg['username']}@{tenant_name}"
+        app_port = int(endpoint["port"])
+    print()
+    print("Подключение (пароль в одинарных кавычках: в bash `!` — history expansion):")
+    print(
+        f"  mysql -h{endpoint['ip']} -P{endpoint['port']} "
+        f"-u{endpoint['user']} -p'<tenant.root_password>'"
+    )
+    print(
+        f"  mysql -h{endpoint['ip']} -P{app_port} "
+        f"-u{app_user} -p'<tenant.user_password>'"
+    )
+    print("  Пароли — tenant.root_password / tenant.user_password в config/deploy.yaml")
+
+
+def _load_tenant_context(
+    args: argparse.Namespace,
+) -> tuple[Any, dict[str, Any], dict[str, str], dict[str, str], str]:
     ob_sys = _load_ob_sys()
     cfg = ob_sys.load_yaml(Path(args.config))
     inv = ob_sys.load_inventory(Path(args.inventory))
     deploy_name = inv.get("DEPLOY_NAME", "")
     if not deploy_name:
         raise RuntimeError("DEPLOY_NAME не задан в inventory.env")
-
     tenant_cfg = resolve_tenant_cfg(cfg)
     issues = validate_tenant_cfg(tenant_cfg)
     if issues:
         for item in issues:
             print(item, file=sys.stderr)
         sys.exit(1)
+    return ob_sys, cfg, inv, tenant_cfg, deploy_name
 
+
+def apply_tenant_credentials(
+    ob_sys: Any,
+    cfg: dict[str, Any],
+    inv: dict[str, str],
+    tenant_cfg: dict[str, str],
+) -> dict[str, Any]:
+    tenant_name = tenant_cfg["tenant_name"]
+    tenant_endpoint = build_tenant_endpoint(ob_sys, cfg, inv, tenant_name)
+    print(
+        f"Подключение к тенанту через {tenant_endpoint['via']} "
+        f"{tenant_endpoint['ip']}:{tenant_endpoint['port']}"
+    )
+    current = connect_tenant_password(ob_sys, tenant_endpoint, tenant_cfg)
+    ensure_root_password(
+        ob_sys, tenant_endpoint, current, tenant_cfg["root_password"]
+    )
+    verify_tenant_login(ob_sys, tenant_endpoint, tenant_cfg["root_password"])
+    print(
+        f"Создание пользователя {tenant_cfg['username']} и БД {tenant_cfg['database']}..."
+    )
+    setup_user_and_database(
+        ob_sys,
+        tenant_endpoint,
+        tenant_cfg["root_password"],
+        tenant_cfg["username"],
+        tenant_cfg["user_password"],
+        tenant_cfg["database"],
+    )
+    return tenant_endpoint
+
+
+def cmd_create(args: argparse.Namespace) -> None:
+    ob_sys, cfg, inv, tenant_cfg, deploy_name = _load_tenant_context(args)
     sys_endpoint = ob_sys.pick_sql_endpoint(cfg, inv)
     sys_password = ob_sys.connect_sys_password(sys_endpoint, cfg, deploy_name)
 
@@ -241,40 +362,26 @@ def cmd_create(args: argparse.Namespace) -> None:
         )
         run_obd_tenant_create(deploy_name, tenant_cfg)
 
-    tenant_endpoint = build_tenant_endpoint(ob_sys, cfg, inv, tenant_name)
-    print(
-        f"Подключение к тенанту через {tenant_endpoint['via']} "
-        f"{tenant_endpoint['ip']}:{tenant_endpoint['port']}"
-    )
-    verify_tenant_login(ob_sys, tenant_endpoint, tenant_cfg["root_password"])
-
-    print(
-        f"Создание пользователя {tenant_cfg['username']} и БД {tenant_cfg['database']}..."
-    )
-    setup_user_and_database(
-        ob_sys,
-        tenant_endpoint,
-        tenant_cfg["root_password"],
-        tenant_cfg["username"],
-        tenant_cfg["user_password"],
-        tenant_cfg["database"],
-    )
-
+    tenant_endpoint = apply_tenant_credentials(ob_sys, cfg, inv, tenant_cfg)
     cluster = ob_sys.cfg_str(cfg, "oceanbase.cluster_name", "obcluster")
     proxy_port = ob_sys.cfg_int(cfg, "oceanbase.ports.obproxy", 2883)
-    print()
-    print("Тенант готов.")
-    print(f"  Tenant:   {tenant_name}")
-    print(f"  Mode:     {tenant_cfg['mode']} (obd -o {resolve_optimize(tenant_cfg['mode'])})")
-    print(f"  Database: {tenant_cfg['database']}")
-    print(f"  User:     {tenant_cfg['username']}")
-    print()
-    print("Подключение (через OBProxy, если включён):")
-    print(
-        f"  mysql -h<{tenant_endpoint['ip']}> -P{proxy_port} "
-        f"-u{tenant_cfg['username']}@{tenant_name}#{cluster} -p"
-    )
-    print(f"  (пароль пользователя — tenant.user_password в config/deploy.yaml)")
+    print_connect_help(tenant_cfg, tenant_endpoint, cluster, proxy_port)
+
+
+def cmd_passwd(args: argparse.Namespace) -> None:
+    """Поставить tenant.root_password / user_password, даже если тенант уже есть."""
+    ob_sys, cfg, inv, tenant_cfg, deploy_name = _load_tenant_context(args)
+    sys_endpoint = ob_sys.pick_sql_endpoint(cfg, inv)
+    sys_password = ob_sys.connect_sys_password(sys_endpoint, cfg, deploy_name)
+    tenant_name = tenant_cfg["tenant_name"]
+    if not tenant_exists(ob_sys, sys_endpoint, sys_password, tenant_name):
+        raise RuntimeError(
+            f"Тенант {tenant_name} не найден. Сначала: ./scripts/deploy.sh tenant"
+        )
+    tenant_endpoint = apply_tenant_credentials(ob_sys, cfg, inv, tenant_cfg)
+    cluster = ob_sys.cfg_str(cfg, "oceanbase.cluster_name", "obcluster")
+    proxy_port = ob_sys.cfg_int(cfg, "oceanbase.ports.obproxy", 2883)
+    print_connect_help(tenant_cfg, tenant_endpoint, cluster, proxy_port)
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
@@ -306,6 +413,11 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert any("tenant.mode" in i for i in issues)
     for mode in TENANT_OPTIMIZE_MODES:
         assert validate_tenant_cfg({**DEFAULTS, "mode": mode}) == []
+    assert tenant_password_candidates({"root_password": "ChangeMe!"}) == ["ChangeMe!", ""]
+    assert tenant_password_candidates({"root_password": ""}) == [""]
+    assert alter_user_password_sql("root", "a'b") == "ALTER USER `root` IDENTIFIED BY 'a''b'"
+    setup = user_setup_sql("tpcc", "ChangeMe!", "tpcc")
+    assert any(s.startswith("ALTER USER `tpcc` IDENTIFIED BY") for s in setup)
     print("self-test ok")
 
 
@@ -333,6 +445,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_create = sub.add_parser("create", help="Создать тенант, пользователя и БД")
     _add_io_args(p_create, with_defaults=False)
     p_create.set_defaults(func=cmd_create)
+
+    p_passwd = sub.add_parser(
+        "passwd",
+        help="Поставить пароли root/user из config (тенант уже существует)",
+    )
+    _add_io_args(p_passwd, with_defaults=False)
+    p_passwd.set_defaults(func=cmd_passwd)
 
     p_val = sub.add_parser("validate", help="Проверить секцию tenant в config")
     _add_io_args(p_val, with_defaults=False)

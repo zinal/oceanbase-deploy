@@ -458,6 +458,27 @@ mysql -h"${OBSERVER_1_IP}" -P2881 -uroot -p
 
 User tenant после `./scripts/deploy.sh tenant` — пользователь и БД из секции `tenant`.
 
+Пароли **нельзя прочитать** из кластера (хранятся хешем). Источник правды — `tenant.root_password` (`root@<tenant>`) и `tenant.user_password` (application user) в `config/deploy.yaml`. После `CREATE TENANT` пароль root часто **пустой**: OBD ставит `--password` отдельным `ALTER USER`, и шаг tenant раньше не повторял это, если тенант уже существовал.
+
+Подключение (кавычки обязательны, если в пароле есть `!`):
+
+```bash
+# root тенанта напрямую на observer
+mysql -h"${OBSERVER_1_IP}" -P2881 -uroot@tpcc -p"${TENANT_ROOT_PASSWORD}"
+# application user через OBProxy
+mysql -h"${OBPROXY_1_IP}" -P2883 -utpcc@tpcc#obcluster -p"${TENANT_USER_PASSWORD}"
+```
+
+Если `Access denied` — сначала пустой пароль (`MYSQL_PWD=`), затем значение из config. Сброс к значениям из yaml:
+
+```bash
+./scripts/deploy.sh tenant
+# или только пароли:
+python3 scripts/lib/tenant-create.py passwd --config config/deploy.yaml --inventory generated/inventory.env
+```
+
+Внутри тенанта (под root): `ALTER USER root IDENTIFIED BY '...';` / `ALTER USER tpcc IDENTIFIED BY '...';`.
+
 При нескольких obproxy клиенты с runner ходят через HAProxy на localhost: [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md), `./scripts/deploy.sh runner-haproxy`.
 
 ### obshell (dashboard агента)
