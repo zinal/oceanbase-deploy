@@ -149,10 +149,17 @@ def test_cli_and_deploy_sh() -> None:
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "11-obproxy-route.sh" in deploy
     assert "obproxy-route" in deploy
+    deploy_case = deploy.split("\n  deploy)")[1].split("\n  tenant)")[0]
+    all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]
+    assert "11-obproxy-route.sh apply --skip-if-none --skip-if-ok" in deploy_case
+    assert "11-obproxy-route.sh apply --skip-if-none --skip-if-ok" in all_case
+    assert deploy_case.find("04-deploy-cluster.sh") < deploy_case.find("11-obproxy-route.sh")
+    assert all_case.find("04-deploy-cluster.sh") < all_case.find("11-obproxy-route.sh")
     wrapper = ROOT / "scripts" / "11-obproxy-route.sh"
     assert wrapper.is_file()
     text = wrapper.read_text(encoding="utf-8")
     assert "obproxy_route.py" in text
+    assert "--skip-if-none" in text
 
 
 def test_self_test() -> None:
