@@ -33,6 +33,39 @@ ORDER BY stmts DESC;
 
 Имена view чуть отличаются по версии (`gv$session`, `gv$ob_processlist`).
 
+## Как читать перекос сессий
+
+Реальный TPC-C на ~30 observer часто выглядит так (фильтр `user LIKE 'tpcc%'`):
+
+| Полоса | Сессии на узел | Что это |
+|---|---|---|
+| Горячая | один узел ≈ 3× середины (например 320 при 85–93) | Fallback ODP: логин, SQL без ключа партиции, `enable_cached_server` |
+| Середина | ровная полка ~80–90 на многих узлах | Партиционный роутинг **работает**: INSERT/UPDATE с ключом склада идут на Leader |
+| Холодный хвост | 4–27 на части узлов | Мало **unit / tablet-лидеров** на этих observer, не баг ODP |
+
+`ALTER PROXYCONFIG` снимает **горячую** вершину (после переоткрытия пула она должна сползти к полке). Холодный хвост им не лечится: смотрите unit'ы и лидеры tablet.
+
+```sql
+-- по одному ли unit на каждый observer user-тенанта?
+SELECT t.tenant_name, u.svr_ip, COUNT(*) AS units
+FROM oceanbase.DBA_OB_UNITS u
+JOIN oceanbase.DBA_OB_TENANTS t ON u.tenant_id = t.tenant_id
+WHERE t.tenant_type = 'USER'
+GROUP BY t.tenant_name, u.svr_ip
+ORDER BY units, u.svr_ip;
+
+-- куда сели лидеры tablet (не clog)
+SELECT svr_ip, COUNT(*) AS tablet_leaders
+FROM oceanbase.DBA_OB_TABLE_LOCATIONS
+WHERE role = 'LEADER'
+GROUP BY svr_ip
+ORDER BY tablet_leaders DESC;
+```
+
+Если на холодных IP `units = 0` — тенант не растянут на эти узлы (`UNIT_NUM` меньше числа observer в Zone, или узел добавили scale-out и пул не расширили). Если unit есть, а `tablet_leaders` мало — партиции/PRIMARY_ZONE ещё не разъехались (`ALTER TENANT … PRIMARY_ZONE='RANDOM'`, дождаться баланса).
+
+Имя view локаций на части сборок — `CDB_OB_TABLE_LOCATIONS` (из sys).
+
 ## Как ODP выбирает observer
 
 1. Если в SQL есть таблица и условие партиции — запрос идёт на **Leader этой партиции**.
@@ -122,3 +155,4 @@ ODP размазывает только то, что не смог привяз�
 2. `target_db_server` и `proxy_primary_zone_name` пустые.
 3. User tenant: `PRIMARY_ZONE=RANDOM`, locality на все Zone, таблицы с партициями.
 4. Клиентский пул переоткрыт; смотреть `gv$ob_processlist` / `gv$sql_audit`, не только `gv$ob_log_stat`.
+5. Горячая вершина (~3× полки) — ODP fallback. Холодный хвост — `DBA_OB_UNITS` / `DBA_OB_TABLE_LOCATIONS`.

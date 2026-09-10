@@ -39,6 +39,42 @@ ROUTING_MODES: dict[str, dict[str, str]] = {
 PIN_KEYS = ("target_db_server", "proxy_primary_zone_name")
 ROUTE_KEYS = ("enable_cached_server", "enable_primary_zone")
 
+# Кластерные запросы diagnose: сессии ≠ лидеры clog ≠ unit'ы.
+CLUSTER_DIAGNOSE_QUERIES: list[tuple[str, str]] = [
+    (
+        "PRIMARY_ZONE тенантов",
+        "SELECT tenant_name, primary_zone FROM oceanbase.DBA_OB_TENANTS "
+        "ORDER BY tenant_name",
+    ),
+    (
+        "Сессии по observer (gv$ob_processlist)",
+        "SELECT svr_ip, COUNT(*) AS sessions FROM gv$ob_processlist "
+        "GROUP BY svr_ip ORDER BY sessions DESC",
+    ),
+    (
+        "SQL audit по observer (gv$sql_audit)",
+        "SELECT svr_ip, COUNT(*) AS stmts FROM gv$sql_audit "
+        "GROUP BY svr_ip ORDER BY stmts DESC",
+    ),
+    (
+        "Unit'ы user-тенантов (DBA_OB_UNITS)",
+        "SELECT t.tenant_name, u.svr_ip, COUNT(*) AS units "
+        "FROM oceanbase.DBA_OB_UNITS u "
+        "JOIN oceanbase.DBA_OB_TENANTS t ON u.tenant_id = t.tenant_id "
+        "WHERE t.tenant_type = 'USER' "
+        "GROUP BY t.tenant_name, u.svr_ip "
+        "ORDER BY t.tenant_name, units DESC, u.svr_ip",
+    ),
+    (
+        "Лидеры tablet (DBA_OB_TABLE_LOCATIONS)",
+        "SELECT svr_ip, COUNT(*) AS tablet_leaders "
+        "FROM oceanbase.DBA_OB_TABLE_LOCATIONS "
+        "WHERE role = 'LEADER' "
+        "GROUP BY svr_ip "
+        "ORDER BY tablet_leaders DESC",
+    ),
+]
+
 
 def _load_ob_sys() -> Any:
     path = LIB_DIR / "ob-sys.py"
@@ -250,23 +286,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
     inv = ob_sys.load_inventory(Path(args.inventory))
     deploy_name = inv.get("DEPLOY_NAME", "")
     endpoints = pick_obproxy_endpoints(ob_sys, cfg, inv)
-    queries = [
-        (
-            "PRIMARY_ZONE тенантов",
-            "SELECT tenant_name, primary_zone FROM oceanbase.DBA_OB_TENANTS "
-            "ORDER BY tenant_name",
-        ),
-        (
-            "Сессии по observer (gv$ob_processlist)",
-            "SELECT svr_ip, COUNT(*) AS sessions FROM gv$ob_processlist "
-            "GROUP BY svr_ip ORDER BY sessions DESC",
-        ),
-        (
-            "SQL audit по observer (gv$sql_audit)",
-            "SELECT svr_ip, COUNT(*) AS stmts FROM gv$sql_audit "
-            "GROUP BY svr_ip ORDER BY stmts DESC",
-        ),
-    ]
+    queries = list(CLUSTER_DIAGNOSE_QUERIES)
 
     print("=== ODP routing на каждом obproxy ===")
     first_password = ""
@@ -312,6 +332,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
 
 def cmd_self_test(_args: argparse.Namespace) -> None:
+    assert any("DBA_OB_UNITS" in sql for _t, sql in CLUSTER_DIAGNOSE_QUERIES)
     assert resolve_mode("EVEN") == "even"
     assert apply_statements("even") == [
         "ALTER PROXYCONFIG SET enable_cached_server = false",

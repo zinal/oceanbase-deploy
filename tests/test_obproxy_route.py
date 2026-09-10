@@ -37,6 +37,14 @@ def test_even_and_oltp_sql() -> None:
     ]
 
 
+def test_diagnose_queries_cover_units_and_tablets() -> None:
+    joined = "\n".join(sql for _title, sql in route.CLUSTER_DIAGNOSE_QUERIES)
+    assert "DBA_OB_UNITS" in joined
+    assert "DBA_OB_TABLE_LOCATIONS" in joined
+    assert "gv$ob_processlist" in joined
+    assert "tenant_type = 'USER'" in joined
+
+
 def test_show_covers_pin_keys() -> None:
     sqls = route.show_statements()
     joined = "\n".join(sqls)
@@ -149,6 +157,7 @@ def test_self_test() -> None:
 
 if __name__ == "__main__":
     test_even_and_oltp_sql()
+    test_diagnose_queries_cover_units_and_tablets()
     test_show_covers_pin_keys()
     test_parse_and_match()
     test_pick_obproxy_endpoints()
