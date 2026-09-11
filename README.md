@@ -92,7 +92,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp
+./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp + obproxy-route apply
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
@@ -467,7 +467,7 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 
 При нескольких obproxy клиенты с runner ходят через HAProxy на localhost: [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md), `./scripts/deploy.sh runner-haproxy`.
 
-Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md), `./scripts/deploy.sh obproxy-route apply`.
+Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md). `deploy` и `all` сами делают `obproxy-route apply`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-route apply`.
 
 Логи ODP по умолчанию с 4.2.3 — `syslog_level=WDIAG` (десятки ГБ/сутки на инстанс). Продакшен: [логи OBProxy](docs/obproxy-logging.md), `./scripts/deploy.sh obproxy-log apply`.
 
