@@ -57,6 +57,10 @@ def _obd_version_mod():
     return _lib_mod("obd_version")
 
 
+def _obproxy_log_mod():
+    return _lib_mod("obproxy_log")
+
+
 def auto_tune(cfg: dict, observer_count: int) -> dict:
     """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
     return _vm_profiles_mod().observer_auto_tune(cfg)
@@ -364,17 +368,21 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
             proxy_hosts = [inv_ip(inv, "OBPROXY", i) for i in range(1, obproxy_count + 1)]
         else:
             proxy_hosts = observer_ips[:1]
+        proxy_global = {
+            "listen_port": int(ports.get("obproxy", 2883)),
+            "prometheus_listen_port": 2884,
+            "home_path": f"/home/{deploy_user}/obproxy",
+            "enable_cluster_checkout": False,
+            "skip_proxy_sys_private_check": True,
+            "enable_strict_kernel_release": False,
+        }
+        # Только ключи из OBD parameter.yaml. syslog_level — ALTER PROXYCONFIG
+        # (docs/obproxy-logging.md, ./scripts/deploy.sh obproxy-log).
+        proxy_global.update(_obproxy_log_mod().obd_log_settings(cfg))
         result["obproxy-ce"] = {
             "depends": ["oceanbase-ce"],
             "servers": proxy_hosts,
-            "global": {
-                "listen_port": int(ports.get("obproxy", 2883)),
-                "prometheus_listen_port": 2884,
-                "home_path": f"/home/{deploy_user}/obproxy",
-                "enable_cluster_checkout": False,
-                "skip_proxy_sys_private_check": True,
-                "enable_strict_kernel_release": False,
-            },
+            "global": proxy_global,
         }
 
     if components.get("obagent", True):

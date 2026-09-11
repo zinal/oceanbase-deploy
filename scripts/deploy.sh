@@ -112,6 +112,9 @@ case "${STEP}" in
   obproxy-route)
     run_cmd bash "${ROOT}/scripts/11-obproxy-route.sh" "${@:2}"
     ;;
+  obproxy-log)
+    run_cmd bash "${ROOT}/scripts/12-obproxy-log.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -147,6 +150,7 @@ case "${STEP}" in
   recover-obproxy  — obproxy: --temporary или --replace
   runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
   obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
+  obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)
   all        — полный цикл (по умолчанию, включая obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 

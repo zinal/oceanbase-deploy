@@ -96,6 +96,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
+./scripts/deploy.sh obproxy-log     # снизить детальность логов ODP (syslog_level)
 ./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
 ```
 
@@ -297,6 +298,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── ocp-deployment.md              # OceanBase Cloud Platform (OCP)
 │   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
 │   ├── obproxy-session-routing.md     # равномерные сессии ODP (не один observer)
+│   ├── obproxy-logging.md             # детальность логов ODP (WDIAG → INFO)
 │   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
@@ -321,6 +323,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 09-ocp-register.sh       # obd cluster export-to-ocp (список кластеров в UI)
 │   ├── 10-runner-haproxy.sh     # HAProxy на runner-ВМ (backend — имена obproxy)
 │   ├── 11-obproxy-route.sh      # ALTER PROXYCONFIG на каждом obproxy
+│   ├── 12-obproxy-log.sh        # syslog_level / лимиты логов ODP
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -465,6 +468,8 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 При нескольких obproxy клиенты с runner ходят через HAProxy на localhost: [HAProxy TCP LB](docs/haproxy-obproxy-tcp-lb.md), `./scripts/deploy.sh runner-haproxy`.
 
 Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md). `deploy` и `all` сами делают `obproxy-route apply`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-route apply`.
+
+Логи ODP по умолчанию с 4.2.3 — `syslog_level=WDIAG` (десятки ГБ/сутки на инстанс). Продакшен: [логи OBProxy](docs/obproxy-logging.md), `./scripts/deploy.sh obproxy-log apply`.
 
 ### obshell (dashboard агента)
 
