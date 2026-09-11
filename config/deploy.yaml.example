@@ -233,6 +233,11 @@ tenant:
 
 oceanbase:
   cluster_name: obcluster
+  # Детальность логов ODP. С 4.2.3 дефолт syslog_level=WDIAG даёт десятки ГБ/сутки.
+  # info — продакшен (INFO); warn — только WARN+; debug — вернуть WDIAG.
+  # Живой кластер: ./scripts/deploy.sh obproxy-log apply
+  obproxy:
+    log_mode: info
   # Версия oceanbase-ce в generated/obd-cluster.yaml (obd cluster deploy -V нет).
   # Пустая = latest из доступных зеркал. All-in-One 4.6.x держит remote выключенным
   # и кладёт 4.6.0 в local — без этой строки новые кластера останутся на 4.6.0.

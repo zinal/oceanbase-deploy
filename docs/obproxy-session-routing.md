@@ -186,7 +186,7 @@ ALTER PROXYCONFIG SET route_diagnosis_level = 4;
 - `USE_PARTITION_LOCATION_LOOKUP` + `partitions:"(p…)"` — bind сработал;
 - `USE_CACHED_SESSION` / `USE_LAST_SESSION` — fallback или pin транзакции (`in_transaction:true`).
 
-Потом верните уровень (обычно `0` или `1`), лог иначе раздувается.
+Потом верните уровень (обычно `0` или `1`), лог иначе раздувается. Продакшен-уровни логов: [obproxy-logging.md](obproxy-logging.md).
 
 Нужен `enable_sql_audit=true` (кластер) и `ob_enable_sql_audit=1` в тенанте, иначе audit пустой.
 

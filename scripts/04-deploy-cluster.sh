@@ -208,6 +208,13 @@ fi
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"
 
+if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
+  info "Логи ODP (syslog_level): docs/obproxy-logging.md"
+  if ! bash "${LIB_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
+    warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
+  fi
+fi
+
 ocp_enabled="$(yaml_get ocp.enabled)"
 ocp_vm_enabled="$(yaml_get vm_profiles.ocp.enabled)"
 if [[ "${ocp_enabled}" == "true" && "${ocp_vm_enabled}" == "true" && "${OCP_COUNT:-0}" -gt 0 ]]; then

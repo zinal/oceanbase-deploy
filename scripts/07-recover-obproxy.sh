@@ -153,6 +153,9 @@ recover_obproxy_temporary() {
 
   info "Статус кластера:"
   obd cluster display "${DEPLOY_NAME}" || true
+  if ! bash "${SCRIPTS_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
+    warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
+  fi
   cat <<EOF
 
 Временное восстановление obproxy-${INDEX} завершено.
@@ -229,6 +232,9 @@ python3 "${SCRIPTS_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/ob
 
 info "Статус кластера:"
 obd cluster display "${DEPLOY_NAME}" || true
+if ! bash "${SCRIPTS_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
+  warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
+fi
 
 cat <<EOF
 
