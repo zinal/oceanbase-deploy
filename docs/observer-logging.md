@@ -80,7 +80,7 @@ oceanbase:
     log_mode: info        # ODP, docs/obproxy-logging.md
 ```
 
-`./scripts/deploy.sh deploy` и `./scripts/deploy.sh tenant` применяют режим сами (`--skip-if-ok`). После замены узла `06-recover-observer.sh` — тоже. На уже живом кластере достаточно `observer-log apply`.
+`./scripts/deploy.sh deploy` и `./scripts/deploy.sh all` применяют режим из `oceanbase.log_mode` (`apply --skip-if-none --skip-if-ok`). `./scripts/deploy.sh tenant` повторяет идемпотентно. После замены узла `06-recover-observer.sh` — тоже. На уже живом кластере достаточно `observer-log apply`.
 
 В `generated/obd-cluster.yaml` те же ключи пишет плагин OBD (`syslog_level`, `enable_syslog_wf`, recycle, лимит IO) — новые observer стартуют уже с ними. `ALTER SYSTEM` нужен живым кластерам, которых OBD заново не раскатывает.
 

@@ -103,7 +103,7 @@ oceanbase:
     log_mode: info    # info | warn | debug
 ```
 
-`./scripts/deploy.sh deploy` и `./scripts/deploy.sh tenant` применяют режим сами (`--skip-if-ok`). После замены узла `07-recover-obproxy.sh` — тоже. На уже живом кластере достаточно `obproxy-log apply`.
+`./scripts/deploy.sh deploy` и `./scripts/deploy.sh all` применяют режим из `oceanbase.obproxy.log_mode` (`apply --skip-if-none --skip-if-ok`). `./scripts/deploy.sh tenant` повторяет идемпотентно. После замены узла `07-recover-obproxy.sh` — тоже. На уже живом кластере достаточно `obproxy-log apply`.
 
 В `generated/obd-cluster.yaml` для **новых** obproxy пишутся только ключи, которые знает плагин OBD: `log_dir_size_threshold`, `log_file_percentage`, `log_cleanup_interval`. `syslog_level` OBD как параметр YAML не принимает — его ставит `ALTER PROXYCONFIG`.
 
