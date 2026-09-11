@@ -92,7 +92,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp + observer-log/obproxy-route apply
+./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp + observer-log/obproxy-log/obproxy-route apply
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
@@ -472,9 +472,9 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 
 Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md). `deploy` и `all` сами делают `obproxy-route apply`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-route apply`.
 
-Логи ODP по умолчанию с 4.2.3 — `syslog_level=WDIAG` (десятки ГБ/сутки на инстанс). Продакшен: [логи OBProxy](docs/obproxy-logging.md), `./scripts/deploy.sh obproxy-log apply`.
+Логи ODP по умолчанию с 4.2.3 — `syslog_level=WDIAG` (десятки ГБ/сутки на инстанс). Продакшен: [логи OBProxy](docs/obproxy-logging.md). `deploy` и `all` сами делают `obproxy-log apply` из `oceanbase.obproxy.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-log apply`.
 
-Логи observer — тот же `WDIAG` в `observer.log` / `election.log` / `rootservice.log` и конкуренция с clog за IO: [логи OBServer](docs/observer-logging.md), `./scripts/deploy.sh observer-log apply`.
+Логи observer — тот же `WDIAG` в `observer.log` / `election.log` / `rootservice.log` и конкуренция с clog за IO: [логи OBServer](docs/observer-logging.md). `deploy` и `all` сами делают `observer-log apply` из `oceanbase.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh observer-log apply`.
 
 ### obshell (dashboard агента)
 

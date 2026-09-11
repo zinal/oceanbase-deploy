@@ -76,8 +76,9 @@ case "${STEP}" in
     run_python_step 03-generate-obd-config.py
     run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
-    # syslog_level кластера (WDIAG → INFO), docs/observer-logging.md
+    # syslog_level из yaml: observer (кластер) и ODP (каждый obproxy).
     run_step 13-observer-log.sh apply --skip-if-none --skip-if-ok
+    run_step 12-obproxy-log.sh apply --skip-if-none --skip-if-ok
     # ODP только что поднят: even-режим на каждом obproxy (нет узлов — пропуск).
     run_step 11-obproxy-route.sh apply --skip-if-none --skip-if-ok
     ;;
@@ -128,6 +129,7 @@ case "${STEP}" in
     run_ocp_clockdiff_if_enabled
     run_step 04-deploy-cluster.sh
     run_step 13-observer-log.sh apply --skip-if-none --skip-if-ok
+    run_step 12-obproxy-log.sh apply --skip-if-none --skip-if-ok
     run_step 11-obproxy-route.sh apply --skip-if-none --skip-if-ok
     # Всегда вызываем шаг: сам скрипт пропускает установку, если runner-ВМ нет.
     run_step 10-runner-haproxy.sh --skip-if-none
@@ -144,7 +146,7 @@ case "${STEP}" in
   provision  — создание ВМ в Yandex Cloud
   prepare    — подготовка серверов (диски, sysctl, chrony)
   config     — генерация obd-cluster.yaml
-  deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp + observer-log/obproxy-route apply
+  deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp + observer-log/obproxy-log/obproxy-route apply
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
   obd-mirror — пакет oceanbase-ce из oceanbase.version (remote / All-in-One 5.0.1)
@@ -158,7 +160,7 @@ case "${STEP}" in
   obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
   obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
-  all        — полный цикл (по умолчанию, включая observer-log/obproxy-route apply и runner-haproxy)
+  all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
 Пример:

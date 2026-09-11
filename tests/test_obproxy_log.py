@@ -143,10 +143,17 @@ def test_cli_and_deploy_sh() -> None:
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "12-obproxy-log.sh" in deploy
     assert "obproxy-log" in deploy
+    deploy_case = deploy.split("\n  deploy)")[1].split("\n  tenant)")[0]
+    all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]
+    assert "12-obproxy-log.sh apply --skip-if-none --skip-if-ok" in deploy_case
+    assert "12-obproxy-log.sh apply --skip-if-none --skip-if-ok" in all_case
+    assert deploy_case.find("04-deploy-cluster.sh") < deploy_case.find("12-obproxy-log.sh")
+    assert all_case.find("04-deploy-cluster.sh") < all_case.find("12-obproxy-log.sh")
     wrapper = ROOT / "scripts" / "12-obproxy-log.sh"
     assert wrapper.is_file()
     text = wrapper.read_text(encoding="utf-8")
     assert "obproxy_log.py" in text
+    assert "--skip-if-none" in text
     cluster = (ROOT / "scripts" / "04-deploy-cluster.sh").read_text(encoding="utf-8")
     assert "12-obproxy-log.sh" in cluster
     recover = (ROOT / "scripts" / "07-recover-obproxy.sh").read_text(encoding="utf-8")
