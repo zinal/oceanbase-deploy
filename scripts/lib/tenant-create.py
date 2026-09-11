@@ -293,6 +293,27 @@ def apply_obproxy_even_routing(cfg: dict[str, Any], inv: dict[str, str]) -> None
             print(f"  WARN: {label}: {exc} — ./scripts/deploy.sh obproxy-route apply")
 
 
+def apply_observer_log_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None:
+    """После создания тенанта выставить продакшен-уровень логов observer."""
+    spec = importlib.util.spec_from_file_location("observer_log", LIB_DIR / "observer_log.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Не удалось загрузить observer_log.py")
+    logmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(logmod)
+    if not inv.get("OBSERVER_COUNT") or int(inv.get("OBSERVER_COUNT", "0") or 0) < 1:
+        print("OBSERVER_COUNT=0 — пропуск логов observer")
+        return
+    mode = logmod.mode_from_cfg(cfg)
+    print(f"Логи observer (режим {mode}): docs/observer-logging.md")
+    try:
+        failed = logmod.apply_all(cfg, inv, skip_if_ok=True)
+    except Exception as exc:
+        print(f"  WARN: {exc} — ./scripts/deploy.sh observer-log apply")
+        return
+    if failed:
+        print("  WARN: ALTER SYSTEM syslog_level не применился — ./scripts/deploy.sh observer-log apply")
+
+
 def apply_obproxy_log_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None:
     """После создания тенанта выставить продакшен-уровень логов ODP."""
     spec = importlib.util.spec_from_file_location("obproxy_log", LIB_DIR / "obproxy_log.py")
@@ -354,6 +375,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     ensure_tenant_primary_zone_random(ob_sys, sys_endpoint, sys_password, tenant_name)
     apply_obproxy_even_routing(cfg, inv)
     apply_obproxy_log_defaults(cfg, inv)
+    apply_observer_log_defaults(cfg, inv)
 
     print(
         f"Создание пользователя {tenant_cfg['username']} и БД {tenant_cfg['database']}..."
@@ -384,6 +406,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     print(f"  (пароль пользователя — tenant.user_password в config/deploy.yaml)")
     print("Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route")
     print("Логи ODP: docs/obproxy-logging.md, ./scripts/deploy.sh obproxy-log")
+    print("Логи observer: docs/observer-logging.md, ./scripts/deploy.sh observer-log")
 
 
 def cmd_validate(args: argparse.Namespace) -> None:

@@ -232,6 +232,9 @@ recover_observer_temporary() {
 
   info "Статус кластера:"
   obd cluster display "${DEPLOY_NAME_CLUSTER}" || true
+  if ! bash "${SCRIPTS_DIR}/13-observer-log.sh" apply --skip-if-ok; then
+    warn "не удалось выставить логи observer — ./scripts/deploy.sh observer-log apply"
+  fi
   cat <<EOF
 
 Временное восстановление observer-${INDEX} завершено.
@@ -417,6 +420,9 @@ python3 "${SCRIPTS_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/ob
 
 info "Статус кластера:"
 obd cluster display "${DEPLOY_NAME_CLUSTER}" || true
+if ! bash "${SCRIPTS_DIR}/13-observer-log.sh" apply --skip-if-ok; then
+  warn "не удалось выставить логи observer — ./scripts/deploy.sh observer-log apply"
+fi
 
 cat <<EOF
 

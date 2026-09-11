@@ -61,6 +61,10 @@ def _obproxy_log_mod():
     return _lib_mod("obproxy_log")
 
 
+def _observer_log_mod():
+    return _lib_mod("observer_log")
+
+
 def auto_tune(cfg: dict, observer_count: int) -> dict:
     """Auto-tune OceanBase от профиля observer (делегирование vm_profiles)."""
     return _vm_profiles_mod().observer_auto_tune(cfg)
@@ -325,9 +329,10 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
                 "log_disk_size": tune["log_disk_size"],
                 "cpu_count": tune["cpu_count"],
                 "production_mode": obs_count >= 3,
-                "enable_syslog_wf": False,
             },
         })
+        # syslog_level / recycle / IO: docs/observer-logging.md
+        obd_ob["global"].update(_observer_log_mod().obd_log_settings(cfg))
         apply_oceanbase_sys_passwords(obd_ob["global"], cfg)
         if ocp_enabled(cfg):
             ocp = ocp_cfg(cfg)

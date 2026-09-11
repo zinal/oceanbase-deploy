@@ -208,6 +208,11 @@ fi
 info "Статус кластера:"
 run_obd cluster display "${CLUSTER_NAME}"
 
+info "Логи observer (syslog_level): docs/observer-logging.md"
+if ! bash "${LIB_DIR}/13-observer-log.sh" apply --skip-if-ok; then
+  warn "не удалось выставить логи observer — ./scripts/deploy.sh observer-log apply"
+fi
+
 if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
   info "Логи ODP (syslog_level): docs/obproxy-logging.md"
   if ! bash "${LIB_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then

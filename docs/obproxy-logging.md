@@ -2,6 +2,8 @@
 
 На нагруженном инстансе ODP легко даёт **>25 ГБ логов за сутки**. Это не «просто диск»: синхронная запись WDIAG на каждый запрос отбирает CPU и IO у SQL-прокси. В этом репозитории boot-диск obproxy по умолчанию **20 ГБ** — без ограничения каталога логов он забивается за часы.
 
+Логи **observer** — отдельно: [observer-logging.md](observer-logging.md).
+
 Официально: [журнал ODP](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000002024095), [`syslog_level`](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000005053813) (с 4.2.3 дефолт **WDIAG**, раньше INFO), [`monitor_log_level`](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000005053945), [`route_diagnosis_level`](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000005053963).
 
 ## Что писать в первую очередь
