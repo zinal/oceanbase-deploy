@@ -421,6 +421,8 @@ ALTER SYSTEM SET enable_syslog_recycle = true;
 ALTER SYSTEM SET max_syslog_file_count = 1000;
 ```
 
+В этом репозитории то же самое (и `syslog_level=INFO`) ставит `./scripts/deploy.sh observer-log apply`, см. [observer-logging.md](observer-logging.md).
+
 Отдельно: **obproxy** с 4.2.3 пишет `syslog_level=WDIAG` и на нагрузке легко даёт >25 ГБ/сутки на инстанс (boot-диск в облаке часто 20 ГБ). Снижение детальности — [docs/obproxy-logging.md](obproxy-logging.md), `ALTER PROXYCONFIG SET syslog_level='INFO'` на каждом ODP.
 
 ---

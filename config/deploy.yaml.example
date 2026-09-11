@@ -233,6 +233,10 @@ tenant:
 
 oceanbase:
   cluster_name: obcluster
+  # Детальность логов observer. Дефолт syslog_level=WDIAG даёт гигабайты/сутки.
+  # info — продакшен (INFO); warn — только WARN+; debug — вернуть WDIAG.
+  # Живой кластер: ./scripts/deploy.sh observer-log apply
+  log_mode: info
   # Детальность логов ODP. С 4.2.3 дефолт syslog_level=WDIAG даёт десятки ГБ/сутки.
   # info — продакшен (INFO); warn — только WARN+; debug — вернуть WDIAG.
   # Живой кластер: ./scripts/deploy.sh obproxy-log apply
