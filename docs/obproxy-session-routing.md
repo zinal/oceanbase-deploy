@@ -253,7 +253,7 @@ ALTER PROXYCONFIG SET enable_primary_zone = false;
 ./scripts/deploy.sh obproxy-route apply --mode oltp
 ```
 
-Скрипт обходит все `OBPROXY_*` из `generated/inventory.env` и на каждом выполняет `ALTER PROXYCONFIG`. После `./scripts/deploy.sh tenant` тот же режим `even` применяется сам (идемпотентно).
+Скрипт обходит все `OBPROXY_*` из `generated/inventory.env` и на каждом выполняет `ALTER PROXYCONFIG`. То же самое после старта кластера делают `./scripts/deploy.sh deploy` и `./scripts/deploy.sh all` (`apply --skip-if-none --skip-if-ok`). `./scripts/deploy.sh tenant` повторяет even идемпотентно.
 
 Вручную, если inventory нет:
 
