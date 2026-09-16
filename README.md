@@ -303,6 +303,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── observer-logging.md            # детальность логов observer (WDIAG → INFO)
 │   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
 │   ├── node-recovery.md           # потеря одного observer/obproxy
+│   ├── backup-infrastructure.md   # физический бэкап: носители, режимы, YC
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
@@ -370,7 +371,7 @@ SSH и подготовка серверов используют **внутре
 ./scripts/07-recover-obproxy.sh 1 --replace --yes
 ```
 
-Без флага режима скрипт выбирает сам: ВМ есть в YC → temporary, нет → replace. Подробности: [docs/node-recovery.md](docs/node-recovery.md).
+Без флага режима скрипт выбирает сам: ВМ есть в YC → temporary, нет → replace. Подробности: [docs/node-recovery.md](docs/node-recovery.md). При потере majority официальный путь — physical backup/restore: носители, режимы и что нужно снаружи кластера — [docs/backup-infrastructure.md](docs/backup-infrastructure.md).
 
 Если `ALTER SYSTEM ADD SERVER` вернул **ERROR 4179** и в `DBA_OB_SERVERS` нет строки — это не отказ члена кластера, а leftover observer. Нужен wipe и повторный join:
 
