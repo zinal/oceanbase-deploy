@@ -1,6 +1,6 @@
 # Физический бэкап OceanBase: инфраструктура и режимы
 
-Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает на два вопроса: **что нужно снаружи кластера**, чтобы создавать и хранить копии, и **какие режимы бэкапа доступны**. Пошаговые SQL-рецепты сюда не входят — только инфраструктурные следствия.
+Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает: **что нужно снаружи кластера** для хранения копий, **какие режимы** доступны, **кто планирует** регулярный data backup и **как часто** архивируются логи. Пошаговые SQL-рецепты сюда не входят — только инфраструктурные следствия.
 
 Скрипты этого репозитория бэкап пока не поднимают. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
 
@@ -14,6 +14,8 @@
 | Режимы данных | Полный (`FULL`) и инкрементальный (`INCREMENTAL`); опция `PLUS ARCHIVELOG` даёт самодостаточный набор |
 | Режимы архива | `BINDING=Optional` (бизнес важнее, риск разрыва архива) и `Mandatory` (архив важнее, риск блокировки записи) |
 | Режимы восстановления | Тенант целиком или таблица; полное или быстрое; до текущего конца архива или до SCN/времени |
+| Регулярный data backup | В самом observer **нет** cron. Расписание — OCP, ob-operator, внешний cron/`obd`/`obshell` |
+| Как часто архивируются логи | Непрерывно после `ARCHIVELOG`. Выгрузка не реже чем раз в **`archive_lag_target` (по умолчанию 120 с)** на каждый лог-стрим с записью; piece режется раз в **1–7 суток** (по умолчанию 1 день) |
 | Для Yandex Cloud | Предпочтительно **Object Storage** (`s3://`). NFS «на все observer сразу» в трёх зонах штатно не закрывается File Storage |
 
 ```mermaid
@@ -57,7 +59,7 @@ flowchart LR
 
 Инкремент без предшествующего полного набора система сама превращает в полный. После апгрейда кластера с более старой major/BP-версии инкремент тоже требует нового полного набора.
 
-Расписание официально не встроено в observer: его задают снаружи (cron, OCP, ob-operator: `fullCrontab` / `incrementalCrontab`). Типичная схема — редкий полный + частые инкременты + непрерывный архив.
+Расписание data backup в observer **не встроено**: команда `BACKUP` — разовый job. Периодичность задают снаружи, см. [Регулярный запуск и частота архива](#регулярный-запуск-и-частота-архива). Типичная схема — редкий полный + частые инкременты + непрерывный архив.
 
 ### Данные: `PLUS ARCHIVELOG`
 
@@ -72,9 +74,7 @@ flowchart LR
 | **Optional** (по умолчанию) | Сначала пользовательская запись. Если архив отстаёт, clog может уйти в recycle до выгрузки | Разрыв архивного потока, дыра в PITR |
 | **Mandatory** | Сначала архив. Если носитель/сеть не успевают, запись в тенант может остановиться | Простой OLTP при деградации NFS/S3/NAT |
 
-Для продакшена с Mandatory носитель и канал до него должны выдерживать пиковый поток clog (оценка: пиковый TPS × средний объём изменения × коэффициент записи логов, обычно 2–10, опытная 4). Для Optional достаточно «в среднем успевать», но тогда нужен запас по `archive_lag_target` (по умолчанию **120 с**, диапазон до 7200 с) и мониторинг отставания.
-
-Куски архива (**piece**) режутся по календарю: `PIECE_SWITCH_INTERVAL` от **1d до 7d**, по умолчанию 1 день. Это влияет на размер объектов и на политику очистки, не на RPO как таковой.
+Для продакшена с Mandatory носитель и канал до него должны выдерживать пиковый поток clog (оценка: пиковый TPS × средний объём изменения × коэффициент записи логов, обычно 2–10, опытная 4). Для Optional достаточно «в среднем успевать», но тогда нужен запас по `archive_lag_target` и мониторинг отставания. Сама частота выгрузки — ниже, в [частоте архива](#как-часто-архивируются-логи).
 
 ### Кто инициирует и откуда
 
@@ -106,7 +106,49 @@ flowchart LR
 - `delete` — OceanBase сам удаляет объекты;
 - `tagging` — ставит тег, дальше lifecycle на стороне бакета (удобно с WORM / Object Lock).
 
-Сменившийся URI автоочистка **не** трогает: старый префикс остаётся на носителе, пока его не снесут вручную.
+Сменившийся URI автоочистка **не** трогает: старый префикс остаётся на носителе, пока его не снесут вручную. Заданная политика `default` / `log_only` **каждый час** порождает задачу очистки.
+
+## Регулярный запуск и частота архива
+
+Два разных механизма. Архив логов — фоновый процесс observer. Полный/инкрементальный data backup — разовая команда; «каждый день в 02:00» observer сам не сделает.
+
+### Кто умеет крутить data backup по расписанию
+
+| Механизм | Что даёт | Ограничение |
+|----------|----------|-------------|
+| **OCP** (в т.ч. Community: «新建租户级备份策略») | Политика на кластер или на тенант: период **неделя или месяц**, время суток, в выбранные дни `FULL_BACKUP` / `INCREMENTAL_BACKUP`, обязательный log backup, очистка, пороги алерта (таймаут data backup, задержка архива, дни без успешного backup) | Не cron с минутной сеткой. В месяце не больше 10 дней. Тенантная политика с V4.0 перекрывает кластерную. `sys` не бэкапится |
+| **ob-operator** `OBTenantBackupPolicy` | Настоящий cron: `fullCrontab` / `incrementalCrontab` (пример из гайда: полный в сб 00:30, инкремент ежедневно 01:30). После создания политики сначала полный, дальше по cron | Этот репозиторий на ВМ + OBD, не Kubernetes |
+| **OBD** `obd cluster tenant backup` | Разовый полный или `-m incremental` после `set-backup-config` | Планировщика нет — оборачивать cron/systemd |
+| **obshell** `POST /api/v1/tenant/:name/backup` | То же: разовый `mode=full` / incremental | Планировщика нет |
+| **SQL** `ALTER SYSTEM BACKUP …` | То же | Планировщика нет |
+| **Внешний cron** | `obclient` / OBD / obshell по crontab ОС на jump host | Нужны учётные данные, идемпотентность, алерт если job не `COMPLETED` |
+
+Официальной «дефолтной периодичности» полного бэкапа нет: выбирают окно хранения и RTO. Практичный шаблон из примеров operator/OCP — **полный раз в неделю, инкремент раз в сутки**, архив непрерывно.
+
+Скрипты этого репозитория расписание не ставят. Если включён OCP ([ocp-deployment.md](ocp-deployment.md)) — это штатный планировщик для данной схемы (ВМ, не k8s). Иначе — cron вокруг OBD/SQL.
+
+### Как часто архивируются логи
+
+После `ALTER SYSTEM ARCHIVELOG` и статуса `DOING` cron не нужен: каждый лог-стрим архивирует **лидер** этого стрима, RS leader только сводит `checkpoint_scn` тенанта.
+
+Три разных часов — их путают:
+
+| Часы | Параметр | По умолчанию | Что это |
+|------|----------|--------------|---------|
+| Выгрузка на носитель (RPO архива) | тенантный `archive_lag_target` | **120 с** (диапазон 0 … 7200 с) | **Максимальный** интервал между двумя archive IO **на лог-стрим, где есть новые логи**. Если агрегатный buffer заполнен раньше — выгрузка раньше. `0` ≈ «почти realtime» |
+| Нарезка каталогов | `PIECE_SWITCH_INTERVAL` в `LOG_ARCHIVE_DEST` | **1d**, допустимо 1d…7d | Календарный кусок архива (piece), удобный для очистки. Не интервал выгрузки |
+| Раунд архива | пока режим `ARCHIVELOG` | пока не `STOP` | Непрерывный поток; новый round — после останова/перезапуска архива |
+
+Следствия:
+
+- При равномерной записи ждите выгрузку **примерно каждые 2 минуты** на стрим, не «раз в сутки вместе с full backup».
+- Тихий стрим без новых логов не обязан стучаться в dest каждые 120 с.
+- Для **S3 и S3-совместимых** `archive_lag_target` **нельзя ставить ниже 60 с** (система отвергнет). NFS/OSS — любое значение из диапазона, включая 0.
+- Слишком маленькое значение на объектном хранилище даёт частые мелкие Put и бьёт по цене/IOPS dest; слишком большое увеличивает RPO и в Optional повышает шанс, что clog уйдёт в recycle до выгрузки.
+- Официальный совет: при выбранном лаге на стрим за период должно набегать **не меньше одного файла ~64 МБ** (архивный файл изоморфен clog). Если TPS низкий, уменьшать лаг до секунд обычно бессмысленно.
+- Для standby на архиве лаг на primary ставят примерно в **половину** допустимой задержки standby.
+
+Проверка: `CDB_OB_ARCHIVELOG` / `DBA_OB_ARCHIVELOG`, поле `STATUS=DOING`; отставание `checkpoint_scn` в спокойном режиме должно быть порядка `archive_lag_target`. Если отставание стабильно больше — узкое место dest/сеть, не «расписание».
 
 ## Что предусмотреть на инфраструктуре
 
@@ -200,7 +242,7 @@ RTO полного restore определяется сетью dest → observer
 
 - **Время.** Метки наборов и PITR завязаны на часы узлов; в этом репозитории chrony уже ставится на `prepare`.
 - **Политика хранения.** `RECOVERY_WINDOW` + lifecycle бакета; иначе archive+full растут неограниченно.
-- **Оркестрация.** SQL вручную, OCP (если включён, см. [ocp-deployment.md](ocp-deployment.md)), OBD `obd cluster tenant backup` / `set-backup-config`, либо ob-operator `OBTenantBackupPolicy`.
+- **Оркестрация data backup.** Observer сам не планирует. OCP (неделя/месяц), ob-operator (cron), либо внешний cron вокруг OBD/SQL/obshell. Подробности — [регулярный запуск](#регулярный-запуск-и-частота-архива).
 - **Проверка носителя** до первого `ARCHIVELOG`, не после падения Mandatory.
 
 ## Следствия для этого репозитория (Yandex Cloud)
@@ -233,6 +275,8 @@ RTO полного restore определяется сетью dest → observer
 - [ ] Для S3: ключи, TLS, стиль URL, `test_io_device`
 - [ ] Для NFS: 4.1, одни опции mount, autofs/fstab, порядок «NFS → observer»
 - [ ] Выбран `BINDING` исходя из того, готовы ли пожертвовать записью или PITR
+- [ ] Задан `archive_lag_target` (дефолт 120 с; для S3 не ниже 60 с) — это RPO архива, не piece
+- [ ] Есть планировщик data backup (OCP / cron / operator), observer сам full/inc не крутит
 - [ ] Заданы `RECOVERY_WINDOW` / lifecycle, иначе хранилище не ограничено
 - [ ] Целевой pool под restore и доступ к тем же URI с целевых узлов
 - [ ] NAT/endpoint, если observer без публичного IP
@@ -244,7 +288,8 @@ RTO полного restore определяется сетью dest → observer
 | Обзор physical backup/restore, носители, отличия V3/V4 | [物理备份与恢复概述](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000218106) (V4.2.1); [standalone 4.3.5](https://www.oceanbase.com/docs/common-oceanbase-database-standalone-1000000003577392) |
 | Подготовка data dest, раздельные пути, S3/OSS/NFS | [备份前准备](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615585) (V5.0.1) |
 | `DATA_BACKUP_DEST` | [SET DATA_BACKUP_DEST](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619501) |
-| `LOG_ARCHIVE_DEST`, `BINDING`, piece | [SET LOG_ARCHIVE_DEST](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000004479704); [日志归档前准备](https://www.oceanbase.com/docs/common-oceanbase-database-standalone-1000000002701927) |
+| `LOG_ARCHIVE_DEST`, `BINDING`, piece | [SET LOG_ARCHIVE_DEST](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000004479704); [日志归档前准备](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615620) (V5.0.1, в т.ч. `archive_lag_target`) |
+| Организация архива, piece vs checkpoint | [日志归档概述](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615618) |
 | Полный backup, `PLUS ARCHIVELOG` | [发起全量数据备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615588); [BACKUP](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000510892) |
 | Инкремент | [发起增量数据备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000749376) |
 | NFS: версия, hang, порядок старта | [部署 NFS](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000001049949); [опции mount](https://www.oceanbase.com/knowledge-base/oceanbase-database-1000000000208040) |
@@ -253,7 +298,8 @@ RTO полного restore определяется сетью dest → observer
 | TDE-ключи | [BACKUP KEY](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619504) |
 | Очистка, `RECOVERY_WINDOW` | [自动清理过期备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006616111) |
 | Restore тенанта / быстрый restore | [租户级物理恢复](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005282824) |
-| OBD tenant backup | [oceanbase-skills backup-restore](https://github.com/oceanbase/oceanbase-skills/blob/master/skills/oceanbase-deploy/tenant-management/references/backup-restore.md) |
-| ob-operator policy | [Back up a tenant](https://oceanbase.github.io/ob-operator/docs/manual/ob-operator-user-guide/high-availability/tenant-backup-of-ob-operator) |
+| OBD tenant backup (разовый) | [备份与恢复 (OBD)](https://www.oceanbase.com/docs/common-obd-cn-1000000006430654); [oceanbase-skills backup-restore](https://github.com/oceanbase/oceanbase-skills/blob/master/skills/oceanbase-deploy/tenant-management/references/backup-restore.md) |
+| OCP расписание (неделя/месяц) | [新建租户级备份策略 (OCP CE)](https://www.oceanbase.com/docs/community-ocp-cn-1000000000261383); [API: создание политики](https://www.oceanbase.com/docs/common-ocp-1000000005296052) |
+| ob-operator cron | [Back up a tenant](https://oceanbase.github.io/ob-operator/docs/manual/ob-operator-user-guide/high-availability/tenant-backup-of-ob-operator) |
 | YC Object Storage S3 | [S3 API](https://yandex.cloud/docs/storage/s3/) |
 | YC File Storage (не NFS, одна AZ) | [File storages](https://yandex.cloud/docs/compute/concepts/filesystem) |
