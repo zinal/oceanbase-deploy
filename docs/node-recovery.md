@@ -31,7 +31,7 @@
 
 - Есть `obd`, `obclient` или `mysql`, `yc`, SSH-ключ из `config/deploy.yaml`.
 - Пароль `root` sys-тенанта: переменная `OB_ROOT_PASSWORD`, иначе `ocp.root_password`, иначе значение из `~/.obd/cluster/<deploy>/`.
-- Для `--replace` нужен **majority** оставшихся observer (для 3 узлов — не меньше двух ACTIVE). Иначе официально: physical backup/restore, не замена узла.
+- Для `--replace` нужен **majority** оставшихся observer (для 3 узлов — не меньше двух ACTIVE). Иначе официально: physical backup/restore, не замена узла. Что для этого нужно снаружи кластера — [backup-infrastructure.md](backup-infrastructure.md).
 - Для `--temporary` majority не обязателен: официальный handbook при отсутствии majority предлагает по очереди поднимать `observer` на узлах.
 - SQL идёт на **оставшийся** observer (`root@sys`, порт 2881) или оставшийся obproxy (`root@sys#<cluster>`, порт 2883); после старта процесса — при необходимости на сам восстанавливаемый узел.
 
