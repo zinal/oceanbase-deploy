@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Физический бэкап user-тенанта и архив clog на S3-совместимое хранилище.
+"""Физический бэкап user-тенанта, архив clog и restore на S3-совместимое хранилище.
 
 Параметры dest — секция `backup` в config/deploy.yaml (профиль деплоя).
 Ключи можно подставить переменными OB_BACKUP_S3_*. Нет обязательного поля —
-сразу ошибка, без SQL к кластеру.
+сразу ошибка, без SQL к кластеру. Restore дополнительно требует pool_list
+(существующий пустой resource pool) и создаёт новый standby-тенант.
 
 Официально: сначала ARCHIVELOG (STATUS=DOING), потом BACKUP.
+RESTORE не перезаписывает исходный тенант.
 https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615585
+https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005282824
 """
 
 from __future__ import annotations
@@ -26,6 +29,12 @@ TENANT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Значения query URI: офиц. набор + точка/дефис (host, region).
 URI_VALUE_RE = re.compile(r"^[A-Za-z0-9/_\-$+=.]+$")
 PIECE_RE = re.compile(r"^[1-7]d$")
+# locality=F,R{1}@z1; primary_zone=z1;z2,z3
+RESTORE_OPTION_VALUE_RE = re.compile(r"^[A-Za-z0-9_,;{}@.\-]+$")
+UNTIL_TIME_RE = re.compile(
+    r"^[0-9]{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?$"
+)
+SCN_RE = re.compile(r"^[0-9]+$")
 FORBIDDEN_TENANTS = frozenset({"sys", "oceanbase"})
 REQUIRED_S3_FIELDS = ("host", "bucket", "access_id", "access_key")
 S3_ENV = {
@@ -37,6 +46,8 @@ S3_ENV = {
 }
 DEFAULT_DATA_PREFIX = "backup/{tenant}/data"
 DEFAULT_ARCHIVE_PREFIX = "backup/{tenant}/archive"
+DEFAULT_DEST_TENANT = "{tenant}_restore"
+DEFAULT_RESTORE_METHOD = "full"
 RESERVED_PREFIX_CHARS = re.compile(r"[?#&=\s]")
 
 
@@ -102,6 +113,12 @@ def resolve_tenant(cfg: dict[str, Any], override: str | None = None) -> str:
 def _s3_section(cfg: dict[str, Any]) -> dict[str, Any]:
     backup = _section(cfg, "backup")
     raw = backup.get("s3")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _restore_section(cfg: dict[str, Any]) -> dict[str, Any]:
+    backup = _section(cfg, "backup")
+    raw = backup.get("restore")
     return raw if isinstance(raw, dict) else {}
 
 
@@ -320,6 +337,237 @@ def backup_sql(tenant: str, mode: str, *, plus_archivelog: bool = False) -> str:
     )
 
 
+def resolve_dest_tenant(
+    cfg: dict[str, Any], source: str, override: str | None = None
+) -> str:
+    if override and str(override).strip():
+        dest = str(override).strip()
+    else:
+        dest = _as_str(_restore_section(cfg).get("dest_tenant"))
+        if not dest:
+            dest = DEFAULT_DEST_TENANT
+    dest = dest.replace("{tenant}", source)
+    if dest.lower() in FORBIDDEN_TENANTS or dest.upper().startswith("META"):
+        raise BackupConfigError(
+            f"тенант {dest!r} нельзя создавать restore (sys / Meta)"
+        )
+    if not TENANT_RE.match(dest):
+        raise BackupConfigError(
+            f"dest_tenant {dest!r} — только буквы/цифры/_, начинается с буквы или _"
+        )
+    if dest.lower() == source.lower():
+        raise BackupConfigError(
+            f"dest_tenant {dest!r} совпадает с исходным тенантом — "
+            "RESTORE создаёт новый standby и не перезаписывает существующий"
+        )
+    return dest
+
+
+def resolve_pool_list(cfg: dict[str, Any], override: str | None = None) -> str:
+    if override and str(override).strip():
+        raw = str(override).strip()
+    else:
+        raw = _as_str(_restore_section(cfg).get("pool_list"))
+    if not raw:
+        raise BackupConfigError(
+            "не задан pool_list. Укажите backup.restore.pool_list или --pool. "
+            "RESTORE требует существующий пустой resource pool"
+        )
+    pools = [p.strip() for p in raw.split(",") if p.strip()]
+    if not pools:
+        raise BackupConfigError("pool_list пустой")
+    for pool in pools:
+        if not TENANT_RE.match(pool):
+            raise BackupConfigError(
+                f"имя resource pool {pool!r} — только буквы/цифры/_, "
+                "начинается с буквы или _"
+            )
+    return ",".join(pools)
+
+
+def _cfg_or_override(override: str | None, yaml_val: Any) -> str:
+    if override is not None and str(override).strip():
+        return str(override).strip()
+    return _as_str(yaml_val)
+
+
+def _optional_restore_value(field: str, value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if not RESTORE_OPTION_VALUE_RE.match(text):
+        raise BackupConfigError(
+            f"backup.restore.{field}={text!r} содержит недопустимые символы"
+        )
+    return text
+
+
+def resolve_restore_method(cfg: dict[str, Any], override: str | None = None) -> str:
+    raw = _cfg_or_override(override, _restore_section(cfg).get("method"))
+    key = (raw or DEFAULT_RESTORE_METHOD).lower()
+    if key not in {"full", "quick"}:
+        raise BackupConfigError(f"backup.restore.method={raw!r} — full или quick")
+    return key
+
+
+def resolve_until(
+    cfg: dict[str, Any],
+    *,
+    until_time: str | None = None,
+    until_scn: str | None = None,
+) -> tuple[str, str]:
+    restore = _restore_section(cfg)
+    time_val = _cfg_or_override(until_time, restore.get("until_time"))
+    scn_val = _cfg_or_override(until_scn, restore.get("until_scn"))
+    if time_val and scn_val:
+        raise BackupConfigError("UNTIL TIME и UNTIL SCN нельзя задавать вместе")
+    if time_val and not UNTIL_TIME_RE.match(time_val):
+        raise BackupConfigError(
+            f"until_time={time_val!r} — ожидается YYYY-MM-DD HH:MM:SS[.fraction]"
+        )
+    if scn_val and not SCN_RE.match(scn_val):
+        raise BackupConfigError(f"until_scn={scn_val!r} — целое SCN")
+    return time_val, scn_val
+
+
+def bool_from_cfg(raw: Any, default: bool = False) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def restore_option(
+    *,
+    pool_list: str,
+    locality: str = "",
+    primary_zone: str = "",
+    concurrency: str = "",
+    method: str = DEFAULT_RESTORE_METHOD,
+) -> str:
+    parts = [f"pool_list={pool_list}"]
+    if locality:
+        parts.append(f"locality={locality}")
+    if primary_zone:
+        parts.append(f"primary_zone={primary_zone}")
+    if concurrency:
+        parts.append(f"concurrency={concurrency}")
+    parts.append(f"method={method}")
+    return "&".join(parts)
+
+
+def restore_sql(
+    dest_tenant: str,
+    data_uri: str,
+    archive_uri: str,
+    *,
+    option: str,
+    until_time: str = "",
+    until_scn: str = "",
+) -> str:
+    from_uri = f"{data_uri},{archive_uri}"
+    sql = (
+        f"ALTER SYSTEM RESTORE {sql_ident(dest_tenant)} "
+        f"FROM {sql_literal(from_uri)}"
+    )
+    if until_time and until_scn:
+        raise BackupConfigError("UNTIL TIME и UNTIL SCN нельзя задавать вместе")
+    if until_time:
+        sql += f" UNTIL TIME = {sql_literal(until_time)}"
+    elif until_scn:
+        if not SCN_RE.match(until_scn):
+            raise BackupConfigError(f"until_scn={until_scn!r} — целое SCN")
+        sql += f" UNTIL SCN = {until_scn}"
+    sql += f" WITH {sql_literal(option)}"
+    return sql
+
+
+def activate_standby_sql(tenant: str) -> str:
+    return f"ALTER SYSTEM ACTIVATE STANDBY TENANT {sql_ident(tenant)}"
+
+
+def resolve_restore_plan(
+    cfg: dict[str, Any],
+    *,
+    tenant: str | None = None,
+    dest_tenant: str | None = None,
+    pool_list: str | None = None,
+    locality: str | None = None,
+    primary_zone: str | None = None,
+    concurrency: str | None = None,
+    method: str | None = None,
+    until_time: str | None = None,
+    until_scn: str | None = None,
+    activate: bool | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Собрать параметры RESTORE. S3 и pool_list — до SQL к кластеру."""
+    source = resolve_tenant(cfg, tenant)
+    s3 = resolve_s3(cfg, source, environ)
+    dest = resolve_dest_tenant(cfg, source, dest_tenant)
+    pools = resolve_pool_list(cfg, pool_list)
+    restore = _restore_section(cfg)
+    loc = _optional_restore_value(
+        "locality", _cfg_or_override(locality, restore.get("locality"))
+    )
+    zone = _optional_restore_value(
+        "primary_zone", _cfg_or_override(primary_zone, restore.get("primary_zone"))
+    )
+    conc = _cfg_or_override(concurrency, restore.get("concurrency"))
+    if conc and not SCN_RE.match(conc):
+        raise BackupConfigError(
+            f"backup.restore.concurrency={conc!r} — целое число"
+        )
+    restore_method = resolve_restore_method(cfg, method)
+    time_val, scn_val = resolve_until(cfg, until_time=until_time, until_scn=until_scn)
+    if activate is True:
+        act = True
+    elif activate is False:
+        act = False
+    else:
+        act = bool_from_cfg(restore.get("activate"), False)
+    if restore_method == "quick" and act:
+        raise BackupConfigError(
+            "method=quick даёт только standby; ACTIVATE STANDBY недопустим. "
+            "Уберите --activate / backup.restore.activate"
+        )
+    option = restore_option(
+        pool_list=pools,
+        locality=loc,
+        primary_zone=zone,
+        concurrency=conc,
+        method=restore_method,
+    )
+    data_uri = build_s3_uri(s3, s3["data_prefix"])
+    archive_uri = build_s3_uri(s3, s3["archive_prefix"])
+    sql = restore_sql(
+        dest,
+        data_uri,
+        archive_uri,
+        option=option,
+        until_time=time_val,
+        until_scn=scn_val,
+    )
+    return {
+        "source": source,
+        "dest": dest,
+        "pool_list": pools,
+        "locality": loc,
+        "primary_zone": zone,
+        "concurrency": conc,
+        "method": restore_method,
+        "until_time": time_val,
+        "until_scn": scn_val,
+        "activate": act,
+        "option": option,
+        "data_uri": data_uri,
+        "archive_uri": archive_uri,
+        "sql": sql,
+        "s3": s3,
+    }
+
+
 def archive_status_sql(tenant: str) -> str:
     return (
         "SELECT t.TENANT_NAME, a.STATUS "
@@ -336,6 +584,38 @@ def backup_jobs_sql(tenant: str) -> str:
         "INNER JOIN oceanbase.DBA_OB_TENANTS t ON j.TENANT_ID = t.TENANT_ID "
         f"WHERE t.TENANT_NAME = {sql_literal(tenant)} "
         "ORDER BY j.JOB_ID DESC LIMIT 8"
+    )
+
+
+def restore_progress_sql(dest_tenant: str) -> str:
+    return (
+        "SELECT JOB_ID, RESTORE_TENANT_NAME, STATUS "
+        "FROM oceanbase.CDB_OB_RESTORE_PROGRESS "
+        f"WHERE RESTORE_TENANT_NAME = {sql_literal(dest_tenant)} "
+        "ORDER BY JOB_ID DESC LIMIT 8"
+    )
+
+
+def restore_history_sql(dest_tenant: str) -> str:
+    return (
+        "SELECT JOB_ID, RESTORE_TENANT_NAME, STATUS "
+        "FROM oceanbase.CDB_OB_RESTORE_HISTORY "
+        f"WHERE RESTORE_TENANT_NAME = {sql_literal(dest_tenant)} "
+        "ORDER BY JOB_ID DESC LIMIT 8"
+    )
+
+
+def tenant_lookup_sql(name: str) -> str:
+    return (
+        "SELECT TENANT_NAME, TENANT_ROLE FROM oceanbase.DBA_OB_TENANTS "
+        f"WHERE TENANT_NAME = {sql_literal(name)}"
+    )
+
+
+def resource_pool_sql(pool: str) -> str:
+    return (
+        "SELECT NAME, TENANT_ID FROM oceanbase.DBA_OB_RESOURCE_POOLS "
+        f"WHERE NAME = {sql_literal(pool)}"
     )
 
 
@@ -360,7 +640,10 @@ def latest_status(rows: list[tuple[str, str]]) -> str:
 def wait_cfg_seconds(cfg: dict[str, Any], key: str, default: int) -> int:
     backup = _section(cfg, "backup")
     archive = backup.get("archive") if isinstance(backup.get("archive"), dict) else {}
-    raw = backup.get(key, archive.get(key))
+    restore = backup.get("restore") if isinstance(backup.get("restore"), dict) else {}
+    raw = backup.get(key)
+    if raw is None or str(raw).strip() == "":
+        raw = restore.get(key, archive.get(key))
     if raw is None or str(raw).strip() == "":
         return default
     try:
@@ -408,6 +691,86 @@ def fetch_backup_jobs(
 ) -> list[tuple[str, str]]:
     out = run_sql_text(ob_sys, endpoint, password, backup_jobs_sql(tenant))
     return parse_status_rows(out)
+
+
+def _merge_job_rows(*groups: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    rows: list[tuple[str, str]] = []
+    for group in groups:
+        for job_id, status in group:
+            if job_id in seen:
+                continue
+            seen.add(job_id)
+            rows.append((job_id, status))
+    rows.sort(key=lambda item: int(item[0]) if item[0].isdigit() else 0, reverse=True)
+    return rows
+
+
+def fetch_restore_jobs(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, dest_tenant: str
+) -> list[tuple[str, str]]:
+    progress = parse_status_rows(
+        run_sql_text(ob_sys, endpoint, password, restore_progress_sql(dest_tenant))
+    )
+    history = parse_status_rows(
+        run_sql_text(ob_sys, endpoint, password, restore_history_sql(dest_tenant))
+    )
+    return _merge_job_rows(progress, history)
+
+
+def fetch_tenant_role(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, name: str
+) -> str:
+    out = run_sql_text(ob_sys, endpoint, password, tenant_lookup_sql(name))
+    rows = parse_status_rows(out)
+    return rows[0][1] if rows else ""
+
+
+def fetch_pool_tenant_id(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, pool: str
+) -> str | None:
+    out = run_sql_text(ob_sys, endpoint, password, resource_pool_sql(pool))
+    for raw in (out or "").splitlines():
+        line = raw.strip()
+        if not line or line.lower().startswith("name"):
+            continue
+        parts = re.split(r"\s+", line)
+        if not parts or parts[0] != pool:
+            continue
+        if len(parts) == 1:
+            return ""
+        return parts[-1]
+    return None
+
+
+def assert_dest_absent(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, dest: str
+) -> None:
+    role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+    if role:
+        raise RuntimeError(
+            f"тенант {dest} уже существует (TENANT_ROLE={role}) — "
+            "RESTORE создаёт новый standby, не перезаписывает"
+        )
+
+
+def assert_pools_free(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, pool_list: str
+) -> None:
+    for pool in [p.strip() for p in pool_list.split(",") if p.strip()]:
+        tenant_id = fetch_pool_tenant_id(ob_sys, endpoint, password, pool)
+        if tenant_id is None:
+            raise RuntimeError(
+                f"resource pool {pool} не найден. Создайте пустой pool "
+                "и укажите его в backup.restore.pool_list / --pool"
+            )
+        if tenant_id.upper() in {"", "NULL", "NONE", "-1", "0"}:
+            continue
+        if tenant_id.lstrip("-").isdigit() and int(tenant_id) > 0:
+            raise RuntimeError(
+                f"resource pool {pool} занят TENANT_ID={tenant_id} — "
+                "RESTORE нужен пустой pool"
+            )
 
 
 def wait_until(
@@ -562,6 +925,133 @@ def run_backup(
     return 0
 
 
+def print_restore_plan(plan: dict[str, Any]) -> None:
+    print(f"источник: {plan['source']}")
+    print(f"dest:     {plan['dest']} (новый standby)")
+    print(f"pool_list={plan['pool_list']} method={plan['method']}")
+    if plan["until_time"]:
+        print(f"UNTIL TIME = {plan['until_time']}")
+    if plan["until_scn"]:
+        print(f"UNTIL SCN = {plan['until_scn']}")
+    print(f"data:     {redact_uri(plan['data_uri'])}")
+    print(f"archive:  {redact_uri(plan['archive_uri'])}")
+    print(redact_uri(plan["sql"]))
+    if plan["activate"]:
+        print(activate_standby_sql(plan["dest"]))
+
+
+def run_restore(
+    cfg: dict[str, Any],
+    inv: dict[str, str],
+    *,
+    tenant: str | None = None,
+    dest_tenant: str | None = None,
+    pool_list: str | None = None,
+    locality: str | None = None,
+    primary_zone: str | None = None,
+    concurrency: str | None = None,
+    method: str | None = None,
+    until_time: str | None = None,
+    until_scn: str | None = None,
+    activate: bool | None = None,
+    environ: dict[str, str] | None = None,
+    wait: bool = True,
+) -> int:
+    plan = resolve_restore_plan(
+        cfg,
+        tenant=tenant,
+        dest_tenant=dest_tenant,
+        pool_list=pool_list,
+        locality=locality,
+        primary_zone=primary_zone,
+        concurrency=concurrency,
+        method=method,
+        until_time=until_time,
+        until_scn=until_scn,
+        activate=activate,
+        environ=environ,
+    )
+    dest = plan["dest"]
+    ob_sys, endpoint, password = connect(cfg, inv)
+    assert_dest_absent(ob_sys, endpoint, password, dest)
+    assert_pools_free(ob_sys, endpoint, password, plan["pool_list"])
+    print_restore_plan(plan)
+    before = fetch_restore_jobs(ob_sys, endpoint, password, dest)
+    before_id = int(before[0][0]) if before and before[0][0].isdigit() else 0
+    run_sql_text(ob_sys, endpoint, password, plan["sql"])
+    if not wait:
+        print("restore job отправлен (--no-wait)")
+        return 0
+    timeout = wait_cfg_seconds(cfg, "wait_restore_sec", 7200)
+
+    def _done() -> bool:
+        jobs = fetch_restore_jobs(ob_sys, endpoint, password, dest)
+        if not jobs:
+            return False
+        job_id, status = jobs[0]
+        if job_id.isdigit() and int(job_id) <= before_id:
+            return False
+        st = status.upper()
+        if st in {"RESTORE_FAIL", "FAIL", "FAILED"}:
+            raise RuntimeError(f"restore job {job_id} STATUS={st}")
+        return st == "RESTORE_SUCCESS"
+
+    wait_until(_done, timeout_sec=timeout, what=f"restore {dest} RESTORE_SUCCESS")
+    jobs = fetch_restore_jobs(ob_sys, endpoint, password, dest)
+    label = (
+        f"{jobs[0][0]} STATUS={jobs[0][1]}"
+        if jobs
+        else "нет строк в CDB_OB_RESTORE_PROGRESS/HISTORY"
+    )
+    print(f"restore {dest}: {label}")
+    if plan["activate"]:
+        sql = activate_standby_sql(dest)
+        print(sql)
+        run_sql_text(ob_sys, endpoint, password, sql)
+        role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+        print(f"тенант {dest}: TENANT_ROLE={role or '<нет>'}")
+    else:
+        role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+        print(
+            f"тенант {dest}: TENANT_ROLE={role or 'STANDBY'}. "
+            "Клиентам как primary: ./scripts/deploy.sh restore run --activate "
+            "или ALTER SYSTEM ACTIVATE STANDBY TENANT"
+        )
+    return 0
+
+
+def show_restore(
+    cfg: dict[str, Any],
+    inv: dict[str, str],
+    *,
+    tenant: str | None = None,
+    dest_tenant: str | None = None,
+    environ: dict[str, str] | None = None,
+) -> int:
+    source = resolve_tenant(cfg, tenant)
+    dest = resolve_dest_tenant(cfg, source, dest_tenant)
+    print(f"источник: {source}")
+    print(f"dest:     {dest}")
+    try:
+        require_s3_profile(cfg, environ)
+        s3 = resolve_s3(cfg, source, environ)
+        print(f"data:     {redact_uri(build_s3_uri(s3, s3['data_prefix']))}")
+        print(f"archive:  {redact_uri(build_s3_uri(s3, s3['archive_prefix']))}")
+    except BackupConfigError as exc:
+        print(f"S3 профиль: {exc}")
+    ob_sys, endpoint, password = connect(cfg, inv)
+    role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+    print(f"DBA_OB_TENANTS {dest}: {role or '<нет>'}")
+    jobs = fetch_restore_jobs(ob_sys, endpoint, password, dest)
+    if not jobs:
+        print("CDB_OB_RESTORE_PROGRESS/HISTORY: пусто")
+    else:
+        print("restore jobs (свежие):")
+        for job_id, status in jobs:
+            print(f"  {job_id} {status}")
+    return 0
+
+
 def show_status(
     cfg: dict[str, Any],
     inv: dict[str, str],
@@ -658,6 +1148,57 @@ def cmd_validate(args: argparse.Namespace) -> None:
     print("профиль backup.s3 полный")
 
 
+def _restore_plan_from_args(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    activate_override = True if getattr(args, "activate", False) else None
+    return resolve_restore_plan(
+        cfg,
+        tenant=getattr(args, "tenant", None),
+        dest_tenant=getattr(args, "dest_tenant", None),
+        pool_list=getattr(args, "pool", None),
+        locality=getattr(args, "locality", None),
+        primary_zone=getattr(args, "primary_zone", None),
+        concurrency=getattr(args, "concurrency", None),
+        method=getattr(args, "method", None),
+        until_time=getattr(args, "until_time", None),
+        until_scn=getattr(args, "until_scn", None),
+        activate=activate_override,
+    )
+
+
+def cmd_restore(args: argparse.Namespace) -> None:
+    cfg = _load_cfg(args)
+    resolve_tenant(cfg, args.tenant)
+    action = getattr(args, "action", "run") or "run"
+    if action == "show":
+        cfg, inv = _load_io(args)
+        show_restore(cfg, inv, tenant=args.tenant, dest_tenant=getattr(args, "dest_tenant", None))
+        return
+    require_s3_profile(cfg)
+    plan = _restore_plan_from_args(cfg, args)
+    if action == "validate":
+        print_restore_plan(plan)
+        print("профиль restore полный")
+        return
+    cfg, inv = _load_io(args)
+    code = run_restore(
+        cfg,
+        inv,
+        tenant=args.tenant,
+        dest_tenant=getattr(args, "dest_tenant", None),
+        pool_list=getattr(args, "pool", None),
+        locality=getattr(args, "locality", None),
+        primary_zone=getattr(args, "primary_zone", None),
+        concurrency=getattr(args, "concurrency", None),
+        method=getattr(args, "method", None),
+        until_time=getattr(args, "until_time", None),
+        until_scn=getattr(args, "until_scn", None),
+        activate=True if getattr(args, "activate", False) else None,
+        wait=not getattr(args, "no_wait", False),
+    )
+    if code:
+        sys.exit(code)
+
+
 def _add_io_args(parser: argparse.ArgumentParser, *, with_defaults: bool) -> None:
     if with_defaults:
         parser.add_argument("--config", default=str(REPO_ROOT / "config" / "deploy.yaml"))
@@ -671,6 +1212,39 @@ def _add_io_args(parser: argparse.ArgumentParser, *, with_defaults: bool) -> Non
     parser.add_argument("--config", default=argparse.SUPPRESS)
     parser.add_argument("--inventory", default=argparse.SUPPRESS)
     parser.add_argument("--tenant", default=argparse.SUPPRESS)
+
+
+def _add_restore_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("run", "show", "validate"),
+        default="run",
+        help="run — RESTORE; show — CDB_OB_RESTORE_*; validate — профиль без SQL",
+    )
+    parser.add_argument(
+        "--dest-tenant",
+        default=None,
+        help="новый standby (по умолчанию backup.restore.dest_tenant или {tenant}_restore)",
+    )
+    parser.add_argument(
+        "--pool",
+        default=None,
+        dest="pool",
+        help="backup.restore.pool_list: существующий пустой resource pool",
+    )
+    parser.add_argument("--locality", default=None)
+    parser.add_argument("--primary-zone", default=None, dest="primary_zone")
+    parser.add_argument("--concurrency", default=None)
+    parser.add_argument("--method", choices=("full", "quick"), default=None)
+    parser.add_argument("--until-time", default=None, dest="until_time")
+    parser.add_argument("--until-scn", default=None, dest="until_scn")
+    parser.add_argument(
+        "--activate",
+        action="store_true",
+        help="после RESTORE_SUCCESS: ALTER SYSTEM ACTIVATE STANDBY TENANT",
+    )
+    parser.add_argument("--no-wait", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -702,6 +1276,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_arch.add_argument("action", choices=("on", "off"))
     p_arch.add_argument("--no-wait", action="store_true")
     p_arch.set_defaults(func=cmd_archive)
+
+    p_restore = sub.add_parser(
+        "restore", help="RESTORE в новый standby-тенант из того же S3 dest"
+    )
+    _add_io_args(p_restore, with_defaults=False)
+    _add_restore_args(p_restore)
+    p_restore.set_defaults(func=cmd_restore)
     return parser
 
 

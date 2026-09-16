@@ -194,6 +194,30 @@ def test_cli_flags_after_subcommand() -> None:
     args = parser.parse_args(["archive", "off", "--tenant", "app1"])
     assert args.action == "off"
     assert args.tenant == "app1"
+    args = parser.parse_args(
+        [
+            "restore",
+            "run",
+            "--dest-tenant",
+            "tpcc_restore",
+            "--pool",
+            "restore_pool",
+            "--until-time",
+            "2026-09-16 12:00:00",
+            "--activate",
+            "--no-wait",
+        ]
+    )
+    assert args.command == "restore"
+    assert args.action == "run"
+    assert args.dest_tenant == "tpcc_restore"
+    assert args.pool == "restore_pool"
+    assert args.until_time == "2026-09-16 12:00:00"
+    assert args.activate is True
+    assert args.no_wait is True
+    args = parser.parse_args(["restore", "--pool", "p1"])
+    assert args.action == "run"
+    assert args.pool == "p1"
     before = parser.parse_args(
         ["--config", str(ROOT / "config" / "deploy.yaml.example"), "validate"]
     )
@@ -207,15 +231,112 @@ def test_cli_flags_after_subcommand() -> None:
 def test_wrappers_and_deploy_sh() -> None:
     backup = (ROOT / "scripts" / "14-backup.sh").read_text(encoding="utf-8")
     archive = (ROOT / "scripts" / "15-archive-log.sh").read_text(encoding="utf-8")
+    restore = (ROOT / "scripts" / "16-restore.sh").read_text(encoding="utf-8")
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     example = (ROOT / "config" / "deploy.yaml.example").read_text(encoding="utf-8")
     assert "ob_backup.py" in backup and "full|incremental" in backup
     assert "ob_backup.py" in archive and "on|off" in archive
+    assert "ob_backup.py" in restore and "run|show|validate" in restore
     assert "14-backup.sh" in deploy
     assert "15-archive-log.sh" in deploy
+    assert "16-restore.sh" in deploy
     assert "backup:" in example
     assert "access_id:" in example
     assert "access_key:" in example
+    assert "pool_list:" in example
+    assert "restore:" in example
+
+
+def test_restore_sql_and_plan() -> None:
+    cfg = full_s3_cfg()
+    cfg["backup"]["restore"] = {
+        "pool_list": "restore_pool",
+        "locality": "F,R{1}@z1,F,R{1}@z2,F,R{1}@z3",
+        "method": "full",
+    }
+    plan = ob_backup.resolve_restore_plan(cfg, environ={})
+    assert plan["source"] == "tpcc"
+    assert plan["dest"] == "tpcc_restore"
+    assert plan["pool_list"] == "restore_pool"
+    assert plan["activate"] is False
+    sql = plan["sql"]
+    assert sql.startswith("ALTER SYSTEM RESTORE tpcc_restore FROM 's3://")
+    assert "backup/tpcc/data?" in sql
+    assert "backup/tpcc/archive?" in sql
+    assert "WITH 'pool_list=restore_pool&locality=F,R{1}@z1,F,R{1}@z2,F,R{1}@z3&method=full'" in sql
+    assert "UNTIL" not in sql
+    assert "secret_key-1" in sql
+    assert "secret_key-1" not in ob_backup.redact_uri(sql)
+    assert (
+        ob_backup.activate_standby_sql("tpcc_restore")
+        == "ALTER SYSTEM ACTIVATE STANDBY TENANT tpcc_restore"
+    )
+    until_sql = ob_backup.restore_sql(
+        "app_restore",
+        "s3://b/data?access_key=k",
+        "s3://b/archive?access_key=k",
+        option="pool_list=p1&method=full",
+        until_time="2026-09-16 12:00:00",
+    )
+    assert "UNTIL TIME = '2026-09-16 12:00:00'" in until_sql
+    scn_sql = ob_backup.restore_sql(
+        "app_restore",
+        "s3://b/data?k=1",
+        "s3://b/archive?k=1",
+        option="pool_list=p1&method=full",
+        until_scn="12345",
+    )
+    assert "UNTIL SCN = 12345" in scn_sql
+
+
+def test_restore_fail_fast() -> None:
+    cfg = full_s3_cfg()
+    try:
+        ob_backup.resolve_restore_plan(cfg, environ={})
+        raise AssertionError("ждали ошибку pool_list")
+    except ob_backup.BackupConfigError as exc:
+        assert "pool_list" in str(exc)
+    cfg["backup"]["restore"] = {"pool_list": "restore_pool", "dest_tenant": "tpcc"}
+    try:
+        ob_backup.resolve_restore_plan(cfg, environ={})
+        raise AssertionError("ждали совпадение dest")
+    except ob_backup.BackupConfigError as exc:
+        assert "совпадает" in str(exc)
+    cfg["backup"]["restore"] = {
+        "pool_list": "restore_pool",
+        "until_time": "2026-09-16 12:00:00",
+        "until_scn": "1",
+    }
+    try:
+        ob_backup.resolve_restore_plan(cfg, environ={})
+        raise AssertionError("ждали конфликт UNTIL")
+    except ob_backup.BackupConfigError as exc:
+        assert "вместе" in str(exc)
+    cfg["backup"]["restore"] = {
+        "pool_list": "restore_pool",
+        "method": "quick",
+        "activate": True,
+    }
+    try:
+        ob_backup.resolve_restore_plan(cfg, environ={})
+        raise AssertionError("ждали запрет activate+quick")
+    except ob_backup.BackupConfigError as exc:
+        assert "quick" in str(exc)
+    cfg = full_s3_cfg()
+    del cfg["backup"]["s3"]["bucket"]
+    cfg["backup"]["restore"] = {"pool_list": "restore_pool"}
+    try:
+        ob_backup.resolve_restore_plan(cfg, environ={})
+        raise AssertionError("ждали ошибку S3 до SQL")
+    except ob_backup.BackupConfigError as exc:
+        assert "bucket" in str(exc)
+    cfg = full_s3_cfg()
+    dest = ob_backup.resolve_dest_tenant(cfg, "tpcc", "app_new")
+    assert dest == "app_new"
+    dest = ob_backup.resolve_dest_tenant(
+        {"backup": {"restore": {"dest_tenant": "{tenant}_dr"}}}, "tpcc"
+    )
+    assert dest == "tpcc_dr"
 
 
 if __name__ == "__main__":
@@ -230,4 +351,6 @@ if __name__ == "__main__":
     test_archive_off_does_not_need_s3()
     test_cli_flags_after_subcommand()
     test_wrappers_and_deploy_sh()
+    test_restore_sql_and_plan()
+    test_restore_fail_fast()
     print("ok")

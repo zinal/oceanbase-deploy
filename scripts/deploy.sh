@@ -127,6 +127,9 @@ case "${STEP}" in
   archive-log)
     run_cmd bash "${ROOT}/scripts/15-archive-log.sh" "${@:2}"
     ;;
+  restore)
+    run_cmd bash "${ROOT}/scripts/16-restore.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -168,6 +171,7 @@ case "${STEP}" in
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
   archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
   backup         — полный/инкрементальный бэкап: full|incremental|show
+  restore        — restore из S3 в новый standby: run|show|validate
   all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
