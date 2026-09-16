@@ -231,6 +231,33 @@ tenant:
   # PRIMARY_ZONE тенанта скрипт выставляет RANDOM (лидеры по всем Zone).
   # Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route
 
+# Физический бэкап user-тенанта на S3-совместимое хранилище (Yandex Object Storage).
+# Документация: docs/backup-infrastructure.md
+# Команды (без обязательных полей s3 сразу ошибка, SQL к кластеру не идёт):
+#   ./scripts/deploy.sh archive-log on|off|show|validate
+#   ./scripts/deploy.sh backup full|incremental|show|validate
+# Ключи можно не писать в yaml, а задать OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
+backup:
+  tenant: ""                       # пустое = tenant.tenant_name
+  plus_archivelog: false           # BACKUP … PLUS ARCHIVELOG для full
+  wait_doing_sec: 180              # ждать STATUS=DOING перед backup / после archive on
+  wait_stop_sec: 180               # ждать STOP после archive off
+  wait_backup_sec: 7200            # ждать COMPLETED у backup job
+  s3:
+    host: ""                       # обязательно: storage.yandexcloud.net
+    bucket: ""                     # обязательно
+    access_id: ""                  # обязательно (или OB_BACKUP_S3_ACCESS_ID)
+    access_key: ""                 # обязательно (или OB_BACKUP_S3_ACCESS_KEY)
+    s3_region: ""                  # обязательно только для AWS (*.amazonaws.com)
+    addressing_model: path_style   # path_style | virtual_hosted_style
+    checksum_type: md5             # md5 (S3-compatible) | crc32 (AWS)
+    delete_mode: delete            # delete | tagging
+    data_prefix: backup/{tenant}/data
+    archive_prefix: backup/{tenant}/archive
+  archive:
+    binding: Optional              # Optional | Mandatory
+    piece_switch_interval: 1d      # 1d … 7d
+
 oceanbase:
   cluster_name: obcluster
   # Детальность логов observer. Дефолт syslog_level=WDIAG даёт гигабайты/сутки.

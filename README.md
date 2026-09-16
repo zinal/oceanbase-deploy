@@ -98,6 +98,8 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
 ./scripts/deploy.sh obproxy-log     # снизить детальность логов ODP (syslog_level)
 ./scripts/deploy.sh observer-log    # снизить детальность логов observer (syslog_level)
+./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3 (секция backup в deploy.yaml)
+./scripts/deploy.sh backup full     # полный физический бэкап тенанта
 ./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
 ```
 
@@ -122,6 +124,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `oceanbase` | Параметры кластера, OBD, **версия** (`version`, по умолчанию 5.0.1.0) |
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
 | `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`) |
+| `backup` | S3 dest для физического бэкапа и архива clog (`./scripts/deploy.sh backup` / `archive-log`) |
 
 `tenant.mode` — сценарий оптимизации OBD (`obd cluster tenant create -o`, OceanBase ≥ 4.3):
 
@@ -328,6 +331,9 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 11-obproxy-route.sh      # ALTER PROXYCONFIG на каждом obproxy
 │   ├── 12-obproxy-log.sh        # syslog_level / лимиты логов ODP
 │   ├── 13-observer-log.sh       # syslog_level / recycle / IO логов observer
+│   ├── 14-backup.sh             # полный / инкрементальный бэкап на S3
+│   ├── 15-archive-log.sh        # ARCHIVELOG on/off
+│   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -378,6 +384,20 @@ SSH и подготовка серверов используют **внутре
 ```bash
 ./scripts/join-empty-observer.sh 6 --yes
 ```
+
+## Физический бэкап (S3)
+
+Секция `backup` в `config/deploy.yaml`: бакет, host, ключи. Пустые обязательные поля — сразу ошибка, без SQL.
+
+```bash
+./scripts/deploy.sh backup validate
+./scripts/deploy.sh archive-log on
+./scripts/deploy.sh backup full
+./scripts/deploy.sh backup incremental
+./scripts/deploy.sh archive-log off
+```
+
+Ключи можно задать `OB_BACKUP_S3_ACCESS_ID` / `OB_BACKUP_S3_ACCESS_KEY`. Сначала архив (`STATUS=DOING`), потом data backup.
 
 ## Terraform (альтернатива)
 
