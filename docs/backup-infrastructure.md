@@ -2,7 +2,7 @@
 
 Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает: **что нужно снаружи кластера** для хранения копий, **какие режимы** доступны, **кто планирует** регулярный data backup и **как часто** архивируются логи. Пошаговые SQL-рецепты сюда не входят — только инфраструктурные следствия.
 
-Разовые команды бэкапа и архива — `./scripts/deploy.sh backup` и `archive-log` (профиль `backup` в `config/deploy.yaml`). Расписание в observer по-прежнему не встроено. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
+Разовые команды бэкапа, архива и restore — `./scripts/deploy.sh backup`, `archive-log` и `restore` (профиль `backup` в `config/deploy.yaml`). Расписание в observer по-прежнему не встроено. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
 
 ## Краткий ответ
 
@@ -125,9 +125,9 @@ flowchart LR
 
 Официальной «дефолтной периодичности» полного бэкапа нет: выбирают окно хранения и RTO. Практичный шаблон из примеров operator/OCP — **полный раз в неделю, инкремент раз в сутки**, архив непрерывно.
 
-Скрипты этого репозитория расписание не ставят: `backup` / `archive-log` — разовые job. Если включён OCP ([ocp-deployment.md](ocp-deployment.md)) — это штатный планировщик для данной схемы (ВМ, не k8s). Иначе — cron вокруг `./scripts/deploy.sh backup`.
+Скрипты этого репозитория расписание не ставят: `backup` / `archive-log` / `restore` — разовые job. Если включён OCP ([ocp-deployment.md](ocp-deployment.md)) — это штатный планировщик для данной схемы (ВМ, не k8s). Иначе — cron вокруг `./scripts/deploy.sh backup`.
 
-## Скрипты: archive-log и backup
+## Скрипты: archive-log, backup и restore
 
 Профиль — секция **`backup`** в `config/deploy.yaml` (копия из `deploy.yaml.example`). Обязательные поля S3 проверяются **до** SQL: нет `host` / `bucket` / `access_id` / `access_key` — сразу ошибка. Ключи можно не класть в yaml, а задать `OB_BACKUP_S3_ACCESS_ID` и `OB_BACKUP_S3_ACCESS_KEY` (плюс `OB_BACKUP_S3_HOST` / `OB_BACKUP_S3_BUCKET`).
 
@@ -144,6 +144,22 @@ flowchart LR
 ```
 
 `on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` — только для `full`.
+
+### Restore из того же dest
+
+Официальный `ALTER SYSTEM RESTORE` создаёт **новый** тенант в роли standby и **не** перезаписывает исходный. Обязателен существующий пустой resource pool (`backup.restore.pool_list` или `--pool`). Dest по умолчанию `{tenant}_restore`. Пустые S3 или `pool_list` — сразу ошибка, без SQL.
+
+```bash
+# CREATE RESOURCE UNIT / POOL заранее; pool не должен быть занят другим тенантом
+./scripts/deploy.sh restore validate
+./scripts/deploy.sh restore                              # dest = {tenant}_restore
+./scripts/deploy.sh restore run --dest-tenant tpcc_restore --pool restore_pool
+./scripts/deploy.sh restore run --until-time '2026-09-16 12:00:00'
+./scripts/deploy.sh restore run --activate               # после RESTORE_SUCCESS → primary
+./scripts/deploy.sh restore show
+```
+
+`--activate` / `backup.restore.activate: true` после успеха выполняет `ALTER SYSTEM ACTIVATE STANDBY TENANT`. Для `method=quick` activate запрещён: такой тенант остаётся standby, пока dest онлайн. `--until-time` и `--until-scn` вместе задавать нельзя. Скрипт отказывается, если dest уже есть в `DBA_OB_TENANTS` или pool занят.
 
 ### Как часто архивируются логи
 
@@ -316,6 +332,7 @@ RTO полного restore определяется сетью dest → observer
 | TDE-ключи | [BACKUP KEY](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619504) |
 | Очистка, `RECOVERY_WINDOW` | [自动清理过期备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006616111) |
 | Restore тенанта / быстрый restore | [租户级物理恢复](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005282824) |
+| ACTIVATE STANDBY после restore | [ACTIVATE STANDBY](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619548) |
 | OBD tenant backup (разовый) | [备份与恢复 (OBD)](https://www.oceanbase.com/docs/common-obd-cn-1000000006430654); [oceanbase-skills backup-restore](https://github.com/oceanbase/oceanbase-skills/blob/master/skills/oceanbase-deploy/tenant-management/references/backup-restore.md) |
 | OCP расписание (неделя/месяц) | [新建租户级备份策略 (OCP CE)](https://www.oceanbase.com/docs/community-ocp-cn-1000000000261383); [API: создание политики](https://www.oceanbase.com/docs/common-ocp-1000000005296052) |
 | ob-operator cron | [Back up a tenant](https://oceanbase.github.io/ob-operator/docs/manual/ob-operator-user-guide/high-availability/tenant-backup-of-ob-operator) |
