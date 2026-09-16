@@ -2,7 +2,7 @@
 
 Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает: **что нужно снаружи кластера** для хранения копий, **какие режимы** доступны, **кто планирует** регулярный data backup и **как часто** архивируются логи. Пошаговые SQL-рецепты сюда не входят — только инфраструктурные следствия.
 
-Скрипты этого репозитория бэкап пока не поднимают. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
+Разовые команды бэкапа и архива — `./scripts/deploy.sh backup` и `archive-log` (профиль `backup` в `config/deploy.yaml`). Расписание в observer по-прежнему не встроено. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
 
 ## Краткий ответ
 
@@ -125,7 +125,25 @@ flowchart LR
 
 Официальной «дефолтной периодичности» полного бэкапа нет: выбирают окно хранения и RTO. Практичный шаблон из примеров operator/OCP — **полный раз в неделю, инкремент раз в сутки**, архив непрерывно.
 
-Скрипты этого репозитория расписание не ставят. Если включён OCP ([ocp-deployment.md](ocp-deployment.md)) — это штатный планировщик для данной схемы (ВМ, не k8s). Иначе — cron вокруг OBD/SQL.
+Скрипты этого репозитория расписание не ставят: `backup` / `archive-log` — разовые job. Если включён OCP ([ocp-deployment.md](ocp-deployment.md)) — это штатный планировщик для данной схемы (ВМ, не k8s). Иначе — cron вокруг `./scripts/deploy.sh backup`.
+
+## Скрипты: archive-log и backup
+
+Профиль — секция **`backup`** в `config/deploy.yaml` (копия из `deploy.yaml.example`). Обязательные поля S3 проверяются **до** SQL: нет `host` / `bucket` / `access_id` / `access_key` — сразу ошибка. Ключи можно не класть в yaml, а задать `OB_BACKUP_S3_ACCESS_ID` и `OB_BACKUP_S3_ACCESS_KEY` (плюс `OB_BACKUP_S3_HOST` / `OB_BACKUP_S3_BUCKET`).
+
+Тенант: `backup.tenant`, иначе `tenant.tenant_name`, иначе `--tenant`. Префиксы по умолчанию `backup/{tenant}/data` и `backup/{tenant}/archive` — у каждого тенанта свой путь, как требует документация.
+
+```bash
+# заполнить backup.s3 в config/deploy.yaml, egress observer → Object Storage
+./scripts/deploy.sh backup validate          # только профиль, без кластера
+./scripts/deploy.sh archive-log on           # SET LOG_ARCHIVE_DEST + ARCHIVELOG, ждать DOING
+./scripts/deploy.sh backup full              # SET DATA_BACKUP_DEST + BACKUP TENANT
+./scripts/deploy.sh backup incremental
+./scripts/deploy.sh archive-log off          # NOARCHIVELOG; S3 не нужен
+./scripts/deploy.sh backup show
+```
+
+`on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` — только для `full`.
 
 ### Как часто архивируются логи
 

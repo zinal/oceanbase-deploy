@@ -121,6 +121,12 @@ case "${STEP}" in
   observer-log)
     run_cmd bash "${ROOT}/scripts/13-observer-log.sh" "${@:2}"
     ;;
+  backup)
+    run_cmd bash "${ROOT}/scripts/14-backup.sh" "${@:2}"
+    ;;
+  archive-log)
+    run_cmd bash "${ROOT}/scripts/15-archive-log.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -160,6 +166,8 @@ case "${STEP}" in
   obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
   obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
+  archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
+  backup         — полный/инкрементальный бэкап: full|incremental|show
   all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
