@@ -1,6 +1,6 @@
 # Физический бэкап OceanBase: инфраструктура и режимы
 
-Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает: **что нужно снаружи кластера** для хранения копий, **какие режимы** доступны, **кто планирует** регулярный data backup и **как часто** архивируются логи. Пошаговые SQL-рецепты сюда не входят — только инфраструктурные следствия.
+Краткий обзор официальной документации OceanBase V4.x / V5.0 (этот репозиторий ставит **oceanbase-ce 5.0.1**). Документ отвечает: **что нужно снаружи кластера** для хранения копий, **какие режимы** доступны, **кто планирует** регулярный data backup, **как часто** архивируются логи и **как крутить скорость backup/restore**, не забивая прод и S3. Пошаговые SQL-рецепты эксплуатации сюда не входят — только инфраструктурные следствия и официальные рычаги производительности.
 
 Разовые команды бэкапа, архива и restore — `./scripts/deploy.sh backup`, `archive-log` и `restore` (профиль `backup` в `config/deploy.yaml`). Расписание в observer по-прежнему не встроено. Диски observer (`network-ssd-nonreplicated` для data/log) **не заменяют** резервные копии: при потере majority официальный путь — physical backup/restore, а не замена узла. См. [node-recovery.md](node-recovery.md).
 
@@ -16,6 +16,9 @@
 | Режимы восстановления | Тенант целиком или таблица; полное или быстрое; до текущего конца архива или до SCN/времени |
 | Регулярный data backup | В самом observer **нет** cron. Расписание — OCP, ob-operator, внешний cron/`obd`/`obshell` |
 | Как часто архивируются логи | Непрерывно после `ARCHIVELOG`. Выгрузка не реже чем раз в **`archive_lag_target` (по умолчанию 120 с)** на каждый лог-стрим с записью; piece режется раз в **1–7 суток** (по умолчанию 1 день) |
+| Скорость backup/restore | Сначала канал и dest, потом параллелизм: backup — `ha_low_thread_score` (дефолт 2), restore — `ha_high_thread_score` / `RESTORE … concurrency` |
+| Не мешать проду | Backup — очередь `ha_low`; сеть — `sys_bkgd_net_percentage` (дефолт 60 % NIC); CPU/IOPS — Resource Manager `FUNCTION HA_LOW` |
+| Лимит S3 | Да, на объектном dest: `max_iops` и `max_bandwidth` через `CHANGE EXTERNAL_STORAGE_DEST`. На NFS этих ручек нет |
 | Для Yandex Cloud | Предпочтительно **Object Storage** (`s3://`). NFS «на все observer сразу» в трёх зонах штатно не закрывается File Storage |
 
 ```mermaid
@@ -159,7 +162,7 @@ flowchart LR
 ./scripts/deploy.sh restore show
 ```
 
-`--activate` / `backup.restore.activate: true` после успеха выполняет `ALTER SYSTEM ACTIVATE STANDBY TENANT`. Для `method=quick` activate запрещён: такой тенант остаётся standby, пока dest онлайн. `--until-time` и `--until-scn` вместе задавать нельзя. Скрипт отказывается, если dest уже есть в `DBA_OB_TENANTS` или pool занят.
+`--activate` / `backup.restore.activate: true` после успеха выполняет `ALTER SYSTEM ACTIVATE STANDBY TENANT`. Для `method=quick` activate запрещён: такой тенант остаётся standby, пока dest онлайн. `--until-time` и `--until-scn` вместе задавать нельзя. Скрипт отказывается, если dest уже есть в `DBA_OB_TENANTS` или pool занят. `--concurrency` / `backup.restore.concurrency` попадает в `WITH` (дефолт OceanBase = `MAX_CPU` dest-тенанта). Параллелизм restore после старта job — [производительность](#производительность-backup-и-restore).
 
 ### Как часто архивируются логи
 
@@ -255,8 +258,8 @@ rw,nfsvers=4.1,sync,lookupcache=positive,hard,timeo=600,wsize=1048576,rsize=1048
 | Что | Зачем |
 |-----|--------|
 | Связность observer → dest с **каждой** зоны | Архив пишет лидер лог-стрима (он может быть в любой zone); data backup выбирает узлы, опционально сужая набор через `?zone=` / `idc=` / `region=` |
-| Запас ширины канала | Полный backup — пачка; архив — постоянный поток. Фоновые задачи по умолчанию режутся `sys_bkgd_net_percentage` (**60 %** от распознанной скорости NIC) |
-| Не делить saturating-путь с OLTP | Backup классифицируется как `ha_low`; CPU/IOPS можно ограничить Resource Manager, но потолок не должен стать узким местом dest |
+| Запас ширины канала | Полный backup — пачка; архив — постоянный поток. Фоновые задачи по умолчанию режутся `sys_bkgd_net_percentage` (**60 %** от распознанной скорости NIC). Кнопки и порядок тюнинга — [производительность](#производительность-backup-и-restore) |
+| Не делить saturating-путь с OLTP | Backup классифицируется как `ha_low`; CPU/IOPS можно ограничить Resource Manager. Restore — уже `ha_high` |
 | Стабильный DNS/TLS до S3 | Иначе Mandatory остановит запись, Optional порвёт архив |
 
 Сужение источника (`zone` / `idc` / `region` в URI) имеет смысл, если в одной IDC больше канала до бакета. Для архива это не «приоритет», а **ограничение**: лидер лог-стрима обязан быть в указанном наборе, иначе архив не двигается. Root Service leader должен попадать в набор для data backup, иначе метаданные набора не пишутся.
@@ -270,7 +273,7 @@ Restore читает те же URI **с целевых** observer. Нужно з
 - при быстром restore — dest, который не планируют отключать;
 - хранение пароля набора и TDE-ключа вне бакета с данными.
 
-RTO полного restore определяется сетью dest → observer и параллелизмом (`ha_high_thread_score`, `log_restore_concurrency`), не скоростью локального SSD кластера.
+RTO полного restore определяется сетью dest → observer и параллелизмом (`ha_high_thread_score`, `RESTORE … concurrency`, `log_restore_concurrency`), не скоростью локального SSD кластера. Подробности — [производительность](#производительность-backup-и-restore).
 
 ### 6. Эксплуатационные зависимости
 
@@ -278,6 +281,94 @@ RTO полного restore определяется сетью dest → observer
 - **Политика хранения.** `RECOVERY_WINDOW` + lifecycle бакета; иначе archive+full растут неограниченно.
 - **Оркестрация data backup.** Observer сам не планирует. OCP (неделя/месяц), ob-operator (cron), либо внешний cron вокруг OBD/SQL/obshell. Подробности — [регулярный запуск](#регулярный-запуск-и-частота-архива).
 - **Проверка носителя** до первого `ARCHIVELOG`, не после падения Mandatory.
+
+## Производительность backup и restore
+
+Официальная постановка: в идеале скорость упирается только в **распределение данных** (число и размер партиций) и **железо** (CPU, диск, сеть до dest). Дефолты этот потолок не берут. Сначала убеждаются, что CPU/IO/сеть не в потолке (в том числе из‑за Resource Manager), и только потом крутят параллелизм.
+
+[oceanbase-skills](https://github.com/oceanbase/oceanbase-skills) (`tenant-management` → [backup-restore.md](https://github.com/oceanbase/oceanbase-skills/blob/master/skills/oceanbase-deploy/tenant-management/references/backup-restore.md)) рычагов производительности не задают: там workflow OBD и требование **проверить throughput с каждого observer**, который будет писать/читать dest. Числа ниже — из [备份恢复性能调优](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005681984) (V4.3/V4.6, те же рычаги в V5.0.1) и [CHANGE EXTERNAL_STORAGE_DEST](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619414) (V5.0.1).
+
+### Как обеспечить скорость на большом кластере
+
+Пишут **сами observer с unit’ами тенанта**, не отдельный агент. Больше узлов с данными тенанта — больше писателей; узкое место почти всегда **канал observer → dest**, не локальный SSD.
+
+Порядок:
+
+1. **Измерить dest** с observer: `ob_admin test_io_device` (API/права) и `ob_admin io_adapter_benchmark` (МБ/с, QPS, латентность). Если бенчмарк не даёт нужный RTO — параллелизм внутри OceanBase не поможет.
+2. **Проверить, какую NIC видит observer.** Лимит фона = распознанная скорость × `sys_bkgd_net_percentage` (дефолт 60 %). Смотреть `oceanbase.V$OB_NIC_INFO` и лог `init_bandwidth_throttle`. Если цифра занижена (типично в облаке) — `{home_path}/etc/nic.rate.config` вида `eth0=10000` (Mbps). Иначе «60 %» режет backup по фантомным 1 Gbit.
+3. **Снять искусственный потолок Resource Manager**, если он уже стоит на `HA_LOW` / `HA_HIGH` (`DBA_OB_RSRC_DIRECTIVES` / `DBA_OB_RSRC_IO_DIRECTIVES`). На перф-тестах backup/restore официально **не** включают изоляцию.
+4. **Поднять параллелизм**, когда CPU/IO/сеть ещё есть.
+
+| Рычаг | Что крутит | Дефолт | Как на большом кластере |
+|-------|------------|--------|-------------------------|
+| `ha_low_thread_score` | data backup (и очистка копий) | `0` → **2** потока, диапазон 0…100 | Тенант ≤ 4 CPU — не трогать. Крупный — начать с **10**, если медленно — удваивать. Перф-тест: до 100 |
+| `log_archive_concurrency` | архив clog | `0` = от `MAX_CPU`: ≤8 → `MAX_CPU`; 8…32 → `max(8, MAX_CPU/2)`; ≥32 → `max(16, MAX_CPU/4)` | Оставить `0` |
+| `RESTORE … WITH '…&concurrency=N'` | data restore в момент старта | = `MAX_CPU` dest-unit | Запас CPU в **целевом** pool; скрипт: `--concurrency` / `backup.restore.concurrency` |
+| `ha_high_thread_score` | data restore (очередь HA high) | `0` → **8** | После `META$…` в `NORMAL` — **10**; перф-тест — до 100. Не путать с backup |
+| `log_restore_concurrency` | log restore / догон standby | `0` → `MAX_CPU` | Держать `0`. Поднимать только если фаза логов отстаёт **и** канал dest не забит; на NFS часто хватает 5 |
+| `_restore_idle_time` | скрытый интервал планировщика RS | 1 мин | Имеет смысл на мелких тенантах (≤ 4 CPU): 10 с экономят десятки секунд…2 мин, на крупных почти не видно |
+
+Источник backup на большом кластере сужают до IDC с **широким** каналом до бакета (`?idc=` / `zone=` / `region=` в dest; запятая = один приоритет, точка с запятой = приоритет слева выше). Рекомендуют уровень **IDC**, не список zone: больше кандидатов-узлов, меньше возни при смене topology. Root Service leader обязан быть в этом наборе, иначе metadata backup не пишется. Для архива это не «приоритет», а **фильтр**: лидер лог-стрима вне набора — архив стоит.
+
+Restore на большом объёме:
+
+- целевой pool с достаточным `MAX_CPU` (это дефолтный `concurrency`);
+- все **целевые** observer читают те же URI;
+- после появления Meta-тенанта `META$…` со статусом `NORMAL` — `ha_high_thread_score = 10` на **восстанавливаемый** тенант;
+- `method=quick` быстрее полного, но dest обязан оставаться онлайн всё время жизни такого standby;
+- RTO полного restore ≈ сеть dest → observer × параллелизм, не IOPS data-диска.
+
+Не бэкапить все user-тенанты одним `BACKUP DATABASE` на пике: каждый тенант — свой job и свой поток на dest.
+
+### Как ограничить воздействие на прод
+
+Backup и очистка копий идут в очередь **`ha_low`** (низкий приоритет HA). Restore, copy и rebuild — **`ha_high`**. Restore **в тот же** продуктивный кластер конкурирует с HA на высоком приоритете; для RTO большого тенанта лучше отдельный контур.
+
+Рычаги изоляции (от грубого к точному):
+
+| Что режем | Рычаг | Замечание |
+|-----------|--------|-----------|
+| Доля NIC на **все** фоновые задачи (backup, restore, migrate, copy) | кластерный `sys_bkgd_net_percentage` (0…100, дефолт **60**, сразу, без рестарта; меняет только `sys`) | Режет и restore. Слишком низко — backup не успевает в окно; слишком высоко — OLTP на том же NIC |
+| CPU / IOPS backup | Resource Manager: `SET_CONSUMER_GROUP_MAPPING('FUNCTION','HA_LOW', …)` | CPU-изоляция нужна cgroup. Restore мапится на `HA_HIGH` — **другая** группа |
+| Кто пишет backup | `zone` / `idc` / `region` в dest | Сдвиг нагрузки в IDC с запасом канала, остальные zone оставляют OLTP |
+| Когда полный backup | внешний cron / OCP | Observer сам расписания не ставит |
+| Архив vs запись | `BINDING=Optional` | Optional не душит OLTP при деградации dest, но дырявит PITR. Mandatory при узком S3 остановит запись |
+
+Не разгонять `ha_low_thread_score` на тенантах ≤ 4 CPU. Если изоляция уже стоит и backup упёрся ровно в её MAX_IOPS/CPU — сначала поднять потолок группы, не поток нитей: иначе очередь растёт, а IO уже на квоте.
+
+Полный backup лучше не делить saturating-путь с OLTP (тот же NIC без запаса, тот же NAT). Архив — постоянный фон; его RPO задаёт `archive_lag_target`, не «ночное окно».
+
+### Можно ли ограничить запросы и трафик в S3?
+
+**Да, на объектном dest (S3/OSS/совместимые). На NFS — нет** (ошибка `1235`).
+
+После того как путь уже задан (`DATA_BACKUP_DEST` / `LOG_ARCHIVE_DEST`), с **user-тенанта**:
+
+```sql
+ALTER SYSTEM CHANGE EXTERNAL_STORAGE_DEST
+  PATH = 's3://<bucket>/backup/<tenant>/data?host=storage.yandexcloud.net'
+  SET ATTRIBUTE = 'max_iops=500&max_bandwidth=100mb';
+```
+
+То же для archive-префикса: data и archive — **разные** пути, лимит на одном не душит другой.
+
+| Параметр | Смысл | Если не задан |
+|----------|--------|----------------|
+| `max_iops` | потолок I/O-запросов в секунду **на этот путь** | без лимита, сколько выдержит бакет/сеть |
+| `max_bandwidth` | потолок полосы; единицы `kb` / `mb` / `gb` = KB/s / MB/s / GB/s | без лимита |
+
+Официальный совет для шумного мультиtenant: начать с **`max_iops=500&max_bandwidth=100mb`**, смотреть длительность backup и пик OLTP, потом поднимать. В URI при `SET DATA_BACKUP_DEST` этих полей нет — только `CHANGE`/`MODIFY`/`ALTER EXTERNAL_STORAGE_DEST`. PATH обязан содержать `host`. Текущие значения: `CDB_OB_BACKUP_STORAGE_INFO` / `DBA_OB_BACKUP_STORAGE_INFO` (`MAX_IOPS`, `MAX_BANDWIDTH`).
+
+Что это **не** умеет:
+
+- нет отдельного «S3 QPS SDK»; клиент держит до **512** соединений на процесс — это потолок пула, не лимит. HTTP 429 / SlowDown SDK **ретраит**, а не режет заранее;
+- `sys_bkgd_net_percentage` режет суммарный фон observer (включая не-S3 HA), не бакет;
+- Resource Manager режет CPU/IOPS на стороне observer, не API бакета;
+- квоты Yandex Object Storage / NAT остаются снаружи и могут рвать backup независимо от `max_*`.
+
+Мелкие частые Put архива на S3 отдельно бьют по IOPS: `archive_lag_target` **нельзя** ставить ниже **60 с**; ещё меньше — больше мелких объектов и цена/лимиты бакета при том же RPO.
+
+Итого три слоя, их можно сочетать: **путь** (`max_iops`/`max_bandwidth`) → **NIC фона** (`sys_bkgd_net_percentage`) → **CPU/диск backup** (Resource Manager `HA_LOW`).
 
 ## Следствия для этого репозитория (Yandex Cloud)
 
@@ -301,6 +392,13 @@ RTO полного restore определяется сетью dest → observer
 
 Дополнительные мелочи YC: квоты на бакет и NAT, шифрование бакета на стороне YC не отменяет `BACKUP KEY` для TDE внутри OceanBase, Object Lock близок к сценарию `enable_worm` + `tagging` (проверять, а не предполагать).
 
+Скорость и изоляция в этой схеме:
+
+- egress часто идёт через **NAT** — его полоса общий потолок на все observer зоны, `max_bandwidth` на dest его не расширит;
+- три AZ пишут backup параллельно, пока dest не сужен `idc=`/`zone=`; архив всё равно пишет лидер стрима из любой zone;
+- `V$OB_NIC_INFO` в облаке часто не совпадает с лимитом ВМ — сверить `{home_path}/etc/nic.rate.config` с профилем, иначе 60 % фона считается от «не той» NIC;
+- квоты Object Storage (запросы/с, полоса) лучше заранее согласовать с `max_iops`/`max_bandwidth`, иначе OceanBase получит 429 и будет ретраить.
+
 ## Минимальный чеклист перед первым `ARCHIVELOG`
 
 - [ ] Носитель выбран, ёмкость ≥ full + incrementals + архив за окно хранения
@@ -314,6 +412,8 @@ RTO полного restore определяется сетью dest → observer
 - [ ] Заданы `RECOVERY_WINDOW` / lifecycle, иначе хранилище не ограничено
 - [ ] Целевой pool под restore и доступ к тем же URI с целевых узлов
 - [ ] NAT/endpoint, если observer без публичного IP
+- [ ] Скорость dest измерена `io_adapter_benchmark`; NIC в `V$OB_NIC_INFO` совпадает с фактом
+- [ ] Для продакшена заданы изоляция (`sys_bkgd_net_percentage` / `HA_LOW` / `max_bandwidth`) и окно полного backup
 
 ## Источники
 
@@ -327,7 +427,11 @@ RTO полного restore определяется сетью dest → observer
 | Полный backup, `PLUS ARCHIVELOG` | [发起全量数据备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615588); [BACKUP](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000510892) |
 | Инкремент | [发起增量数据备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000000749376) |
 | NFS: версия, hang, порядок старта | [部署 NFS](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000001049949); [опции mount](https://www.oceanbase.com/knowledge-base/oceanbase-database-1000000000208040) |
-| Сеть и параллелизм backup | [备份恢复性能调优](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005681984) |
+| Сеть и параллелизм backup/restore | [备份恢复性能调优](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005681984); [sys_bkgd_net_percentage](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006618824) (V5.0.1); [ha_high_thread_score](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006618652) |
+| Лимит IOPS/полосы объектного dest | [CHANGE EXTERNAL_STORAGE_DEST](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619414) (`max_iops`, `max_bandwidth`) |
+| Resource Manager: backup = `HA_LOW`, restore = `HA_HIGH` | [SET_CONSUMER_GROUP_MAPPING](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619741); [конфигурация изоляции](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619059) |
+| Restore: `concurrency`, `ha_high_thread_score` после Meta | [执行物理恢复](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615598); [физические параметры restore](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615597) |
+| Замер dest | [test_io_device](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000003382066); [io_adapter_benchmark](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000001502741) |
 | `archive_lag_target` | [archive_lag_target](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005685334) |
 | TDE-ключи | [BACKUP KEY](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006619504) |
 | Очистка, `RECOVERY_WINDOW` | [自动清理过期备份](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006616111) |
