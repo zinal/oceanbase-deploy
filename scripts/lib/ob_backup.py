@@ -50,6 +50,16 @@ DEFAULT_ARCHIVE_PREFIX = "backup/{tenant}/archive"
 DEFAULT_DEST_TENANT = "{tenant}_restore"
 DEFAULT_RESTORE_METHOD = "full"
 RESERVED_PREFIX_CHARS = re.compile(r"[?#&=\s]")
+# CDB_OB_BACKUP_JOBS — только активные; после конца строка в CDB_OB_BACKUP_JOB_HISTORY.
+BACKUP_SUCCESS_STATUS = frozenset({"COMPLETED", "SUCCESS"})
+BACKUP_FAILED_STATUS = frozenset({"FAILED", "CANCELED", "CANCELLED"})
+# Progress: RESTORE_SUCCESS; history: SUCCESS / FAILED.
+RESTORE_SUCCESS_STATUS = frozenset({"RESTORE_SUCCESS", "SUCCESS"})
+RESTORE_FAILED_STATUS = frozenset({"RESTORE_FAIL", "FAIL", "FAILED"})
+TIMEOUT_STATUS_HINT = (
+    "завершённый backup уходит в CDB_OB_BACKUP_JOB_HISTORY; "
+    "restore history STATUS=SUCCESS, не RESTORE_SUCCESS"
+)
 
 
 class BackupConfigError(ValueError):
@@ -586,6 +596,16 @@ def backup_jobs_sql(tenant: str) -> str:
     )
 
 
+def backup_history_sql(tenant: str) -> str:
+    return (
+        "SELECT j.JOB_ID, t.TENANT_NAME, j.STATUS "
+        "FROM oceanbase.CDB_OB_BACKUP_JOB_HISTORY j "
+        "INNER JOIN oceanbase.DBA_OB_TENANTS t ON j.TENANT_ID = t.TENANT_ID "
+        f"WHERE t.TENANT_NAME = {sql_literal(tenant)} "
+        "ORDER BY j.JOB_ID DESC LIMIT 8"
+    )
+
+
 def restore_progress_sql(dest_tenant: str) -> str:
     return (
         "SELECT JOB_ID, RESTORE_TENANT_NAME, STATUS "
@@ -634,6 +654,12 @@ def parse_status_rows(stdout: str) -> list[tuple[str, str]]:
 
 def latest_status(rows: list[tuple[str, str]]) -> str:
     return rows[0][1] if rows else ""
+
+
+def latest_job_id(rows: list[tuple[str, str]]) -> int:
+    if rows and rows[0][0].isdigit():
+        return int(rows[0][0])
+    return 0
 
 
 def wait_cfg_seconds(cfg: dict[str, Any], key: str, default: int) -> int:
@@ -688,8 +714,13 @@ def fetch_archive_status(
 def fetch_backup_jobs(
     ob_sys: Any, endpoint: dict[str, Any], password: str, tenant: str
 ) -> list[tuple[str, str]]:
-    out = run_sql_text(ob_sys, endpoint, password, backup_jobs_sql(tenant))
-    return parse_status_rows(out)
+    active = parse_status_rows(
+        run_sql_text(ob_sys, endpoint, password, backup_jobs_sql(tenant))
+    )
+    history = parse_status_rows(
+        run_sql_text(ob_sys, endpoint, password, backup_history_sql(tenant))
+    )
+    return _merge_job_rows(active, history)
 
 
 def _merge_job_rows(*groups: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -788,6 +819,61 @@ def wait_until(
         if clock() >= deadline:
             raise RuntimeError(f"таймаут {timeout_sec}s: {what}")
         sleeper(poll_sec)
+
+
+def wait_for_latest_job(
+    fetch: Callable[[], list[tuple[str, str]]],
+    *,
+    before_id: int,
+    success: frozenset[str],
+    failed: frozenset[str],
+    timeout_sec: int,
+    what: str,
+    poll_sec: float = 5.0,
+    sleeper: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] = print,
+) -> tuple[str, str]:
+    """Ждать job с id > before_id в success. Печатать смену STATUS."""
+    last = {"id": "", "status": "", "seen": False}
+
+    def _done() -> bool:
+        jobs = fetch()
+        if not jobs:
+            last["id"] = ""
+            last["status"] = ""
+            last["seen"] = False
+            return False
+        job_id, status = jobs[0]
+        if job_id.isdigit() and int(job_id) <= before_id:
+            return False
+        st = status.upper()
+        if not last["seen"] or last["id"] != job_id or last["status"] != st:
+            log(f"  job {job_id} STATUS={st}")
+            last["id"] = job_id
+            last["status"] = st
+            last["seen"] = True
+        if st in failed:
+            raise RuntimeError(f"{what} job {job_id} STATUS={st}")
+        return st in success
+
+    try:
+        wait_until(
+            _done,
+            timeout_sec=timeout_sec,
+            poll_sec=poll_sec,
+            sleeper=sleeper,
+            clock=clock,
+            what=what,
+        )
+    except RuntimeError as exc:
+        extra = ""
+        if last["seen"]:
+            extra = f"; последний job {last['id']} STATUS={last['status']}"
+        elif "таймаут" in str(exc):
+            extra = f"; {TIMEOUT_STATUS_HINT}"
+        raise RuntimeError(f"{exc}{extra}") from None
+    return last["id"], last["status"]
 
 
 def archive_on(
@@ -897,30 +983,22 @@ def run_backup(
                 "Сначала: ./scripts/deploy.sh archive-log on"
             )
     before = fetch_backup_jobs(ob_sys, endpoint, password, name)
-    before_id = int(before[0][0]) if before and before[0][0].isdigit() else 0
+    before_id = latest_job_id(before)
     print(sql)
     run_sql_text(ob_sys, endpoint, password, sql)
     if not wait:
         print("backup job отправлен (--no-wait)")
         return 0
     timeout = wait_cfg_seconds(cfg, "wait_backup_sec", 7200)
-
-    def _done() -> bool:
-        jobs = fetch_backup_jobs(ob_sys, endpoint, password, name)
-        if not jobs:
-            return False
-        job_id, status = jobs[0]
-        if job_id.isdigit() and int(job_id) < before_id:
-            return False
-        st = status.upper()
-        if st in {"FAILED", "CANCELED"}:
-            raise RuntimeError(f"backup job {job_id} STATUS={st}")
-        return st == "COMPLETED"
-
-    wait_until(_done, timeout_sec=timeout, what=f"backup {mode} {name} COMPLETED")
-    jobs = fetch_backup_jobs(ob_sys, endpoint, password, name)
-    label = f"{jobs[0][0]} STATUS={jobs[0][1]}" if jobs else "нет строк в CDB_OB_BACKUP_JOBS"
-    print(f"backup {name} {mode}: {label}")
+    job_id, status = wait_for_latest_job(
+        lambda: fetch_backup_jobs(ob_sys, endpoint, password, name),
+        before_id=before_id,
+        success=BACKUP_SUCCESS_STATUS,
+        failed=BACKUP_FAILED_STATUS,
+        timeout_sec=timeout,
+        what=f"backup {mode} {name} COMPLETED",
+    )
+    print(f"backup {name} {mode}: {job_id} STATUS={status}")
     return 0
 
 
@@ -976,33 +1054,21 @@ def run_restore(
     assert_pools_free(ob_sys, endpoint, password, plan["pool_list"])
     print_restore_plan(plan)
     before = fetch_restore_jobs(ob_sys, endpoint, password, dest)
-    before_id = int(before[0][0]) if before and before[0][0].isdigit() else 0
+    before_id = latest_job_id(before)
     run_sql_text(ob_sys, endpoint, password, plan["sql"])
     if not wait:
         print("restore job отправлен (--no-wait)")
         return 0
     timeout = wait_cfg_seconds(cfg, "wait_restore_sec", 7200)
-
-    def _done() -> bool:
-        jobs = fetch_restore_jobs(ob_sys, endpoint, password, dest)
-        if not jobs:
-            return False
-        job_id, status = jobs[0]
-        if job_id.isdigit() and int(job_id) <= before_id:
-            return False
-        st = status.upper()
-        if st in {"RESTORE_FAIL", "FAIL", "FAILED"}:
-            raise RuntimeError(f"restore job {job_id} STATUS={st}")
-        return st == "RESTORE_SUCCESS"
-
-    wait_until(_done, timeout_sec=timeout, what=f"restore {dest} RESTORE_SUCCESS")
-    jobs = fetch_restore_jobs(ob_sys, endpoint, password, dest)
-    label = (
-        f"{jobs[0][0]} STATUS={jobs[0][1]}"
-        if jobs
-        else "нет строк в CDB_OB_RESTORE_PROGRESS/HISTORY"
+    job_id, status = wait_for_latest_job(
+        lambda: fetch_restore_jobs(ob_sys, endpoint, password, dest),
+        before_id=before_id,
+        success=RESTORE_SUCCESS_STATUS,
+        failed=RESTORE_FAILED_STATUS,
+        timeout_sec=timeout,
+        what=f"restore {dest} RESTORE_SUCCESS",
     )
-    print(f"restore {dest}: {label}")
+    print(f"restore {dest}: {job_id} STATUS={status}")
     if plan["activate"]:
         sql = activate_standby_sql(dest)
         print(sql)
@@ -1076,9 +1142,9 @@ def show_status(
     print(f"CDB_OB_ARCHIVELOG.STATUS={arch or '<нет>'}")
     jobs = fetch_backup_jobs(ob_sys, endpoint, password, name)
     if not jobs:
-        print("CDB_OB_BACKUP_JOBS: пусто")
+        print("CDB_OB_BACKUP_JOBS/HISTORY: пусто")
     else:
-        print("CDB_OB_BACKUP_JOBS (свежие):")
+        print("backup jobs (активные + history):")
         for job_id, status in jobs:
             print(f"  {job_id} {status}")
     return 0

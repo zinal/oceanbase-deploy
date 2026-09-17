@@ -168,6 +168,111 @@ def test_parse_status() -> None:
     rows = ob_backup.parse_status_rows("101 tpcc COMPLETED\n")
     assert rows[0][1] == "COMPLETED"
     assert ob_backup.latest_status([]) == ""
+    assert ob_backup.latest_job_id([]) == 0
+    assert ob_backup.latest_job_id([("12", "DOING")]) == 12
+    merged = ob_backup._merge_job_rows(
+        [("6", "DOING")],
+        [("6", "COMPLETED"), ("5", "COMPLETED")],
+    )
+    assert merged[0] == ("6", "DOING")
+    assert merged[1] == ("5", "COMPLETED")
+    sql = ob_backup.backup_history_sql("tpcc")
+    assert "CDB_OB_BACKUP_JOB_HISTORY" in sql
+    assert "tpcc" in sql
+
+
+def test_wait_for_latest_job() -> None:
+    logs: list[str] = []
+    states = [
+        [],
+        [("5", "COMPLETED")],
+        [("6", "DOING")],
+        [("6", "COMPLETED")],
+    ]
+    idx = {"i": 0}
+
+    def fetch() -> list[tuple[str, str]]:
+        i = min(idx["i"], len(states) - 1)
+        idx["i"] += 1
+        return states[i]
+
+    now = {"t": 0.0}
+
+    def clock() -> float:
+        return now["t"]
+
+    def sleeper(sec: float) -> None:
+        now["t"] += sec
+
+    job_id, status = ob_backup.wait_for_latest_job(
+        fetch,
+        before_id=5,
+        success=ob_backup.BACKUP_SUCCESS_STATUS,
+        failed=ob_backup.BACKUP_FAILED_STATUS,
+        timeout_sec=10,
+        what="backup full tpcc COMPLETED",
+        poll_sec=1,
+        sleeper=sleeper,
+        clock=clock,
+        log=logs.append,
+    )
+    assert (job_id, status) == ("6", "COMPLETED")
+    assert any("DOING" in line for line in logs)
+    assert any("COMPLETED" in line for line in logs)
+
+    now["t"] = 0.0
+    logs.clear()
+    job_id, status = ob_backup.wait_for_latest_job(
+        lambda: [("9", "SUCCESS")],
+        before_id=1,
+        success=ob_backup.RESTORE_SUCCESS_STATUS,
+        failed=ob_backup.RESTORE_FAILED_STATUS,
+        timeout_sec=5,
+        what="restore tpcc RESTORE_SUCCESS",
+        poll_sec=1,
+        sleeper=sleeper,
+        clock=clock,
+        log=logs.append,
+    )
+    assert (job_id, status) == ("9", "SUCCESS")
+
+    now["t"] = 0.0
+    try:
+        ob_backup.wait_for_latest_job(
+            lambda: [("3", "FAILED")],
+            before_id=0,
+            success=ob_backup.BACKUP_SUCCESS_STATUS,
+            failed=ob_backup.BACKUP_FAILED_STATUS,
+            timeout_sec=5,
+            what="backup full tpcc COMPLETED",
+            poll_sec=1,
+            sleeper=sleeper,
+            clock=clock,
+            log=logs.append,
+        )
+        raise AssertionError("ждали FAILED")
+    except RuntimeError as exc:
+        assert "FAILED" in str(exc)
+
+    now["t"] = 0.0
+    try:
+        ob_backup.wait_for_latest_job(
+            lambda: [],
+            before_id=0,
+            success=ob_backup.BACKUP_SUCCESS_STATUS,
+            failed=ob_backup.BACKUP_FAILED_STATUS,
+            timeout_sec=1,
+            what="backup full tpcc COMPLETED",
+            poll_sec=1,
+            sleeper=sleeper,
+            clock=clock,
+            log=logs.append,
+        )
+        raise AssertionError("ждали таймаут")
+    except RuntimeError as exc:
+        text = str(exc)
+        assert "таймаут" in text
+        assert "CDB_OB_BACKUP_JOB_HISTORY" in text
 
 
 def test_archive_off_does_not_need_s3() -> None:
@@ -349,6 +454,7 @@ if __name__ == "__main__":
     test_tenant_and_forbidden()
     test_bad_uri_chars()
     test_parse_status()
+    test_wait_for_latest_job()
     test_archive_off_does_not_need_s3()
     test_cli_flags_after_subcommand()
     test_wrappers_and_deploy_sh()
