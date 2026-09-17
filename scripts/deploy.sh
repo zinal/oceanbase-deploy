@@ -171,7 +171,7 @@ case "${STEP}" in
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
   archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
   backup         — полный/инкрементальный бэкап: full|incremental|show
-  restore        — restore из S3 в новый standby: run|show|validate
+  restore        — restore из S3 в новый standby: run|activate|show|validate
   all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 

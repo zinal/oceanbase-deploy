@@ -323,6 +323,9 @@ def test_cli_flags_after_subcommand() -> None:
     args = parser.parse_args(["restore", "--pool", "p1"])
     assert args.action == "run"
     assert args.pool == "p1"
+    args = parser.parse_args(["restore", "activate", "--dest-tenant", "tpcc"])
+    assert args.action == "activate"
+    assert args.dest_tenant == "tpcc"
     before = parser.parse_args(
         ["--config", str(ROOT / "config" / "deploy.yaml.example"), "validate"]
     )
@@ -341,10 +344,11 @@ def test_wrappers_and_deploy_sh() -> None:
     example = (ROOT / "config" / "deploy.yaml.example").read_text(encoding="utf-8")
     assert "ob_backup.py" in backup and "full|incremental" in backup
     assert "ob_backup.py" in archive and "on|off" in archive
-    assert "ob_backup.py" in restore and "run|show|validate" in restore
+    assert "ob_backup.py" in restore and "run|show|validate|activate" in restore
     assert "14-backup.sh" in deploy
     assert "15-archive-log.sh" in deploy
     assert "16-restore.sh" in deploy
+    assert "run|activate|show|validate" in deploy
     assert "backup:" in example
     assert "access_id:" in example
     assert "access_key:" in example
@@ -445,6 +449,27 @@ def test_restore_fail_fast() -> None:
     assert dest == "tpcc_dr"
 
 
+def test_decide_activate() -> None:
+    assert ob_backup.decide_activate("tpcc", "STANDBY", []) == "activate"
+    assert ob_backup.decide_activate("tpcc", "PRIMARY", []) == "already_primary"
+    try:
+        ob_backup.decide_activate("tpcc", "", [])
+        raise AssertionError("ждали нет тенанта")
+    except RuntimeError as exc:
+        assert "не найден" in str(exc)
+    try:
+        ob_backup.decide_activate("tpcc", "STANDBY", [("7", "RESTORING")])
+        raise AssertionError("ждали restore ещё идёт")
+    except RuntimeError as exc:
+        assert "ещё идёт" in str(exc)
+        assert "7" in str(exc)
+    try:
+        ob_backup.decide_activate("tpcc", "META", [])
+        raise AssertionError("ждали не STANDBY")
+    except RuntimeError as exc:
+        assert "STANDBY" in str(exc)
+
+
 if __name__ == "__main__":
     test_missing_s3_lists_all_fields()
     test_env_fills_keys()
@@ -460,4 +485,5 @@ if __name__ == "__main__":
     test_wrappers_and_deploy_sh()
     test_restore_sql_and_plan()
     test_restore_fail_fast()
+    test_decide_activate()
     print("ok")

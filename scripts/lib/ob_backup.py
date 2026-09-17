@@ -736,12 +736,18 @@ def _merge_job_rows(*groups: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return rows
 
 
+def fetch_restore_progress(
+    ob_sys: Any, endpoint: dict[str, Any], password: str, dest_tenant: str
+) -> list[tuple[str, str]]:
+    return parse_status_rows(
+        run_sql_text(ob_sys, endpoint, password, restore_progress_sql(dest_tenant))
+    )
+
+
 def fetch_restore_jobs(
     ob_sys: Any, endpoint: dict[str, Any], password: str, dest_tenant: str
 ) -> list[tuple[str, str]]:
-    progress = parse_status_rows(
-        run_sql_text(ob_sys, endpoint, password, restore_progress_sql(dest_tenant))
-    )
+    progress = fetch_restore_progress(ob_sys, endpoint, password, dest_tenant)
     history = parse_status_rows(
         run_sql_text(ob_sys, endpoint, password, restore_history_sql(dest_tenant))
     )
@@ -782,6 +788,30 @@ def assert_dest_absent(
             f"тенант {dest} уже существует (TENANT_ROLE={role}) — "
             "RESTORE создаёт новый standby, не перезаписывает"
         )
+
+
+def decide_activate(dest: str, role: str, progress: list[tuple[str, str]]) -> str:
+    """activate | already_primary. Иначе RuntimeError."""
+    if progress:
+        job_id, status = progress[0]
+        raise RuntimeError(
+            f"restore {dest} ещё идёт (job {job_id} STATUS={status}) — "
+            "дождитесь SUCCESS, затем ./scripts/deploy.sh restore activate"
+        )
+    key = (role or "").upper()
+    if not key:
+        raise RuntimeError(
+            f"тенант {dest} не найден. Сначала "
+            "./scripts/deploy.sh restore run --dest-tenant "
+            f"{dest}"
+        )
+    if key == "PRIMARY":
+        return "already_primary"
+    if key != "STANDBY":
+        raise RuntimeError(
+            f"тенант {dest} TENANT_ROLE={role} — ACTIVATE нужен STANDBY"
+        )
+    return "activate"
 
 
 def assert_pools_free(
@@ -1079,8 +1109,36 @@ def run_restore(
         role = fetch_tenant_role(ob_sys, endpoint, password, dest)
         print(
             f"тенант {dest}: TENANT_ROLE={role or 'STANDBY'}. "
-            "Клиентам как primary: ./scripts/deploy.sh restore run --activate "
-            "или ALTER SYSTEM ACTIVATE STANDBY TENANT"
+            "Клиентам как primary: ./scripts/deploy.sh restore activate "
+            f"--dest-tenant {dest}"
+        )
+    return 0
+
+
+def run_activate(
+    cfg: dict[str, Any],
+    inv: dict[str, str],
+    *,
+    tenant: str | None = None,
+    dest_tenant: str | None = None,
+) -> int:
+    source = resolve_tenant(cfg, tenant)
+    dest = resolve_dest_tenant(cfg, source, dest_tenant)
+    ob_sys, endpoint, password = connect(cfg, inv)
+    role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+    progress = fetch_restore_progress(ob_sys, endpoint, password, dest)
+    action = decide_activate(dest, role, progress)
+    if action == "already_primary":
+        print(f"тенант {dest}: уже PRIMARY — ACTIVATE не нужен")
+        return 0
+    sql = activate_standby_sql(dest)
+    print(sql)
+    run_sql_text(ob_sys, endpoint, password, sql)
+    role = fetch_tenant_role(ob_sys, endpoint, password, dest)
+    print(f"тенант {dest}: TENANT_ROLE={role or '<нет>'}")
+    if (role or "").upper() != "PRIMARY":
+        raise RuntimeError(
+            f"после ACTIVATE тенант {dest} не PRIMARY (сейчас {role or 'пусто'})"
         )
     return 0
 
@@ -1238,6 +1296,17 @@ def cmd_restore(args: argparse.Namespace) -> None:
         cfg, inv = _load_io(args)
         show_restore(cfg, inv, tenant=args.tenant, dest_tenant=getattr(args, "dest_tenant", None))
         return
+    if action == "activate":
+        cfg, inv = _load_io(args)
+        code = run_activate(
+            cfg,
+            inv,
+            tenant=args.tenant,
+            dest_tenant=getattr(args, "dest_tenant", None),
+        )
+        if code:
+            sys.exit(code)
+        return
     require_s3_profile(cfg)
     plan = _restore_plan_from_args(cfg, args)
     if action == "validate":
@@ -1283,9 +1352,9 @@ def _add_restore_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "action",
         nargs="?",
-        choices=("run", "show", "validate"),
+        choices=("run", "show", "validate", "activate"),
         default="run",
-        help="run — RESTORE; show — CDB_OB_RESTORE_*; validate — профиль без SQL",
+        help="run — RESTORE; activate — ACTIVATE STANDBY; show — CDB_OB_RESTORE_*; validate — профиль без SQL",
     )
     parser.add_argument(
         "--dest-tenant",
@@ -1307,7 +1376,8 @@ def _add_restore_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--activate",
         action="store_true",
-        help="после RESTORE_SUCCESS: ALTER SYSTEM ACTIVATE STANDBY TENANT",
+        help="после RESTORE_SUCCESS в том же run: ALTER SYSTEM ACTIVATE STANDBY TENANT "
+        "(отдельный шаг: restore activate)",
     )
     parser.add_argument("--no-wait", action="store_true")
 
