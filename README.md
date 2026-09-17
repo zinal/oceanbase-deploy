@@ -401,11 +401,12 @@ SSH и подготовка серверов используют **внутре
 
 Ключи можно задать `OB_BACKUP_S3_ACCESS_ID` / `OB_BACKUP_S3_ACCESS_KEY`. Сначала архив (`STATUS=DOING`), потом data backup.
 
-Restore создаёт **новый** standby-тенант и не перезаписывает исходный. Нужен существующий пустой resource pool (`backup.restore.pool_list`).
+Restore создаёт **новый** standby-тенант и не перезаписывает живой. Имя dest может совпадать с исходным, если тенант уже удалён. Нужен существующий пустой resource pool (`backup.restore.pool_list`).
 
 ```bash
 ./scripts/deploy.sh restore validate
 ./scripts/deploy.sh restore                 # dest по умолчанию {tenant}_restore
+./scripts/deploy.sh restore run --dest-tenant tpcc --pool tpcc_pool   # то же имя после DROP
 ./scripts/deploy.sh restore run --dest-tenant tpcc_restore --pool restore_pool
 ./scripts/deploy.sh restore run --activate  # после успеха: ACTIVATE STANDBY
 ./scripts/deploy.sh restore show

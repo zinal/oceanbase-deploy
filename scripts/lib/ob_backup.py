@@ -7,7 +7,8 @@
 (существующий пустой resource pool) и создаёт новый standby-тенант.
 
 Официально: сначала ARCHIVELOG (STATUS=DOING), потом BACKUP.
-RESTORE не перезаписывает исходный тенант.
+RESTORE создаёт новый standby и не перезаписывает существующий
+тенант (имя dest может совпадать с исходным, если того уже нет).
 https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615585
 https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000005282824
 """
@@ -355,11 +356,9 @@ def resolve_dest_tenant(
         raise BackupConfigError(
             f"dest_tenant {dest!r} — только буквы/цифры/_, начинается с буквы или _"
         )
-    if dest.lower() == source.lower():
-        raise BackupConfigError(
-            f"dest_tenant {dest!r} совпадает с исходным тенантом — "
-            "RESTORE создаёт новый standby и не перезаписывает существующий"
-        )
+    # Имя dest может совпадать с source: после DROP TENANT это штатный
+    # in-place restore. Живой тенант с тем же именем отсекает
+    # assert_dest_absent по DBA_OB_TENANTS, не сравнение строк.
     return dest
 
 
@@ -1225,7 +1224,7 @@ def _add_restore_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dest-tenant",
         default=None,
-        help="новый standby (по умолчанию backup.restore.dest_tenant или {tenant}_restore)",
+        help="имя нового тенанта (по умолчанию backup.restore.dest_tenant или {tenant}_restore); может совпадать с исходным, если того уже нет",
     )
     parser.add_argument(
         "--pool",

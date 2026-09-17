@@ -237,7 +237,8 @@ tenant:
 #   ./scripts/deploy.sh archive-log on|off|show|validate
 #   ./scripts/deploy.sh backup full|incremental|show|validate
 #   ./scripts/deploy.sh restore run|show|validate
-# Restore создаёт НОВЫЙ standby (не перезаписывает исходный тенант).
+# Restore создаёт НОВЫЙ standby и не перезаписывает живой тенант.
+# dest_tenant может совпадать с исходным именем, если того уже нет (DROP TENANT).
 # pool_list обязателен: существующий пустой resource pool.
 # Ключи можно не писать в yaml, а задать OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
 backup:
@@ -261,7 +262,7 @@ backup:
     binding: Optional              # Optional | Mandatory
     piece_switch_interval: 1d      # 1d … 7d
   restore:
-    dest_tenant: ""                # пустое = {tenant}_restore; не должен существовать
+    dest_tenant: ""                # пустое = {tenant}_restore; имя не должно уже быть в DBA_OB_TENANTS
     pool_list: ""                  # обязательно: пустой resource pool
     locality: ""
     primary_zone: ""
