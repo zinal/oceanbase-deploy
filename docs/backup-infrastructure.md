@@ -150,12 +150,13 @@ flowchart LR
 
 ### Restore из того же dest
 
-Официальный `ALTER SYSTEM RESTORE` создаёт **новый** тенант в роли standby и **не** перезаписывает исходный. Обязателен существующий пустой resource pool (`backup.restore.pool_list` или `--pool`). Dest по умолчанию `{tenant}_restore`. Пустые S3 или `pool_list` — сразу ошибка, без SQL.
+Официальный `ALTER SYSTEM RESTORE` создаёт **новый** тенант в роли standby и **не** перезаписывает живой. Имя dest может совпадать с исходным — так восстанавливают `tpcc` после `DROP TENANT tpcc`. Скрипт отказывается только если это имя ещё есть в `DBA_OB_TENANTS`. Обязателен существующий пустой resource pool (`backup.restore.pool_list` или `--pool`). Dest по умолчанию `{tenant}_restore` (чтобы не столкнуться с живым исходным). Пустые S3 или `pool_list` — сразу ошибка, без SQL.
 
 ```bash
 # CREATE RESOURCE UNIT / POOL заранее; pool не должен быть занят другим тенантом
 ./scripts/deploy.sh restore validate
 ./scripts/deploy.sh restore                              # dest = {tenant}_restore
+./scripts/deploy.sh restore run --dest-tenant tpcc --pool tpcc_pool   # то же имя после DROP
 ./scripts/deploy.sh restore run --dest-tenant tpcc_restore --pool restore_pool
 ./scripts/deploy.sh restore run --until-time '2026-09-16 12:00:00'
 ./scripts/deploy.sh restore run --activate               # после RESTORE_SUCCESS → primary

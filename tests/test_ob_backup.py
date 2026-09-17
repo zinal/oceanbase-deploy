@@ -297,11 +297,10 @@ def test_restore_fail_fast() -> None:
     except ob_backup.BackupConfigError as exc:
         assert "pool_list" in str(exc)
     cfg["backup"]["restore"] = {"pool_list": "restore_pool", "dest_tenant": "tpcc"}
-    try:
-        ob_backup.resolve_restore_plan(cfg, environ={})
-        raise AssertionError("ждали совпадение dest")
-    except ob_backup.BackupConfigError as exc:
-        assert "совпадает" in str(exc)
+    same = ob_backup.resolve_restore_plan(cfg, environ={})
+    assert same["source"] == "tpcc"
+    assert same["dest"] == "tpcc"
+    assert same["sql"].startswith("ALTER SYSTEM RESTORE tpcc FROM 's3://")
     cfg["backup"]["restore"] = {
         "pool_list": "restore_pool",
         "until_time": "2026-09-16 12:00:00",
@@ -333,6 +332,8 @@ def test_restore_fail_fast() -> None:
     cfg = full_s3_cfg()
     dest = ob_backup.resolve_dest_tenant(cfg, "tpcc", "app_new")
     assert dest == "app_new"
+    dest = ob_backup.resolve_dest_tenant(cfg, "tpcc", "tpcc")
+    assert dest == "tpcc"
     dest = ob_backup.resolve_dest_tenant(
         {"backup": {"restore": {"dest_tenant": "{tenant}_dr"}}}, "tpcc"
     )
