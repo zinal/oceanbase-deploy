@@ -159,11 +159,12 @@ flowchart LR
 ./scripts/deploy.sh restore run --dest-tenant tpcc --pool tpcc_pool   # то же имя после DROP
 ./scripts/deploy.sh restore run --dest-tenant tpcc_restore --pool restore_pool
 ./scripts/deploy.sh restore run --until-time '2026-09-16 12:00:00'
-./scripts/deploy.sh restore run --activate               # после RESTORE_SUCCESS → primary
+./scripts/deploy.sh restore run --activate               # ACTIVATE в том же run после успеха
+./scripts/deploy.sh restore activate --dest-tenant tpcc   # если restore уже прошёл без --activate
 ./scripts/deploy.sh restore show
 ```
 
-`--activate` / `backup.restore.activate: true` после успеха выполняет `ALTER SYSTEM ACTIVATE STANDBY TENANT`. Для `method=quick` activate запрещён: такой тенант остаётся standby, пока dest онлайн. `--until-time` и `--until-scn` вместе задавать нельзя. Скрипт отказывается, если dest уже есть в `DBA_OB_TENANTS` или pool занят. `--concurrency` / `backup.restore.concurrency` попадает в `WITH` (дефолт OceanBase = `MAX_CPU` dest-тенанта). Параллелизм restore после старта job — [производительность](#производительность-backup-и-restore).
+`--activate` / `backup.restore.activate: true` в `run` после успеха выполняет `ALTER SYSTEM ACTIVATE STANDBY TENANT`. Если restore уже закончился без этого флага — отдельно `./scripts/deploy.sh restore activate --dest-tenant …` (S3 и pool не нужны; dest должен быть STANDBY, restore не должен идти в `CDB_OB_RESTORE_PROGRESS`). Повторный `restore run --activate` нельзя: dest уже существует. Для `method=quick` activate в `run` запрещён: такой тенант остаётся standby, пока dest онлайн. `--until-time` и `--until-scn` вместе задавать нельзя. `run` отказывается, если dest уже есть в `DBA_OB_TENANTS` или pool занят. `--concurrency` / `backup.restore.concurrency` попадает в `WITH` (дефолт OceanBase = `MAX_CPU` dest-тенанта). Параллелизм restore после старта job — [производительность](#производительность-backup-и-restore).
 
 ### Как часто архивируются логи
 

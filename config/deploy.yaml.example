@@ -263,14 +263,14 @@ backup:
     piece_switch_interval: 1d      # 1d … 7d
   restore:
     dest_tenant: ""                # пустое = {tenant}_restore; имя не должно уже быть в DBA_OB_TENANTS
-    pool_list: ""                  # обязательно: пустой resource pool
+    pool_list: ""                  # обязательно для run: пустой resource pool
     locality: ""
     primary_zone: ""
     concurrency: ""
     method: full                   # full | quick (quick — только standby, без activate)
     until_time: ""                 # PITR: YYYY-MM-DD HH:MM:SS
     until_scn: ""                  # PITR по SCN (не вместе с until_time)
-    activate: false                # ACTIVATE STANDBY после RESTORE_SUCCESS
+    activate: false                # ACTIVATE STANDBY после RESTORE_SUCCESS в run; иначе: restore activate
     wait_restore_sec: 7200         # ждать RESTORE_SUCCESS
 
 oceanbase:

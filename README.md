@@ -408,7 +408,8 @@ Restore создаёт **новый** standby-тенант и не переза�
 ./scripts/deploy.sh restore                 # dest по умолчанию {tenant}_restore
 ./scripts/deploy.sh restore run --dest-tenant tpcc --pool tpcc_pool   # то же имя после DROP
 ./scripts/deploy.sh restore run --dest-tenant tpcc_restore --pool restore_pool
-./scripts/deploy.sh restore run --activate  # после успеха: ACTIVATE STANDBY
+./scripts/deploy.sh restore run --activate  # ACTIVATE в том же run после успеха
+./scripts/deploy.sh restore activate --dest-tenant tpcc   # если restore уже прошёл
 ./scripts/deploy.sh restore show
 ```
 
