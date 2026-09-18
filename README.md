@@ -102,6 +102,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3 (секция backup в deploy.yaml)
 ./scripts/deploy.sh backup full     # полный физический бэкап тенанта
 ./scripts/deploy.sh restore         # restore в новый standby из того же S3
+./scripts/deploy.sh snapshot collect --label w45k06  # серверный снимок TPC-C (Phase 0.4)
 ./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
 ```
 
@@ -308,6 +309,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── obproxy-memory.md              # proxy_mem_limited vs RAM хоста (do_monitor_mem)
 │   ├── observer-logging.md            # детальность логов observer (WDIAG → INFO)
 │   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
+│   ├── sql/tpcc-server-snapshot-501.sql # снимок TPC-C: audit/locks/plan/leaders
+│   ├── tpcc-server-snapshot.md    # Phase 0.4: сбор серверной диагностики
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   ├── backup-infrastructure.md   # физический бэкап: носители, режимы, YC
 │   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
@@ -338,6 +341,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 15-archive-log.sh        # ARCHIVELOG on/off
 │   ├── 16-restore.sh            # restore из S3 в новый standby
 │   ├── 17-obproxy-mem.sh        # proxy_mem_limited (RSS ≠ free хоста)
+│   ├── 18-ob-snapshot.sh        # серверный снимок TPC-C (Phase 0.4)
+│   ├── lib/ob_snapshot.py       # каталог SQL Phase 0.4 + collect
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
 │   ├── 05-scale-out.sh          # добавление observer-узлов
@@ -516,6 +521,12 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 `do_monitor_mem` / `memory is out of limit` при живом `free` — это потолок процесса `proxy_mem_limited` (дефолт **2G**), не RAM хоста: [память OBProxy](docs/obproxy-memory.md). `deploy` и `all` ставят лимит от `vm_profiles.obproxy.memory_gb` (или `oceanbase.obproxy.proxy_mem_limited`). Если ВМ уже увеличили в YC, а yaml ещё 4 GB: `./scripts/deploy.sh obproxy-mem apply --size 8G`.
 
 Логи observer — тот же `WDIAG` в `observer.log` / `election.log` / `rootservice.log` и конкуренция с clog за IO: [логи OBServer](docs/observer-logging.md). `deploy` и `all` сами делают `observer-log apply` из `oceanbase.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh observer-log apply`.
+
+На точке TPC-C снимите серверный snapshot (sql_audit, lock waits, plan cache, лидеры, CPU/RAM/RPC): [серверный снимок TPC-C](docs/tpcc-server-snapshot.md).
+
+```bash
+./scripts/deploy.sh snapshot collect --label w45k06
+```
 
 ### obshell (dashboard агента)
 
