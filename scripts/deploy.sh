@@ -125,6 +125,9 @@ case "${STEP}" in
   observer-log)
     run_cmd bash "${ROOT}/scripts/13-observer-log.sh" "${@:2}"
     ;;
+  open-cursors)
+    run_cmd bash "${ROOT}/scripts/19-open-cursors.sh" "${@:2}"
+    ;;
   backup)
     run_cmd bash "${ROOT}/scripts/14-backup.sh" "${@:2}"
     ;;
@@ -178,6 +181,7 @@ case "${STEP}" in
   obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)
   obproxy-mem    — потолок памяти ODP (proxy_mem_limited): show|apply (docs/obproxy-memory.md)
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
+  open-cursors   — лимит PS-хендлов на сессии (open_cursors): show|apply (docs/open-cursors.md)
   archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
   backup         — полный/инкрементальный бэкап: full|incremental|show
   restore        — restore из S3 в новый standby: run|activate|show|validate

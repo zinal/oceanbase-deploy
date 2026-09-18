@@ -35,6 +35,7 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 | `11-obproxy-route.sh` | ODP: enable_cached_server / enable_primary_zone |
 | `12-obproxy-log.sh` | ODP: syslog_level / лимиты логов |
 | `13-observer-log.sh` | observer: syslog_level / recycle / IO |
+| `19-open-cursors.sh` | tenant: open_cursors (лимит PS-хендлов, 5930) |
 | `18-ob-snapshot.sh` | TPC-C Phase 0.4: GV$OB_SQL_AUDIT / locks / plan cache / leaders |
 | `09-ocp-register.sh` | OCP CE takeover (`check4ocp`, `export-to-ocp`) |
 | `05-scale-out.sh` | scale_out |

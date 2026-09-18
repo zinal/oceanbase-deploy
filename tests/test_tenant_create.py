@@ -30,6 +30,7 @@ def test_defaults() -> None:
     assert resolved["root_password"] == "ChangeMe!"
     assert resolved["user_password"] == "ChangeMe!"
     assert resolved["mode"] == "htap"
+    assert resolved["open_cursors"] == "1000"
 
 
 def test_mode_mapping() -> None:

@@ -230,6 +230,10 @@ tenant:
   mode: htap
   # PRIMARY_ZONE тенанта скрипт выставляет RANDOM (лидеры по всем Zone).
   # Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route
+  # Лимит cursor/PS на сессию. Вендор 50; Connector/J 2.x кэширует 250 → 5930.
+  # 1000 — OLTP/JDBC; 2000 — тяжёлый ORM; 0 — без лимита (только авария).
+  # Живой кластер: ./scripts/deploy.sh open-cursors apply  (docs/open-cursors.md)
+  open_cursors: 1000
 
 # Физический бэкап user-тенанта на S3-совместимое хранилище (Yandex Object Storage).
 # Документация: docs/backup-infrastructure.md
