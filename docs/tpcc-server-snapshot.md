@@ -10,6 +10,8 @@ Phase 0.4 плана
 - local / remote / distributed (`plan_type`) и `partition_hit`;
 - распределение лидеров tablet и unit'ов;
 - CPU, память, сессии, RPC/сеть, memstore/minor freeze, compaction, throttle;
+- **I/O throughput транзакций**: задержки записи clog, write throttle из‑за
+  медленного dump/compaction, лаг архива clog (Binding Optional vs Mandatory);
 - `SHOW CREATE TABLE` и HASH partitions (63-way binding tablegroup);
 - эффективные OLTP timeout тенанта (`ob_query_timeout` / lock / trx), а не bulk
   `database.options.query_timeout` профиля.
@@ -30,6 +32,9 @@ observer — десятки секунд при маленьком `.tsv`. Ве�
 
 # только audit и lock waits (во время measurement)
 ./scripts/deploy.sh snapshot collect --label w45k06-mid --only sql_audit,lock_waits
+
+# clog write / compaction throttle / archive lag
+./scripts/deploy.sh snapshot collect --label w45k06-io --only io_throughput --skip-schema
 
 # без SHOW CREATE TABLE
 ./scripts/deploy.sh snapshot collect --label after-run --skip-schema
@@ -71,7 +76,11 @@ client-side statement cost. Этот snapshot — **server-side** evidence: 1205
 | `plan-changes.tsv` | несколько `plan_id` на один `sql_id` |
 | `tablet-leaders*.tsv` | 63 партиции размазаны по intended units? |
 | `units.tsv` + `sessions.tsv` | headroom CPU/RAM/`max_session_num` |
-| `sysstat.tsv` / `memstore-freeze.tsv` / `compaction.tsv` | RPC, freeze, throttle |
+| `sysstat.tsv` / `memstore-freeze.tsv` | RPC, freeze, throttle, clog/palf write |
+| `sql-audit-io-waits.tsv` / `system-events.tsv` | wait: clog commit vs memstore throttle vs archive |
+| `log-disk.tsv` / `log-stat.tsv` / `io-params.tsv` | заполнение clog-диска, unreclaimable LSN, пороги |
+| `compaction*.tsv` | major/mini/minor progress и diagnose |
+| `archive-log.tsv` / `archive-ls.tsv` / `archive-dest.tsv` | лаг архива и BINDING (без LOCATION) |
 | `create-*.tsv` | schema с нужными `partitions` / без FK |
 | `tenant-timeouts.tsv` | реальный OLTP timeout воркера |
 
@@ -81,6 +90,133 @@ client-side statement cost. Этот snapshot — **server-side** evidence: 1205
 Горячая вершина сессий на одном observer при ровных лидерах — маршрутизация ODP,
 не этот снимок: [obproxy-session-routing.md](obproxy-session-routing.md),
 `./scripts/deploy.sh obproxy-route diagnose`.
+
+## Диагностика I/O-ограничений транзакций
+
+Открытые материалы OceanBase 4.x/5.0 (wait events, `GV$SYSSTAT`, troubleshooting
+clog/compaction/archive, `SET LOG_ARCHIVE_DEST`) позволяют **различить** три
+причины, когда TPS упирается в пропускную способность ввода-вывода. Снимок
+темы `io_throughput` как раз для этого. Одно число «диск загружен» недостаточно:
+clog, data-диск compaction и архив на S3 — разные очереди и разные wait.
+
+Интерпретация всегда **связка**: wait в SQL (`sql-audit-io-waits` за окно audit)
+плюс накопительные `system-events` / `sysstat` плюс состояние хранилища
+(`log-disk`, `log-stat`, `memstore-freeze`, `compaction*`, `archive-*`).
+
+### 1. Запись тормозит из‑за задержек записи в лог (clog / PALF)
+
+Транзакция на commit ждёт majority-записи clog. Это не «медленный UPDATE строки»,
+а ожидание redo.
+
+**Признак в wait (имена из `ob_wait_event.h`):**
+
+| EVENT в `GV$OB_SQL_AUDIT` / `GV$SYSTEM_EVENT` | Смысл |
+|---|---|
+| `wait end trans`, `tx commiting wait`, `sync tx commiting wait` | commit ждёт подтверждения лога (класс COMMIT) |
+| `palf write` | IO записи PALF на log-диск |
+| `palf throttling sleep` | PALF **намеренно** усыпляет запись: clog-диск выше `log_disk_throttling_percentage` |
+| `clog writer condition wait` | очередь писателя clog |
+
+`sql-audit-by-id` дополнительно даёт `avg_user_io_us` / `avg_event_wait_us`.
+Если `execute_time` растёт вместе с этими wait, а не с `queue_time` и не с
+lock 1205/6235 — это IO лога, не CPU и не row lock.
+
+**Подтверждение по таблицам:**
+
+1. `sysstat.tsv`: `palf write io count to disk`, `palf write size to disk`,
+   `clog write count` / `clog write time` (если есть на сборке).
+   Средняя задержка ≈ `clog write time / clog write count`.
+   `io write delay` — это **data-диск**, не clog; его рост без palf/commit wait
+   указывает на compaction/dump, не на redo.
+2. `log-disk.tsv` (`GV$OB_UNITS`): `log_used_pct`.
+   ≥ `log_disk_utilization_threshold` (обычно 80%) — recycle не успевает;
+   ≥ `log_disk_utilization_limit_threshold` (обычно 95%) — **отказ записи** clog.
+3. `log-stat.tsv`: `unreclaimable_mb = (END_LSN − BASE_LSN) / 1MiB` — лог ещё
+   нельзя recycle (данные не в SSTable / checkpoint не сдвинут).
+   `uncommitted_mb = (MAX_LSN − END_LSN) / 1MiB` на **LEADER** — локальная запись
+   или majority не догоняет (медленный log-диск или follower).
+   `IN_SYNC=NO` на follower — репликация лога, не «медленный SQL».
+4. `io-params.tsv`: `log_disk_throttling_percentage` < 100 включает PALF
+   throttle (с 4.2). Факт throttle в момент снимка — wait `palf throttling sleep`
+   и/или `[LOG DISK THROTTLING]` в `observer.log` (obdiag check).
+
+Типичная связка «compaction не успевает → clog не recycle → log disk полон →
+palf throttling / отказ записи» читается как **следствие** пункта 2, не как
+отдельная поломка PALF.
+
+### 2. Транзакции ждут, потому что compaction/dump основных данных не успевает
+
+Запись идёт в MemStore. Freeze + mini/minor merge (dump в SSTable) освобождают
+память. Если dump медленнее входного TPS, срабатывает write throttle, затем
+остановка записи. Major compaction сам по себе не держит commit redo, но
+конкурирует за data-диск и задерживает recycle clog.
+
+**Признак в wait:**
+
+| EVENT | Смысл |
+|---|---|
+| `sleep: storage writing throttle sleep` | лимит записи MemStore (не clog) |
+| `memstore memory page alloc wait` | нет страниц MemStore, ждут freeze/dump |
+| `db file compact write` / `db file compact read` | IO compaction на data-диске |
+
+**Подтверждение:**
+
+1. `memstore-freeze.tsv`: `active_pct` / `used_pct` относительно `mem_limit`.
+   Рост `freeze_cnt` при `used_pct` около `freeze_trigger_pct` — freeze идёт,
+   но frozen MemTable не освобождается (dump медленный или держат ref).
+   `used_pct` ≥ `writing_throttling_trigger_percentage` из `io-params`
+   (дефолт 60 с 4.0) — ожидаемый write throttle.
+2. `compaction-progress.tsv`: `TYPE` `MINI_MERGE` / `MINOR_MERGE` со
+   `STATUS` не `FINISH` и большим `unfinished_tablet_count` / `unfinished_g`
+   на фоне высокого memstore — dump не успевает.
+   Долгий `MAJOR_MERGE` / `CDB_OB_MAJOR_COMPACTION.STATUS` не FINISH +
+   `is_error`/`is_suspended` — major застрял (смотреть diagnose).
+3. `compaction-diagnose.tsv`: `FAILED`, `NOT_SCHEDULE`, `RS_UNCOMPACTED`.
+   Тексты вроде `memtable can not minor merge`, `medium wait for freeze`
+   — dump/freeze не доводят tablet до compaction SCN.
+4. `sysstat.tsv`: `io write delay` / `io write bytes` растут вместе с compact
+   wait; `major freeze trigger`.
+
+Отличить от пункта 1: здесь доминируют throttle/memstore/compact wait, log disk
+ещё не у 95%, `palf write` не главный EVENT. Если оба набора wait видны сразу —
+сначала dump (п.2), clog-диск полный уже как следствие.
+
+### 3. Транзакции ждут архива журнала
+
+Архив пишет **лидер лог-стрима** на внешний dest. Это **не всегда** блокирует
+OLTP: режим задаёт `BINDING` в `LOG_ARCHIVE_DEST` (`archive-dest.tsv`, без
+LOCATION — в пути бывают ключи S3).
+
+| BINDING | Если архив отстаёт от генерации clog |
+|---|---|
+| **Optional** (дефолт) | запись тенанта **не** останавливают; clog могут recycle **до** архива → `STATUS=INTERRUPTED`, дыра PITR |
+| **Mandatory** | архив важнее бизнеса: dest/сеть не успевают → **запись в тенант может остановиться** |
+
+**Признак, что архив именно тормозит транзакции (не просто «лаг для PITR»):**
+
+1. `archive-dest.tsv`: `binding = Mandatory` (или `MANDATORY`).
+2. `archive-log.tsv`: `STATUS=DOING`, но `lag_sec` стабильно больше
+   `archive_lag_target` из `io-params` (дефолт 120 с; на S3 минимум 60 с).
+   Либо `STATUS=INTERRUPTED` / `BEGINNING` / `SUSPEND`.
+   `comment_head` вроде recycled before archived (−9087) — dest медленнее clog.
+3. `archive-ls.tsv`: `unarchived_mb = END_LSN лидера − MAX_LSN архива` на
+   самом медленном LS. Tenant `checkpoint_scn` = минимум по стримам.
+4. Wait: `object storage write`, `archive sender cond wait` (и соседние
+   archive/*). На Optional эти wait есть у **архивных** потоков; SQL тенанта
+   ими не обязан наполняться. На Mandatory они коррелируют с ростом
+   `wait end trans` / отказом записи.
+
+Пустые `archive-*.tsv` — архив не включён, этот сценарий снимается.
+
+Не путать с пунктом 1: медленный S3 при Optional **не** должен поднимать
+`palf throttling sleep`. Если Optional + INTERRUPTED + высокий TPS — это
+потеря архива, не stall транзакций. Если Mandatory + растущий `unarchived_mb`
++ commit wait — да, архив душит запись.
+
+Источники: troubleshooting clog (`GV$OB_UNITS` / `GV$OB_LOG_STAT`), SYSSTAT
+class CLOG/STORAGE, wait events PALF/COMMIT/throttle, `GV$OB_COMPACTION_*`,
+`CDB_OB_ARCHIVELOG` / `CDB_OB_LS_LOG_ARCHIVE_PROGRESS`,
+`SET LOG_ARCHIVE_DEST` BINDING, `archive_lag_target`.
 
 ## Выход коллектора
 

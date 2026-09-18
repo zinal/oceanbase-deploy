@@ -530,10 +530,11 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 
 `-5930 maximum open cursors / prepared statement handles exceeded` на горячем JDBC — вендорский `open_cursors=50` против кэша Connector/J 2.x на 250: [лимит PS-хендлов](docs/open-cursors.md). `./scripts/deploy.sh tenant` ставит **1000**; на уже живом тенанте — `./scripts/deploy.sh open-cursors apply`.
 
-На точке TPC-C снимите серверный snapshot (sql_audit, lock waits, plan cache, лидеры, CPU/RAM/RPC): [серверный снимок TPC-C](docs/tpcc-server-snapshot.md).
+На точке TPC-C снимите серверный snapshot (sql_audit, lock waits, plan cache, лидеры, CPU/RAM/RPC, I/O clog/compaction/archive): [серверный снимок TPC-C](docs/tpcc-server-snapshot.md).
 
 ```bash
 ./scripts/deploy.sh snapshot collect --label w45k06
+./scripts/deploy.sh snapshot collect --label w45k06-io --only io_throughput --skip-schema
 ```
 
 ### obshell (dashboard агента)
