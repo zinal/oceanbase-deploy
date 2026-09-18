@@ -79,6 +79,7 @@ case "${STEP}" in
     # syslog_level из yaml: observer (кластер) и ODP (каждый obproxy).
     run_step 13-observer-log.sh apply --skip-if-none --skip-if-ok
     run_step 12-obproxy-log.sh apply --skip-if-none --skip-if-ok
+    run_step 17-obproxy-mem.sh apply --skip-if-none --skip-if-ok
     # ODP только что поднят: even-режим на каждом obproxy (нет узлов — пропуск).
     run_step 11-obproxy-route.sh apply --skip-if-none --skip-if-ok
     ;;
@@ -118,6 +119,9 @@ case "${STEP}" in
   obproxy-log)
     run_cmd bash "${ROOT}/scripts/12-obproxy-log.sh" "${@:2}"
     ;;
+  obproxy-mem)
+    run_cmd bash "${ROOT}/scripts/17-obproxy-mem.sh" "${@:2}"
+    ;;
   observer-log)
     run_cmd bash "${ROOT}/scripts/13-observer-log.sh" "${@:2}"
     ;;
@@ -139,6 +143,7 @@ case "${STEP}" in
     run_step 04-deploy-cluster.sh
     run_step 13-observer-log.sh apply --skip-if-none --skip-if-ok
     run_step 12-obproxy-log.sh apply --skip-if-none --skip-if-ok
+    run_step 17-obproxy-mem.sh apply --skip-if-none --skip-if-ok
     run_step 11-obproxy-route.sh apply --skip-if-none --skip-if-ok
     # Всегда вызываем шаг: сам скрипт пропускает установку, если runner-ВМ нет.
     run_step 10-runner-haproxy.sh --skip-if-none
@@ -155,7 +160,7 @@ case "${STEP}" in
   provision  — создание ВМ в Yandex Cloud
   prepare    — подготовка серверов (диски, sysctl, chrony)
   config     — генерация obd-cluster.yaml
-  deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp + observer-log/obproxy-log/obproxy-route apply
+  deploy     — подготовка + ocp-clockdiff (если OCP) + OBD start + export-to-ocp + observer-log/obproxy-log/obproxy-mem/obproxy-route apply
   tenant     — создание user tenant, пользователя и БД (после deploy)
   diagnose   — диагностика зависания obd cluster start (obshell bootstrap)
   obd-mirror — пакет oceanbase-ce из oceanbase.version (remote / All-in-One 5.0.1)
@@ -168,11 +173,12 @@ case "${STEP}" in
   runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
   obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
   obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)
+  obproxy-mem    — потолок памяти ODP (proxy_mem_limited): show|apply (docs/obproxy-memory.md)
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
   archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
   backup         — полный/инкрементальный бэкап: full|incremental|show
   restore        — restore из S3 в новый standby: run|activate|show|validate
-  all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-route apply и runner-haproxy)
+  all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-mem/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
 Пример:

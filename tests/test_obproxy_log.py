@@ -93,7 +93,7 @@ def test_generate_obd_puts_known_log_limits() -> None:
         "ssh": {"port": 22, "private_key_file": ""},
         "vm_profiles": {
             "observer": {"count": 3},
-            "obproxy": {"count": 2, "boot_disk": {"size_gb": 20}},
+            "obproxy": {"count": 2, "memory_gb": 4, "boot_disk": {"size_gb": 20}},
         },
         "oceanbase": {
             "auto_tune": False,
@@ -121,6 +121,7 @@ def test_generate_obd_puts_known_log_limits() -> None:
     assert proxy["log_dir_size_threshold"] == "8G"
     assert proxy["log_file_percentage"] == 50
     assert proxy["log_cleanup_interval"] == "5m"
+    assert proxy["proxy_mem_limited"] == "2G"
     assert "syslog_level" not in proxy
 
 

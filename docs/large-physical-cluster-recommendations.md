@@ -210,7 +210,7 @@ mkfs.xfs -f -n ftype=1 -l su=4k /dev/vgob/log
 - в простое процесс лёгкий (~0.7 CPU / ~100 МБ);
 - **один `obproxy` на машину**, порт **2883**;
 - `client_max_connections` по умолчанию **8192** (до 65535);
-- `proxy_mem_limited` — потолок RSS, при превышении процесс **сам выходит**; в KB при запасе RAM советуют **8 ГБ**;
+- `proxy_mem_limited` — потолок RSS, не RAM хоста. При превышении новые сборки **отключают alloc с OS** (`do_monitor_mem`), старые — сами выходят; в KB при запасе RAM советуют **8 ГБ**. Живой кластер: [docs/obproxy-memory.md](obproxy-memory.md), `./scripts/deploy.sh obproxy-mem apply`;
 - ODP **stateless и горизонтально масштабируется без лимита**.
 
 Для кластера из десятков `observer` и одной горячей БД **не ставить proxy на те же машины**, что и `observer`: они дерут CPU/сеть у лидеров.
@@ -245,6 +245,8 @@ CPU растёт с QPS, RAM — с числом соединений. 4C8G — 
 - [代理概述 V4.3.5](https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000002014022)
 - [Deploy in production](https://oceanbase.github.io/docs/user_manual/quick_starts/en-US/chapter_02_deploy_oceanbase_database/deploy-production-environment)
 - [proxy_mem_limited KB](https://www.oceanbase.com/knowledge-base/oceanbase-database-proxy-1000000000210042)
+- [proxy_mem_limited (ODP 4.4)](https://www.oceanbase.com/docs/common-odp-doc-cn-1000000006242430)
+- [память ODP в этом репозитории](obproxy-memory.md)
 
 ---
 

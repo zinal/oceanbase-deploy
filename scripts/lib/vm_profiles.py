@@ -45,6 +45,12 @@ OB_PROD_CPU_MIN = 4
 OB_PROD_MEMORY_MIN_GB = 16
 OB_PROD_MEMORY_LONG_TERM_GB = 32
 OB_OCP_SERVER_MEMORY_MIN_GB = 8
+# ODP proxy_mem_limited: вендор 2G; KB при запасе RAM — 8G; auto не больше 16G.
+# https://www.oceanbase.com/docs/common-odp-doc-cn-1000000006242430
+OB_PROXY_MEM_VENDOR_DEFAULT_GB = 2
+OB_PROXY_MEM_OS_RESERVE_GB = 2
+OB_PROXY_MEM_AUTO_MAX_GB = 16
+OB_PROXY_MEM_COLOCATED_MAX_GB = 4
 # OBD-1025: ocp-server-ce admin_password
 # https://www.oceanbase.com/docs/common-obd-cn-1000000003892226
 OCP_ADMIN_PASSWORD_MIN = 8
@@ -255,6 +261,57 @@ def _auto_tune_field_diffs(
 def recommended_memory_limit_pct(memory_gb: int) -> int:
     """memory_limit_percentage: 80% при RAM < 512 GB, иначе 90%."""
     return OB_MEMORY_LIMIT_PCT_GE_512 if memory_gb >= 512 else OB_MEMORY_LIMIT_PCT_LT_512
+
+
+def recommended_proxy_mem_limited_gb(memory_gb: int, *, dedicated: bool = True) -> int:
+    """proxy_mem_limited от RAM ВМ obproxy (не observer).
+
+    4G ВМ → 2G (дефолт вендора). 8G → 4G. 16G → 8G. 32G+ → 16G.
+    На observer (colocate) не выше 4G. Всегда оставляем запас OS.
+    """
+    vm = max(1, int(memory_gb))
+    headroom = max(1, vm - OB_PROXY_MEM_OS_RESERVE_GB)
+    if vm <= 4:
+        want = OB_PROXY_MEM_VENDOR_DEFAULT_GB
+    elif vm <= 8:
+        want = 4
+    elif vm < 32:
+        want = 8
+    else:
+        want = OB_PROXY_MEM_AUTO_MAX_GB
+    if not dedicated:
+        want = min(want, OB_PROXY_MEM_COLOCATED_MAX_GB)
+    return max(1, min(int(want), int(headroom), OB_PROXY_MEM_AUTO_MAX_GB))
+
+
+def recommended_proxy_mem_limited(memory_gb: int, *, dedicated: bool = True) -> str:
+    return fmt_gb(float(recommended_proxy_mem_limited_gb(memory_gb, dedicated=dedicated)))
+
+
+def proxy_vm_context(cfg: dict[str, Any]) -> tuple[int, bool] | None:
+    """RAM ВМ под ODP и dedicated=True, если есть отдельные obproxy-хосты."""
+    profiles = cfg.get("vm_profiles") or {}
+    proxy = profiles.get("obproxy") or {}
+    try:
+        count = int(proxy.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count > 0:
+        try:
+            mem = int(resolve_profile(cfg, "obproxy")["memory_gb"])
+        except (KeyError, TypeError, ValueError):
+            try:
+                mem = int(proxy.get("memory_gb") or 4)
+            except (TypeError, ValueError):
+                mem = 4
+        return mem, True
+    if "observer" not in profiles:
+        return None
+    try:
+        mem = int(resolve_profile(cfg, "observer")["memory_gb"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return mem, False
 
 
 def recommended_system_memory_gb(memory_limit_gb: float) -> float:
@@ -710,6 +767,54 @@ def validate_oceanbase_against_vms(cfg: dict[str, Any]) -> list[str]:
     ocp_mem = eff_mem if auto_tune else yaml_mem
     ocp_sys = eff_sys if auto_tune else yaml_sys
     issues.extend(_validate_ocp_against_vms(cfg, cores, ocp_mem, ocp_sys, production))
+    issues.extend(_validate_obproxy_mem(cfg))
+    return issues
+
+
+def _validate_obproxy_mem(cfg: dict[str, Any]) -> list[str]:
+    """proxy_mem_limited vs RAM ВМ obproxy. 2G на большой ВМ — do_monitor_mem."""
+    issues: list[str] = []
+    ob = cfg.get("oceanbase") or {}
+    components = ob.get("components") or {}
+    if components.get("obproxy_ce") is False:
+        return issues
+    ctx = proxy_vm_context(cfg)
+    if ctx is None:
+        return issues
+    mem_gb, dedicated = ctx
+    proxy_cfg = ob.get("obproxy") if isinstance(ob.get("obproxy"), dict) else {}
+    raw = (proxy_cfg or {}).get("proxy_mem_limited")
+    rec_gb = recommended_proxy_mem_limited_gb(mem_gb, dedicated=dedicated)
+    yaml_gb = parse_size_to_gb(raw) if raw not in (None, "") else None
+    effective_gb = yaml_gb if yaml_gb is not None else float(rec_gb)
+    source = "yaml" if yaml_gb is not None else "auto"
+    where = f"dedicated {mem_gb} GB" if dedicated else f"colocated observer {mem_gb} GB"
+    issues.append(
+        f"INFO: obproxy proxy_mem_limited={fmt_gb(effective_gb)} ({source}; "
+        f"ВМ {where}, рекомендуется {fmt_gb(float(rec_gb))})"
+    )
+    if effective_gb > mem_gb + 1e-6:
+        label = "obproxy.memory_gb" if dedicated else "observer.memory_gb (colocate)"
+        issues.append(
+            f"ERROR: oceanbase.obproxy.proxy_mem_limited={fmt_gb(effective_gb)} превышает "
+            f"{label}={mem_gb}"
+        )
+    elif dedicated and effective_gb > mem_gb * 0.8 + 0.5:
+        issues.append(
+            f"WARN: oceanbase.obproxy.proxy_mem_limited={fmt_gb(effective_gb)} > 80% RAM ВМ "
+            f"({mem_gb} GB) — оставьте запас OS"
+        )
+    if (
+        dedicated
+        and mem_gb >= 8
+        and yaml_gb is not None
+        and yaml_gb <= OB_PROXY_MEM_VENDOR_DEFAULT_GB + 1e-6
+    ):
+        issues.append(
+            f"WARN: oceanbase.obproxy.proxy_mem_limited={fmt_gb(yaml_gb)} при ВМ {mem_gb} GB — "
+            "ODP отключит alloc с OS (do_monitor_mem). "
+            "docs/obproxy-memory.md, ./scripts/deploy.sh obproxy-mem apply"
+        )
     return issues
 
 

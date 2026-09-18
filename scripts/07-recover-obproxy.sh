@@ -156,6 +156,9 @@ recover_obproxy_temporary() {
   if ! bash "${SCRIPTS_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
     warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
   fi
+  if ! bash "${SCRIPTS_DIR}/17-obproxy-mem.sh" apply --skip-if-ok; then
+    warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
+  fi
   cat <<EOF
 
 Временное восстановление obproxy-${INDEX} завершено.
@@ -234,6 +237,9 @@ info "Статус кластера:"
 obd cluster display "${DEPLOY_NAME}" || true
 if ! bash "${SCRIPTS_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
   warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
+fi
+if ! bash "${SCRIPTS_DIR}/17-obproxy-mem.sh" apply --skip-if-ok; then
+  warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
 fi
 
 cat <<EOF

@@ -14,6 +14,7 @@ from vm_profiles import (  # noqa: E402
     ocp_admin_password_error,
     parse_size_to_gb,
     password_complexity_error,
+    recommended_proxy_mem_limited_gb,
     recommended_system_memory_gb,
     recommended_system_memory_range,
     resolve_profile,
@@ -337,6 +338,14 @@ def test_example_yaml_has_no_errors() -> None:
     issues = validate_profiles(cfg) + validate_oceanbase_against_vms(cfg)
     errors = kinds(issues, "ERROR")
     assert errors == [], errors
+    infos = kinds(issues, "INFO")
+    assert any("proxy_mem_limited=2G" in i for i in infos), infos
+
+
+def test_proxy_mem_limited_table() -> None:
+    assert recommended_proxy_mem_limited_gb(4) == 2
+    assert recommended_proxy_mem_limited_gb(16) == 8
+    assert recommended_proxy_mem_limited_gb(64) == 16
 
 
 def test_runner_resolve_defaults() -> None:
@@ -409,6 +418,7 @@ def main() -> None:
         test_ob_user_password_two_classes,
         test_ob_idc_name,
         test_example_yaml_has_no_errors,
+        test_proxy_mem_limited_table,
         test_runner_resolve_defaults,
         test_resolve_lines_count_unchanged,
     ]

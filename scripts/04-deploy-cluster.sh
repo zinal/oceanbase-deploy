@@ -218,6 +218,10 @@ if [[ "${OBPROXY_COUNT:-0}" -gt 0 ]]; then
   if ! bash "${LIB_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
     warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
   fi
+  info "Память ODP (proxy_mem_limited): docs/obproxy-memory.md"
+  if ! bash "${LIB_DIR}/17-obproxy-mem.sh" apply --skip-if-ok; then
+    warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
+  fi
 fi
 
 ocp_enabled="$(yaml_get ocp.enabled)"
