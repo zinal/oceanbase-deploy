@@ -134,6 +134,9 @@ case "${STEP}" in
   restore)
     run_cmd bash "${ROOT}/scripts/16-restore.sh" "${@:2}"
     ;;
+  snapshot)
+    run_cmd bash "${ROOT}/scripts/18-ob-snapshot.sh" "${@:2}"
+    ;;
   all)
     run_step 00-check-prerequisites.sh
     run_step 01-provision-vms.sh create
@@ -178,6 +181,7 @@ case "${STEP}" in
   archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
   backup         — полный/инкрементальный бэкап: full|incremental|show
   restore        — restore из S3 в новый standby: run|activate|show|validate
+  snapshot       — серверный снимок TPC-C (sql_audit/locks/plan cache/leaders): collect|list|dump-sql
   all        — полный цикл (по умолчанию, включая observer-log/obproxy-log/obproxy-mem/obproxy-route apply и runner-haproxy)
   destroy    — удаление ВМ [--destroy-obd]
 
