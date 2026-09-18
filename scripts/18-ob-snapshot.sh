@@ -30,7 +30,7 @@ collect:
   --out-dir DIR         каталог снимка
   --tenant NAME         тенант (по умолчанию tenant.tenant_name)
   --database NAME       TPC-C database
-  --only id,topic       подмножество запросов
+  --only id,topic       подмножество запросов (sql_audit, io_throughput, …)
   --skip-schema         без SHOW CREATE TABLE / partitions
   --all-tenants         все USER-тенанты
   --via observer|obproxy  (по умолчанию observer:2881)
@@ -42,6 +42,7 @@ collect:
 Пример:
   ./scripts/deploy.sh snapshot collect --label w45k06
   ./scripts/deploy.sh snapshot collect --label after-run --only sql_audit,lock_waits
+  ./scripts/deploy.sh snapshot collect --label w45k06-io --only io_throughput
 USAGE
 }
 

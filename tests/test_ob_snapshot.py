@@ -44,6 +44,16 @@ def test_catalog_covers_phase_04() -> None:
     assert "sysstat" in by_id
     assert "memstore-freeze" in by_id
     assert "tenant-timeouts" in by_id
+    assert "sql-audit-io-waits" in by_id
+    assert "sql-audit-top-events" in by_id
+    assert "system-events" in by_id
+    assert "log-disk" in by_id
+    assert "io-params" in by_id
+    assert "compaction-diagnose" in by_id
+    assert "archive-log" in by_id
+    assert "archive-ls" in by_id
+    assert "archive-dest" in by_id
+    assert any(q.topic == "io_throughput" for q in queries)
     for table in snap.TPCC_TABLES:
         assert f"create-{table}" in by_id
     blob = "\n".join("\n".join(q.sqls) for q in queries).lower()
@@ -69,6 +79,20 @@ def test_catalog_covers_phase_04() -> None:
     assert "con_id" in blob
     assert "dba_ob_tablegroup_tables" in blob
     assert "mod_name" in blob
+    assert "log_disk_in_use" in blob
+    assert "gv$system_event" in blob
+    assert "cdb_ob_archivelog" in blob
+    assert "gv$ob_compaction_diagnose_info" in blob
+    assert "log_disk_throttling_percentage" in blob
+    assert "archive_lag_target" in blob
+    assert "palf write" in blob
+    assert "writing_throttling_trigger_percentage" in blob
+    archive_sql = "\n".join(by_id["archive-log"].sqls).lower()
+    assert "checkpoint_scn" in archive_sql
+    assert "path" not in archive_sql.replace("checkpoint_scn", "")
+    dest_sql = "\n".join(by_id["archive-dest"].sqls).lower()
+    assert "binding" in dest_sql
+    assert "location" not in dest_sql
 
 
 def test_pretty_sql_keeps_subquery() -> None:
@@ -95,6 +119,10 @@ def test_sql_pack_matches_docs() -> None:
     assert "__all_virtual_lock_wait_stat" in disk
     assert "SHOW CREATE TABLE `tpcc`.`warehouse`" in disk
     assert "params_value" not in disk.lower()
+    assert "GV$SYSTEM_EVENT" in disk
+    assert "CDB_OB_ARCHIVELOG" in disk
+    assert "log_disk_in_use" in disk.lower()
+    assert "GV$OB_COMPACTION_DIAGNOSE_INFO" in disk
 
 
 def test_tenant_predicate_and_filter() -> None:
@@ -112,6 +140,14 @@ def test_tenant_predicate_and_filter() -> None:
     queries = snap.snapshot_queries("tpcc", "tpcc")
     only_audit = snap.filter_queries(queries, {"sql_audit"}, skip_schema=True)
     assert only_audit and all(q.topic == "sql_audit" for q in only_audit)
+    only_io = snap.filter_queries(queries, {"io_throughput"}, skip_schema=True)
+    assert only_io and all(q.topic == "io_throughput" for q in only_io)
+    assert {q.query_id for q in only_io} >= {
+        "sql-audit-io-waits",
+        "log-disk",
+        "log-stat",
+        "archive-log",
+    }
     no_schema = snap.filter_queries(queries, None, skip_schema=True)
     assert all(q.topic != "schema" for q in no_schema)
     try:
@@ -319,6 +355,8 @@ def test_wrapper_and_deploy_sh() -> None:
     docs = (ROOT / "docs" / "tpcc-server-snapshot.md").read_text(encoding="utf-8")
     assert "Phase 0.4" in docs
     assert "deploy.sh snapshot collect" in docs
+    assert "io_throughput" in docs
+    assert "palf throttling" in docs
 
 
 def test_self_test() -> None:

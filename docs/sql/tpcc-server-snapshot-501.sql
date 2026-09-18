@@ -5,6 +5,7 @@
 -- Не включает bind-параметры / пароли / connection string.
 -- Подставьте tenant/database при другом имени.
 -- sql_audit: is_executor_rpc=0 и окно request_time 900s (0 = весь буфер).
+-- io_throughput: wait clog/palf/throttle, log disk, compaction diagnose, archive lag (без LOCATION dest).
 -- Перегенерация: python3 scripts/lib/ob_snapshot.py dump-sql --output docs/sql/tpcc-server-snapshot-501.sql
 
 -- ===== cluster-version: Версия и audit [sys] =====
@@ -28,7 +29,7 @@ ORDER BY tenant_id;
 
 -- ===== sql-audit-by-id: GV$OB_SQL_AUDIT: sql_id / plan_id / server / ret_code / event [sys] =====
 -- Агрегаты без query_sql/params. Окно request_time 900s (0 = весь буфер); is_executor_rpc=0.
-SELECT sql_id, plan_id, svr_ip, ret_code, event, COUNT(*) AS executions, SUM(CASE WHEN ret_code <> 0 THEN 1 ELSE 0 END) AS errors, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, ROUND(AVG(queue_time)) AS avg_queue_us, ROUND(AVG(execute_time)) AS avg_execute_us, SUM(return_rows) AS return_rows, SUM(affected_rows) AS affected_rows
+SELECT sql_id, plan_id, svr_ip, ret_code, event, COUNT(*) AS executions, SUM(CASE WHEN ret_code <> 0 THEN 1 ELSE 0 END) AS errors, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, ROUND(AVG(queue_time)) AS avg_queue_us, ROUND(AVG(execute_time)) AS avg_execute_us, ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, ROUND(AVG(total_wait_time)) AS avg_total_wait_us, SUM(return_rows) AS return_rows, SUM(affected_rows) AS affected_rows
 FROM oceanbase.GV$OB_SQL_AUDIT
 WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000)
 GROUP BY sql_id, plan_id, svr_ip, ret_code, event
@@ -50,6 +51,24 @@ FROM oceanbase.GV$OB_SQL_AUDIT
 WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000) AND ret_code IN (1205, 6235, -6235, -6210, -4012, 4012, 600)
 GROUP BY ret_code, sql_id, plan_id, svr_ip
 ORDER BY n DESC
+LIMIT 100;
+
+-- ===== sql-audit-top-events: Доминирующие wait event из GV$OB_SQL_AUDIT [sys] =====
+-- EVENT — самое долгое ожидание запроса. Commit/clog vs throttle vs compact vs archive — по имени события.
+SELECT event, wait_class, svr_ip, COUNT(*) AS executions, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, ROUND(AVG(execute_time)) AS avg_execute_us, ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, ROUND(SUM(wait_time_micro) / 1000) AS sum_event_wait_ms
+FROM oceanbase.GV$OB_SQL_AUDIT
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000) AND event IS NOT NULL AND event <> ''
+GROUP BY event, wait_class, svr_ip
+ORDER BY sum_event_wait_ms DESC
+LIMIT 80;
+
+-- ===== sql-audit-io-waits: SQL с ожиданием clog / commit / memstore throttle / compaction / archive [sys] =====
+-- clog: wait end trans / tx commiting wait / palf write / palf throttling sleep. Compaction: storage writing throttle / memstore memory page alloc. Archive: object storage write.
+SELECT event, wait_class, svr_ip, COUNT(*) AS executions, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, ROUND(AVG(execute_time)) AS avg_execute_us, ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, ROUND(AVG(total_wait_time)) AS avg_total_wait_us, MAX(elapsed_time) AS max_elapsed_us
+FROM oceanbase.GV$OB_SQL_AUDIT
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000) AND (event LIKE '%end trans%' OR event LIKE '%commit%' OR event LIKE '%clog%' OR event LIKE '%palf%' OR event LIKE '%throttl%' OR event LIKE '%memstore memory%' OR event LIKE '%compact write%' OR event LIKE '%compact read%' OR event LIKE '%archive%' OR event LIKE '%object storage%')
+GROUP BY event, wait_class, svr_ip
+ORDER BY avg_event_wait_us DESC, executions DESC
 LIMIT 100;
 
 -- ===== local-remote-dist: Local / remote / distributed (plan_type) по observer [sys] =====
@@ -141,27 +160,91 @@ ORDER BY hold DESC
 LIMIT 80;
 
 -- ===== memstore-freeze: Memstore / minor freeze [sys] =====
-SELECT tenant_id, svr_ip, active_span, freeze_trigger, mem_limit, freeze_cnt
+-- used/active у freeze_trigger → freeze; у writing_throttling_trigger_percentage (io-params) → write throttle, пока dump не освободит MemTable.
+SELECT tenant_id, svr_ip, active_span, freeze_trigger, mem_limit, freeze_cnt, ROUND(100 * active_span / NULLIF(mem_limit, 0), 2) AS active_pct, ROUND(100 * freeze_trigger / NULLIF(mem_limit, 0), 2) AS freeze_trigger_pct
 FROM oceanbase.GV$OB_MEMSTORE
 WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
 ORDER BY svr_ip;
 
--- ===== sysstat: CPU / RPC / IO / lock / throttle / freeze (GV$SYSSTAT) [sys] =====
+-- ===== sysstat: CPU / RPC / IO / clog / lock / throttle / freeze (GV$SYSSTAT) [sys] =====
+-- clog write time / palf write size — средняя задержка записи лога = time/count. io write delay — data-диск, не clog.
 SELECT con_id AS tenant_id, svr_ip, name, value
 FROM oceanbase.GV$SYSSTAT
-WHERE con_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND (name IN ('cpu usage', 'memory usage', 'sql execute count', 'trans commit count', 'trans rollback count', 'rpc packet in', 'rpc packet out', 'rpc packet in bytes', 'rpc packet out bytes', 'io read bytes', 'io write bytes', 'memstore used', 'memstore limit', 'clog disk used') OR name LIKE '%throttle%' OR name LIKE '%freeze%' OR name LIKE '%lock wait%' OR name LIKE '%rpc%' OR name LIKE '%cpu%')
+WHERE con_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND (name IN ('cpu usage', 'memory usage', 'sql execute count', 'trans commit count', 'trans rollback count', 'sql commit count', 'sql commit time', 'rpc packet in', 'rpc packet out', 'rpc packet in bytes', 'rpc packet out bytes', 'io read count', 'io read delay', 'io read bytes', 'io write count', 'io write delay', 'io write bytes', 'memstore used', 'memstore limit', 'active memstore used', 'total memstore used', 'major freeze trigger', 'clog disk used', 'palf write io count to disk', 'palf write size to disk', 'clog write count', 'clog write time', 'clog trans log total size') OR name LIKE '%throttle%' OR name LIKE '%freeze%' OR name LIKE '%lock wait%' OR name LIKE '%rpc%' OR name LIKE '%cpu%' OR name LIKE '%palf%' OR name LIKE '%clog%')
 ORDER BY name, svr_ip;
 
--- ===== compaction: Major compaction / throttling [sys] =====
-SELECT tenant_id, frozen_scn, status, start_time, last_finish_time, is_error
+-- ===== system-events: GV$SYSTEM_EVENT: commit / clog / palf / throttle / compact / archive [sys] =====
+-- Накопительные wait с старта процесса. Смотреть вместе с sql-audit-io-waits (окно audit), не вместо него.
+SELECT con_id AS tenant_id, svr_ip, event, wait_class, total_waits, total_timeouts, time_waited_micro, ROUND(time_waited_micro / NULLIF(total_waits, 0)) AS avg_wait_us
+FROM oceanbase.GV$SYSTEM_EVENT
+WHERE con_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND total_waits > 0 AND (event LIKE '%end trans%' OR event LIKE '%commit%' OR event LIKE '%clog%' OR event LIKE '%palf%' OR event LIKE '%throttl%' OR event LIKE '%memstore memory%' OR event LIKE '%compact write%' OR event LIKE '%compact read%' OR event LIKE '%archive%' OR event LIKE '%object storage%')
+ORDER BY time_waited_micro DESC
+LIMIT 200;
+
+-- ===== io-params: Пороги clog throttle / freeze / archive_lag_target [sys] =====
+-- log_disk_throttling_percentage < 100 включает PALF throttle. archive_lag_target — ожидаемый лаг архива (сек), не RPO куска piece.
+SELECT tenant_id, name, value, COUNT(DISTINCT svr_ip) AS servers
+FROM oceanbase.GV$OB_PARAMETERS
+WHERE name IN ('log_disk_utilization_threshold', 'log_disk_utilization_limit_threshold', 'log_disk_throttling_percentage', 'log_disk_throttling_maximum_duration', 'freeze_trigger_percentage', 'writing_throttling_trigger_percentage', 'memstore_limit_percentage', 'major_compact_trigger', 'compaction_high_thread_score', 'compaction_mid_thread_score', 'compaction_low_thread_score', 'archive_lag_target')
+GROUP BY tenant_id, name, value
+ORDER BY name, tenant_id;
+
+-- ===== log-disk: Заполнение log/data диска unit'а (GV$OB_UNITS) [sys] =====
+-- ≥ log_disk_utilization_threshold (80%) — recycle не успевает; ≥ limit (95%) — отказ записи clog. Сверить с log-stat unreclaimable_mb.
+SELECT tenant_id, svr_ip, svr_port, ROUND(log_disk_in_use / 1024 / 1024 / 1024, 3) AS log_in_use_g, ROUND(log_disk_size / 1024 / 1024 / 1024, 3) AS log_size_g, ROUND(log_disk_in_use * 100 / NULLIF(log_disk_size, 0), 2) AS log_used_pct, ROUND(data_disk_in_use / 1024 / 1024 / 1024, 3) AS data_in_use_g
+FROM oceanbase.GV$OB_UNITS
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+ORDER BY log_used_pct DESC, svr_ip;
+
+-- ===== log-stat: Лог-стримы: unreclaimable clog и отставание majority [sys] =====
+-- END_LSN-BASE_LSN — ещё не recycle (нужен dump SSTable). MAX_LSN-END_LSN на лидере — запись/majority не догоняет.
+SELECT tenant_id, ls_id, svr_ip, role, in_sync, ROUND((end_lsn - base_lsn) / 1024 / 1024, 2) AS unreclaimable_mb, ROUND((max_lsn - end_lsn) / 1024 / 1024, 2) AS uncommitted_mb, base_lsn, end_lsn, max_lsn, end_scn, max_scn
+FROM oceanbase.GV$OB_LOG_STAT
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+ORDER BY unreclaimable_mb DESC, uncommitted_mb DESC
+LIMIT 200;
+
+-- ===== compaction: Major compaction: статус тенанта [sys] =====
+SELECT tenant_id, frozen_scn, status, start_time, last_finish_time, is_error, is_suspended, LEFT(info, 160) AS info_head
 FROM oceanbase.CDB_OB_MAJOR_COMPACTION
 WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc');
 
--- ===== log-stat: Лог-стримы (роль лидера / follower) — bandwidth в sysstat [sys] =====
-SELECT svr_ip, role, COUNT(*) AS streams
-FROM oceanbase.GV$OB_LOG_STAT
-GROUP BY svr_ip, role
-ORDER BY svr_ip, role;
+-- ===== compaction-progress: Compaction progress по observer (mini/minor/major) [sys] =====
+-- MINI_MERGE/MINOR_MERGE RUNNING при растущем memstore — dump не успевает за записью. STATUS=FINISH при высоком memstore — смотреть diagnose / freeze_cnt.
+SELECT tenant_id, svr_ip, type, zone, status, compaction_scn, total_tablet_count, unfinished_tablet_count, ROUND(data_size / 1024 / 1024 / 1024, 3) AS data_g, ROUND(unfinished_data_size / 1024 / 1024 / 1024, 3) AS unfinished_g, start_time, estimated_finish_time, LEFT(comments, 160) AS comments_head
+FROM oceanbase.GV$OB_COMPACTION_PROGRESS
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+ORDER BY unfinished_tablet_count DESC, svr_ip
+LIMIT 200;
+
+-- ===== compaction-diagnose: Compaction diagnose (FAILED / NOT_SCHEDULE / RS_UNCOMPACTED) [sys] =====
+SELECT tenant_id, svr_ip, type, ls_id, tablet_id, status, create_time, LEFT(diagnose_info, 200) AS diagnose_head
+FROM oceanbase.GV$OB_COMPACTION_DIAGNOSE_INFO
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND status IN ('FAILED', 'RUNNING', 'NOT_SCHEDULE', 'RS_UNCOMPACTED')
+ORDER BY create_time DESC
+LIMIT 100;
+
+-- ===== archive-log: Архив clog: статус и лаг checkpoint (без пути dest) [sys] =====
+-- Пустой результат — архив не включён. lag_sec >> archive_lag_target при STATUS=DOING — dest/сеть. INTERRUPTED + comment про recycle — архив отстал от clog. Блокировка записи только при BINDING=Mandatory (archive-dest).
+SELECT tenant_id, dest_id, round_id, dest_no, status, checkpoint_scn, checkpoint_scn_display, TIMESTAMPDIFF(SECOND, checkpoint_scn_display, NOW(6)) AS lag_sec, LEFT(comment, 200) AS comment_head
+FROM oceanbase.CDB_OB_ARCHIVELOG
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc');
+
+-- ===== archive-ls: Архив по лог-стриму vs END_LSN лидера [sys] =====
+-- unarchived_mb на самом медленном LS задаёт checkpoint тенанта. Архивирует лидер стрима.
+SELECT a.tenant_id, a.ls_id, a.status, a.piece_id, ROUND((l.end_lsn - a.max_lsn) / 1024 / 1024, 2) AS unarchived_mb, a.max_lsn AS archived_max_lsn, l.end_lsn, l.svr_ip AS leader_ip, a.input_bytes, a.output_bytes
+FROM oceanbase.CDB_OB_LS_LOG_ARCHIVE_PROGRESS a
+JOIN oceanbase.GV$OB_LOG_STAT l ON l.tenant_id = a.tenant_id AND l.ls_id = a.ls_id AND l.role = 'LEADER'
+WHERE a.tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND a.status IN ('DOING', 'INTERRUPTED', 'BEGINNING', 'SUSPEND', 'SUSPENDING')
+ORDER BY unarchived_mb DESC
+LIMIT 200;
+
+-- ===== archive-dest: ARCHIVE dest: BINDING / state (без LOCATION) [sys] =====
+-- Mandatory: архив не успевает → может остановить запись. Optional: запись идёт, риск INTERRUPTED (clog recycle до архива). LOCATION не снимается.
+SELECT tenant_id, dest_no, name, value
+FROM oceanbase.CDB_OB_ARCHIVE_DEST
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND name IN ('binding', 'state', 'piece_switch_interval', 'dest_id')
+ORDER BY tenant_id, dest_no, name;
 
 -- ===== tenant-timeouts: Эффективные OLTP timeout тенанта (не bulk query_timeout профиля) [tenant] =====
 -- План §3.6: worker не берёт database.options.query_timeout.

@@ -256,6 +256,9 @@ def snapshot_queries(
                 "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
                 "ROUND(AVG(queue_time)) AS avg_queue_us, "
                 "ROUND(AVG(execute_time)) AS avg_execute_us, "
+                "ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, "
+                "ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, "
+                "ROUND(AVG(total_wait_time)) AS avg_total_wait_us, "
                 "SUM(return_rows) AS return_rows, "
                 "SUM(affected_rows) AS affected_rows "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
@@ -323,6 +326,75 @@ def snapshot_queries(
                 "ORDER BY n DESC LIMIT 100",
             ),
             note="Класс блокирующей строки — в lock-waits rowkey, не в params.",
+        ),
+        SnapshotQuery(
+            query_id="sql-audit-top-events",
+            title="Доминирующие wait event из GV$OB_SQL_AUDIT",
+            topic="io_throughput",
+            scope="sys",
+            required=True,
+            sqls=(
+                "SELECT event, wait_class, svr_ip, "
+                "COUNT(*) AS executions, "
+                "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
+                "ROUND(AVG(execute_time)) AS avg_execute_us, "
+                "ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, "
+                "ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, "
+                "ROUND(SUM(wait_time_micro) / 1000) AS sum_event_wait_ms "
+                "FROM oceanbase.GV$OB_SQL_AUDIT "
+                f"WHERE {audit} AND event IS NOT NULL AND event <> '' "
+                "GROUP BY event, wait_class, svr_ip "
+                "ORDER BY sum_event_wait_ms DESC LIMIT 80",
+                "SELECT event, svr_ip, COUNT(*) AS executions, "
+                "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
+                "ROUND(AVG(wait_time_micro)) AS avg_event_wait_us "
+                "FROM oceanbase.GV$OB_SQL_AUDIT "
+                f"WHERE {audit} AND event IS NOT NULL AND event <> '' "
+                "GROUP BY event, svr_ip "
+                "ORDER BY executions DESC LIMIT 80",
+            ),
+            note="EVENT — самое долгое ожидание запроса. Commit/clog vs throttle "
+            "vs compact vs archive — по имени события.",
+        ),
+        SnapshotQuery(
+            query_id="sql-audit-io-waits",
+            title="SQL с ожиданием clog / commit / memstore throttle / compaction / archive",
+            topic="io_throughput",
+            scope="sys",
+            required=True,
+            sqls=(
+                "SELECT event, wait_class, svr_ip, "
+                "COUNT(*) AS executions, "
+                "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
+                "ROUND(AVG(execute_time)) AS avg_execute_us, "
+                "ROUND(AVG(user_io_wait_time)) AS avg_user_io_us, "
+                "ROUND(AVG(wait_time_micro)) AS avg_event_wait_us, "
+                "ROUND(AVG(total_wait_time)) AS avg_total_wait_us, "
+                "MAX(elapsed_time) AS max_elapsed_us "
+                "FROM oceanbase.GV$OB_SQL_AUDIT "
+                f"WHERE {audit} AND ("
+                "event LIKE '%end trans%' OR event LIKE '%commit%' "
+                "OR event LIKE '%clog%' OR event LIKE '%palf%' "
+                "OR event LIKE '%throttl%' OR event LIKE '%memstore memory%' "
+                "OR event LIKE '%compact write%' OR event LIKE '%compact read%' "
+                "OR event LIKE '%archive%' OR event LIKE '%object storage%') "
+                "GROUP BY event, wait_class, svr_ip "
+                "ORDER BY avg_event_wait_us DESC, executions DESC LIMIT 100",
+                "SELECT event, svr_ip, COUNT(*) AS executions, "
+                "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
+                "ROUND(AVG(wait_time_micro)) AS avg_event_wait_us "
+                "FROM oceanbase.GV$OB_SQL_AUDIT "
+                f"WHERE {audit} AND ("
+                "event LIKE '%end trans%' OR event LIKE '%commit%' "
+                "OR event LIKE '%clog%' OR event LIKE '%palf%' "
+                "OR event LIKE '%throttl%' OR event LIKE '%memstore memory%' "
+                "OR event LIKE '%compact write%' OR event LIKE '%archive%') "
+                "GROUP BY event, svr_ip "
+                "ORDER BY executions DESC LIMIT 100",
+            ),
+            note="clog: wait end trans / tx commiting wait / palf write / "
+            "palf throttling sleep. Compaction: storage writing throttle / "
+            "memstore memory page alloc. Archive: object storage write.",
         ),
         SnapshotQuery(
             query_id="local-remote-dist",
@@ -578,20 +650,33 @@ def snapshot_queries(
             required=True,
             sqls=(
                 "SELECT tenant_id, svr_ip, active_span, freeze_trigger, "
-                "mem_limit, freeze_cnt "
+                "mem_limit, freeze_cnt, "
+                "ROUND(100 * active_span / NULLIF(mem_limit, 0), 2) "
+                "AS active_pct, "
+                "ROUND(100 * freeze_trigger / NULLIF(mem_limit, 0), 2) "
+                "AS freeze_trigger_pct "
                 "FROM oceanbase.GV$OB_MEMSTORE "
                 f"WHERE {tid} ORDER BY svr_ip",
                 "SELECT tenant_id, svr_ip, memstore_used, memstore_limit, "
-                "freeze_trigger, freeze_cnt "
+                "freeze_trigger, freeze_cnt, "
+                "ROUND(100 * memstore_used / NULLIF(memstore_limit, 0), 2) "
+                "AS used_pct "
+                "FROM oceanbase.GV$OB_MEMSTORE "
+                f"WHERE {tid} ORDER BY svr_ip",
+                "SELECT tenant_id, svr_ip, active_span, freeze_trigger, "
+                "mem_limit, freeze_cnt "
                 "FROM oceanbase.GV$OB_MEMSTORE "
                 f"WHERE {tid} ORDER BY svr_ip",
                 "SELECT * FROM oceanbase.GV$OB_MEMSTORE "
                 f"WHERE {tid} LIMIT 80",
             ),
+            note="used/active у freeze_trigger → freeze; у writing_throttling_"
+            "trigger_percentage (io-params) → write throttle, пока dump не "
+            "освободит MemTable.",
         ),
         SnapshotQuery(
             query_id="sysstat",
-            title="CPU / RPC / IO / lock / throttle / freeze (GV$SYSSTAT)",
+            title="CPU / RPC / IO / clog / lock / throttle / freeze (GV$SYSSTAT)",
             topic="tenant_resources",
             scope="sys",
             required=True,
@@ -602,48 +687,158 @@ def snapshot_queries(
                 "name IN ("
                 "'cpu usage', 'memory usage', "
                 "'sql execute count', 'trans commit count', 'trans rollback count', "
+                "'sql commit count', 'sql commit time', "
                 "'rpc packet in', 'rpc packet out', "
                 "'rpc packet in bytes', 'rpc packet out bytes', "
-                "'io read bytes', 'io write bytes', "
-                "'memstore used', 'memstore limit', 'clog disk used'"
+                "'io read count', 'io read delay', 'io read bytes', "
+                "'io write count', 'io write delay', 'io write bytes', "
+                "'memstore used', 'memstore limit', "
+                "'active memstore used', 'total memstore used', "
+                "'major freeze trigger', 'clog disk used', "
+                "'palf write io count to disk', 'palf write size to disk', "
+                "'clog write count', 'clog write time', "
+                "'clog trans log total size'"
                 ") OR name LIKE '%throttle%' OR name LIKE '%freeze%' "
                 "OR name LIKE '%lock wait%' OR name LIKE '%rpc%' "
-                "OR name LIKE '%cpu%') "
+                "OR name LIKE '%cpu%' OR name LIKE '%palf%' "
+                "OR name LIKE '%clog%') "
                 "ORDER BY name, svr_ip",
                 "SELECT tenant_id, svr_ip, name, value "
                 "FROM oceanbase.__all_virtual_sysstat "
                 f"WHERE {tid} AND ("
                 "name LIKE '%cpu%' OR name LIKE '%rpc%' OR name LIKE '%throttle%' "
-                "OR name LIKE '%freeze%' OR name LIKE '%lock%' OR name LIKE '%memstore%'"
+                "OR name LIKE '%freeze%' OR name LIKE '%lock%' "
+                "OR name LIKE '%memstore%' OR name LIKE '%palf%' "
+                "OR name LIKE '%clog%' OR name LIKE '%io write%'"
                 ") ORDER BY name, svr_ip LIMIT 400",
             ),
+            note="clog write time / palf write size — средняя задержка записи "
+            "лога = time/count. io write delay — data-диск, не clog.",
         ),
         SnapshotQuery(
-            query_id="compaction",
-            title="Major compaction / throttling",
-            topic="tenant_resources",
+            query_id="system-events",
+            title="GV$SYSTEM_EVENT: commit / clog / palf / throttle / compact / archive",
+            topic="io_throughput",
             scope="sys",
-            required=False,
+            required=True,
             sqls=(
-                "SELECT tenant_id, frozen_scn, status, start_time, "
-                "last_finish_time, is_error "
-                "FROM oceanbase.CDB_OB_MAJOR_COMPACTION "
-                f"WHERE {tid}",
-                "SELECT tenant_id, frozen_scn, status, start_time, last_finish_time "
-                "FROM oceanbase.DBA_OB_MAJOR_COMPACTION "
-                f"WHERE {tid}",
-                "SELECT tenant_id, svr_ip, type, status, compaction_scn, progress "
-                "FROM oceanbase.GV$OB_COMPACTION_PROGRESS "
-                f"WHERE {tid} LIMIT 200",
+                "SELECT con_id AS tenant_id, svr_ip, event, wait_class, "
+                "total_waits, total_timeouts, time_waited_micro, "
+                "ROUND(time_waited_micro / NULLIF(total_waits, 0)) AS avg_wait_us "
+                "FROM oceanbase.GV$SYSTEM_EVENT "
+                f"WHERE {pred_tenant_id(tenant_name, 'con_id')} AND total_waits > 0 "
+                "AND ("
+                "event LIKE '%end trans%' OR event LIKE '%commit%' "
+                "OR event LIKE '%clog%' OR event LIKE '%palf%' "
+                "OR event LIKE '%throttl%' OR event LIKE '%memstore memory%' "
+                "OR event LIKE '%compact write%' OR event LIKE '%compact read%' "
+                "OR event LIKE '%archive%' OR event LIKE '%object storage%') "
+                "ORDER BY time_waited_micro DESC LIMIT 200",
+                "SELECT con_id AS tenant_id, svr_ip, event, wait_class, "
+                "total_waits, time_waited "
+                "FROM oceanbase.GV$SYSTEM_EVENT "
+                f"WHERE {pred_tenant_id(tenant_name, 'con_id')} AND total_waits > 0 "
+                "AND ("
+                "event LIKE '%end trans%' OR event LIKE '%commit%' "
+                "OR event LIKE '%clog%' OR event LIKE '%palf%' "
+                "OR event LIKE '%throttl%' OR event LIKE '%archive%') "
+                "ORDER BY time_waited DESC LIMIT 200",
+                "SELECT event, wait_class, total_waits, time_waited_micro "
+                "FROM oceanbase.V$SYSTEM_EVENT "
+                "WHERE total_waits > 0 AND ("
+                "event LIKE '%end trans%' OR event LIKE '%palf%' "
+                "OR event LIKE '%throttl%' OR event LIKE '%clog%') "
+                "ORDER BY time_waited_micro DESC LIMIT 200",
             ),
+            note="Накопительные wait с старта процесса. Смотреть вместе с "
+            "sql-audit-io-waits (окно audit), не вместо него.",
+        ),
+        SnapshotQuery(
+            query_id="io-params",
+            title="Пороги clog throttle / freeze / archive_lag_target",
+            topic="io_throughput",
+            scope="sys",
+            required=True,
+            sqls=(
+                "SELECT tenant_id, name, value, COUNT(DISTINCT svr_ip) AS servers "
+                "FROM oceanbase.GV$OB_PARAMETERS "
+                "WHERE name IN ("
+                "'log_disk_utilization_threshold', "
+                "'log_disk_utilization_limit_threshold', "
+                "'log_disk_throttling_percentage', "
+                "'log_disk_throttling_maximum_duration', "
+                "'freeze_trigger_percentage', "
+                "'writing_throttling_trigger_percentage', "
+                "'memstore_limit_percentage', "
+                "'major_compact_trigger', "
+                "'compaction_high_thread_score', "
+                "'compaction_mid_thread_score', "
+                "'compaction_low_thread_score', "
+                "'archive_lag_target'"
+                ") GROUP BY tenant_id, name, value "
+                "ORDER BY name, tenant_id",
+                "SELECT name, value FROM oceanbase.GV$OB_PARAMETERS "
+                "WHERE name IN ("
+                "'log_disk_utilization_threshold', "
+                "'log_disk_utilization_limit_threshold', "
+                "'log_disk_throttling_percentage', "
+                "'freeze_trigger_percentage', "
+                "'writing_throttling_trigger_percentage', "
+                "'archive_lag_target'"
+                ") GROUP BY name, value",
+            ),
+            note="log_disk_throttling_percentage < 100 включает PALF throttle. "
+            "archive_lag_target — ожидаемый лаг архива (сек), не RPO куска piece.",
+        ),
+        SnapshotQuery(
+            query_id="log-disk",
+            title="Заполнение log/data диска unit'а (GV$OB_UNITS)",
+            topic="io_throughput",
+            scope="sys",
+            required=True,
+            sqls=(
+                "SELECT tenant_id, svr_ip, svr_port, "
+                "ROUND(log_disk_in_use / 1024 / 1024 / 1024, 3) AS log_in_use_g, "
+                "ROUND(log_disk_size / 1024 / 1024 / 1024, 3) AS log_size_g, "
+                "ROUND(log_disk_in_use * 100 / NULLIF(log_disk_size, 0), 2) "
+                "AS log_used_pct, "
+                "ROUND(data_disk_in_use / 1024 / 1024 / 1024, 3) AS data_in_use_g "
+                "FROM oceanbase.GV$OB_UNITS "
+                f"WHERE {tid} "
+                "ORDER BY log_used_pct DESC, svr_ip",
+                "SELECT tenant_id, svr_ip, svr_port, "
+                "ROUND(log_disk_in_use / 1024 / 1024 / 1024, 3) AS log_in_use_g, "
+                "ROUND(log_disk_size / 1024 / 1024 / 1024, 3) AS log_size_g, "
+                "ROUND(log_disk_in_use * 100 / NULLIF(log_disk_size, 0), 2) "
+                "AS log_used_pct "
+                "FROM oceanbase.GV$OB_UNITS "
+                f"WHERE {tid} ORDER BY log_used_pct DESC",
+            ),
+            note="≥ log_disk_utilization_threshold (80%) — recycle не успевает; "
+            "≥ limit (95%) — отказ записи clog. Сверить с log-stat unreclaimable_mb.",
         ),
         SnapshotQuery(
             query_id="log-stat",
-            title="Лог-стримы (роль лидера / follower) — bandwidth в sysstat",
-            topic="tenant_resources",
+            title="Лог-стримы: unreclaimable clog и отставание majority",
+            topic="io_throughput",
             scope="sys",
-            required=False,
+            required=True,
             sqls=(
+                "SELECT tenant_id, ls_id, svr_ip, role, in_sync, "
+                "ROUND((end_lsn - base_lsn) / 1024 / 1024, 2) "
+                "AS unreclaimable_mb, "
+                "ROUND((max_lsn - end_lsn) / 1024 / 1024, 2) AS uncommitted_mb, "
+                "base_lsn, end_lsn, max_lsn, end_scn, max_scn "
+                "FROM oceanbase.GV$OB_LOG_STAT "
+                f"WHERE {tid} "
+                "ORDER BY unreclaimable_mb DESC, uncommitted_mb DESC LIMIT 200",
+                "SELECT tenant_id, ls_id, svr_ip, role, "
+                "ROUND((end_lsn - base_lsn) / 1024 / 1024, 2) "
+                "AS unreclaimable_mb, "
+                "end_lsn, max_lsn "
+                "FROM oceanbase.GV$OB_LOG_STAT "
+                f"WHERE {tid} "
+                "ORDER BY unreclaimable_mb DESC LIMIT 200",
                 "SELECT svr_ip, role, COUNT(*) AS streams "
                 "FROM oceanbase.GV$OB_LOG_STAT "
                 "GROUP BY svr_ip, role ORDER BY svr_ip, role",
@@ -651,6 +846,166 @@ def snapshot_queries(
                 "FROM gv$ob_log_stat "
                 "GROUP BY svr_ip, role ORDER BY svr_ip, role",
             ),
+            note="END_LSN-BASE_LSN — ещё не recycle (нужен dump SSTable). "
+            "MAX_LSN-END_LSN на лидере — запись/majority не догоняет.",
+        ),
+        SnapshotQuery(
+            query_id="compaction",
+            title="Major compaction: статус тенанта",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT tenant_id, frozen_scn, status, start_time, "
+                "last_finish_time, is_error, is_suspended, "
+                "LEFT(info, 160) AS info_head "
+                "FROM oceanbase.CDB_OB_MAJOR_COMPACTION "
+                f"WHERE {tid}",
+                "SELECT tenant_id, frozen_scn, status, start_time, "
+                "last_finish_time, is_error "
+                "FROM oceanbase.CDB_OB_MAJOR_COMPACTION "
+                f"WHERE {tid}",
+                "SELECT tenant_id, frozen_scn, status, start_time, last_finish_time "
+                "FROM oceanbase.DBA_OB_MAJOR_COMPACTION "
+                f"WHERE {tid}",
+            ),
+        ),
+        SnapshotQuery(
+            query_id="compaction-progress",
+            title="Compaction progress по observer (mini/minor/major)",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT tenant_id, svr_ip, type, zone, status, compaction_scn, "
+                "total_tablet_count, unfinished_tablet_count, "
+                "ROUND(data_size / 1024 / 1024 / 1024, 3) AS data_g, "
+                "ROUND(unfinished_data_size / 1024 / 1024 / 1024, 3) "
+                "AS unfinished_g, start_time, estimated_finish_time, "
+                "LEFT(comments, 160) AS comments_head "
+                "FROM oceanbase.GV$OB_COMPACTION_PROGRESS "
+                f"WHERE {tid} "
+                "ORDER BY unfinished_tablet_count DESC, svr_ip LIMIT 200",
+                "SELECT tenant_id, svr_ip, type, status, compaction_scn, "
+                "total_tablet_count, unfinished_tablet_count, start_time "
+                "FROM oceanbase.GV$OB_COMPACTION_PROGRESS "
+                f"WHERE {tid} LIMIT 200",
+                "SELECT tenant_id, svr_ip, type, status, compaction_scn "
+                "FROM oceanbase.GV$OB_COMPACTION_PROGRESS "
+                f"WHERE {tid} LIMIT 200",
+            ),
+            note="MINI_MERGE/MINOR_MERGE RUNNING при растущем memstore — dump "
+            "не успевает за записью. STATUS=FINISH при высоком memstore — "
+            "смотреть diagnose / freeze_cnt.",
+        ),
+        SnapshotQuery(
+            query_id="compaction-diagnose",
+            title="Compaction diagnose (FAILED / NOT_SCHEDULE / RS_UNCOMPACTED)",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT tenant_id, svr_ip, type, ls_id, tablet_id, status, "
+                "create_time, LEFT(diagnose_info, 200) AS diagnose_head "
+                "FROM oceanbase.GV$OB_COMPACTION_DIAGNOSE_INFO "
+                f"WHERE {tid} AND status IN ("
+                "'FAILED', 'RUNNING', 'NOT_SCHEDULE', 'RS_UNCOMPACTED') "
+                "ORDER BY create_time DESC LIMIT 100",
+                "SELECT tenant_id, svr_ip, type, ls_id, tablet_id, status, "
+                "create_time, LEFT(diagnose_info, 200) AS diagnose_head "
+                "FROM oceanbase.__all_virtual_compaction_diagnose_info "
+                f"WHERE {tid} AND status IN ("
+                "'FAILED', 'RUNNING', 'NOT_SCHEDULE', 'RS_UNCOMPACTED') "
+                "ORDER BY create_time DESC LIMIT 100",
+                "SELECT tenant_id, svr_ip, type, status, "
+                "LEFT(diagnose_info, 200) AS diagnose_head "
+                "FROM oceanbase.GV$OB_COMPACTION_DIAGNOSE_INFO "
+                f"WHERE {tid} ORDER BY create_time DESC LIMIT 80",
+            ),
+        ),
+        SnapshotQuery(
+            query_id="archive-log",
+            title="Архив clog: статус и лаг checkpoint (без пути dest)",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT tenant_id, dest_id, round_id, dest_no, status, "
+                "checkpoint_scn, checkpoint_scn_display, "
+                "TIMESTAMPDIFF(SECOND, checkpoint_scn_display, NOW(6)) "
+                "AS lag_sec, LEFT(comment, 200) AS comment_head "
+                "FROM oceanbase.CDB_OB_ARCHIVELOG "
+                f"WHERE {tid}",
+                "SELECT tenant_id, dest_id, round_id, dest_no, status, "
+                "checkpoint_scn, checkpoint_scn_display, "
+                "LEFT(comment, 200) AS comment_head "
+                "FROM oceanbase.CDB_OB_ARCHIVELOG "
+                f"WHERE {tid}",
+                "SELECT dest_id, round_id, dest_no, status, checkpoint_scn, "
+                "checkpoint_scn_display, LEFT(comment, 200) AS comment_head "
+                "FROM oceanbase.DBA_OB_ARCHIVELOG",
+            ),
+            note="Пустой результат — архив не включён. lag_sec >> "
+            "archive_lag_target при STATUS=DOING — dest/сеть. "
+            "INTERRUPTED + comment про recycle — архив отстал от clog. "
+            "Блокировка записи только при BINDING=Mandatory (archive-dest).",
+        ),
+        SnapshotQuery(
+            query_id="archive-ls",
+            title="Архив по лог-стриму vs END_LSN лидера",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT a.tenant_id, a.ls_id, a.status, a.piece_id, "
+                "ROUND((l.end_lsn - a.max_lsn) / 1024 / 1024, 2) "
+                "AS unarchived_mb, a.max_lsn AS archived_max_lsn, "
+                "l.end_lsn, l.svr_ip AS leader_ip, "
+                "a.input_bytes, a.output_bytes "
+                "FROM oceanbase.CDB_OB_LS_LOG_ARCHIVE_PROGRESS a "
+                "JOIN oceanbase.GV$OB_LOG_STAT l "
+                "ON l.tenant_id = a.tenant_id AND l.ls_id = a.ls_id "
+                "AND l.role = 'LEADER' "
+                f"WHERE {pred_tenant_id(tenant_name, 'a.tenant_id')} "
+                "AND a.status IN ('DOING', 'INTERRUPTED', 'BEGINNING', "
+                "'SUSPEND', 'SUSPENDING') "
+                "ORDER BY unarchived_mb DESC LIMIT 200",
+                "SELECT tenant_id, dest_id, ls_id, round_id, piece_id, status, "
+                "checkpoint_scn, min_lsn, max_lsn, "
+                "ROUND((max_lsn - min_lsn) / 1024 / 1024, 2) AS piece_mb, "
+                "input_bytes, output_bytes "
+                "FROM oceanbase.CDB_OB_LS_LOG_ARCHIVE_PROGRESS "
+                f"WHERE {tid} "
+                "ORDER BY checkpoint_scn ASC LIMIT 200",
+                "SELECT tenant_id, ls_id, status, checkpoint_scn, max_lsn, "
+                "input_bytes, output_bytes "
+                "FROM oceanbase.__all_virtual_ls_log_archive_progress "
+                f"WHERE {tid} ORDER BY checkpoint_scn ASC LIMIT 200",
+            ),
+            note="unarchived_mb на самом медленном LS задаёт checkpoint тенанта. "
+            "Архивирует лидер стрима.",
+        ),
+        SnapshotQuery(
+            query_id="archive-dest",
+            title="ARCHIVE dest: BINDING / state (без LOCATION)",
+            topic="io_throughput",
+            scope="sys",
+            required=False,
+            sqls=(
+                "SELECT tenant_id, dest_no, name, value "
+                "FROM oceanbase.CDB_OB_ARCHIVE_DEST "
+                f"WHERE {tid} AND name IN ("
+                "'binding', 'state', 'piece_switch_interval', 'dest_id') "
+                "ORDER BY tenant_id, dest_no, name",
+                "SELECT dest_no, name, value "
+                "FROM oceanbase.DBA_OB_ARCHIVE_DEST "
+                "WHERE name IN ("
+                "'binding', 'state', 'piece_switch_interval', 'dest_id') "
+                "ORDER BY dest_no, name",
+            ),
+            note="Mandatory: архив не успевает → может остановить запись. "
+            "Optional: запись идёт, риск INTERRUPTED (clog recycle до архива). "
+            "LOCATION не снимается.",
         ),
         SnapshotQuery(
             query_id="tenant-timeouts",
@@ -758,6 +1113,7 @@ REQUIRED_TOPICS: tuple[str, ...] = (
     "local_remote_dist",
     "partition_leaders",
     "tenant_resources",
+    "io_throughput",
     "schema",
     "timeouts",
 )
@@ -836,9 +1192,43 @@ def assert_catalog_safe(queries: list[SnapshotQuery] | None = None) -> None:
     sysstat = next(q for q in queries if q.query_id == "sysstat")
     blob = sysstat.sqls[0].lower()
     assert "con_id" in blob
-    for token in ("cpu", "rpc", "throttle", "freeze"):
+    for token in ("cpu", "rpc", "throttle", "freeze", "palf", "io write delay"):
         if token not in blob:
             raise AssertionError(f"sysstat не покрывает {token}")
+    io_waits = next(q for q in queries if q.query_id == "sql-audit-io-waits")
+    io_blob = io_waits.sqls[0].lower()
+    for token in ("palf", "throttl", "end trans", "archive", "object storage"):
+        if token not in io_blob:
+            raise AssertionError(f"sql-audit-io-waits не покрывает {token}")
+    log_disk = next(q for q in queries if q.query_id == "log-disk")
+    assert "log_disk_in_use" in log_disk.sqls[0].lower()
+    log_stat = next(q for q in queries if q.query_id == "log-stat")
+    assert "end_lsn" in log_stat.sqls[0].lower()
+    assert "base_lsn" in log_stat.sqls[0].lower()
+    events = next(q for q in queries if q.query_id == "system-events")
+    assert "GV$SYSTEM_EVENT" in events.sqls[0]
+    params = next(q for q in queries if q.query_id == "io-params")
+    params_sql = params.sqls[0].lower()
+    for token in (
+        "log_disk_throttling_percentage",
+        "writing_throttling_trigger_percentage",
+        "archive_lag_target",
+    ):
+        if token not in params_sql:
+            raise AssertionError(f"io-params не покрывает {token}")
+    archive = next(q for q in queries if q.query_id == "archive-log")
+    archive_sql = "\n".join(archive.sqls)
+    assert "CDB_OB_ARCHIVELOG" in archive_sql
+    assert "checkpoint_scn" in archive_sql.lower()
+    if " path" in archive_sql.lower() or ",path" in archive_sql.lower().replace(" ", ""):
+        raise AssertionError("archive-log не должен выбирать PATH dest")
+    dest = next(q for q in queries if q.query_id == "archive-dest")
+    dest_sql = "\n".join(dest.sqls).lower()
+    assert "binding" in dest_sql
+    if "location" in dest_sql:
+        raise AssertionError("archive-dest не должен выбирать LOCATION")
+    diagnose = next(q for q in queries if q.query_id == "compaction-diagnose")
+    assert "GV$OB_COMPACTION_DIAGNOSE_INFO" in "\n".join(diagnose.sqls)
     creates = [q.query_id for q in queries if q.query_id.startswith("create-")]
     for table in TPCC_TABLES:
         if f"create-{table}" not in creates:
@@ -860,6 +1250,8 @@ def render_sql_pack(
         "-- Подставьте tenant/database при другом имени.",
         f"-- sql_audit: is_executor_rpc=0 и окно request_time {audit_window_sec}s "
         "(0 = весь буфер).",
+        "-- io_throughput: wait clog/palf/throttle, log disk, compaction diagnose, "
+        "archive lag (без LOCATION dest).",
         "-- Перегенерация: python3 scripts/lib/ob_snapshot.py dump-sql --output docs/sql/tpcc-server-snapshot-501.sql",
         "",
     ]
