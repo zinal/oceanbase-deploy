@@ -36,6 +36,8 @@ collect:
   --via observer|obproxy  (по умолчанию observer:2881)
   --timeout SEC         таймаут одного SQL (по умолчанию 90). По истечении
                         клиент убивается, fallback не вызывается.
+  --audit-window-sec N  окно GV$OB_SQL_AUDIT в секундах (по умолчанию 900).
+                        0 = весь буфер (медленно).
 
 Пример:
   ./scripts/deploy.sh snapshot collect --label w45k06
