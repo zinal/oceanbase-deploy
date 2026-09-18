@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -203,6 +204,83 @@ def test_try_query_fallback() -> None:
     assert elapsed_ms >= 0
 
 
+def test_sql_with_session_timeout() -> None:
+    wrapped = snap.sql_with_session_timeout("SELECT 1 FROM dual", 90)
+    assert "SET SESSION ob_query_timeout = 90000000" in wrapped
+    assert "SET SESSION ob_trx_timeout = 90000000" in wrapped
+    assert wrapped.strip().endswith("SELECT 1 FROM dual;")
+    assert snap.sql_with_session_timeout("SELECT 1;", 0).startswith(
+        "SET SESSION ob_query_timeout = 1000000;"
+    )
+
+
+def test_try_query_stops_on_timeout() -> None:
+    calls: list[str] = []
+    query = snap.SnapshotQuery(
+        query_id="demo",
+        title="demo",
+        topic="sql_audit",
+        scope="sys",
+        required=True,
+        sqls=("SELECT 1 FROM gv$hang", "SELECT 2 FROM fallback"),
+    )
+
+    def runner(endpoint, password, sql, timeout=90):  # noqa: ANN001
+        calls.append(sql)
+        raise subprocess.TimeoutExpired(cmd="obclient", timeout=timeout)
+
+    status, sql_used, stdout, elapsed_ms = snap.try_query(
+        runner, {"ip": "10.0.0.1"}, "pw", query, 7
+    )
+    assert status == "error"
+    assert "gv$hang" in sql_used
+    assert stdout == "timeout after 7s"
+    assert elapsed_ms >= 0
+    assert calls == ["SELECT 1 FROM gv$hang"]
+
+
+def test_run_snapshot_sql_closes_stdin() -> None:
+    reader = [
+        sys.executable,
+        "-c",
+        "import sys; data = sys.stdin.read(); sys.stdout.write('eof=' + str(len(data)))",
+    ]
+    ob_sys = SimpleNamespace(_client_bin=lambda: reader)
+    proc = snap.run_snapshot_sql(
+        ob_sys,
+        {"ip": "127.0.0.1", "port": 2881, "user": "root"},
+        "pw",
+        "SELECT 1",
+        timeout=5,
+    )
+    assert proc.returncode == 0
+    assert "eof=0" in (proc.stdout or "")
+    assert "SET SESSION ob_query_timeout" in " ".join(proc.args)
+
+
+def test_run_snapshot_sql_enforces_timeout() -> None:
+    hung = [
+        sys.executable,
+        "-c",
+        "import time, sys; time.sleep(30); sys.stdout.write('late\\n')",
+    ]
+    ob_sys = SimpleNamespace(_client_bin=lambda: hung)
+    started = time.monotonic()
+    try:
+        snap.run_snapshot_sql(
+            ob_sys,
+            {"ip": "127.0.0.1", "port": 2881, "user": "root"},
+            "",
+            "SELECT 1",
+            timeout=1,
+        )
+        raise AssertionError("ожидали TimeoutExpired")
+    except subprocess.TimeoutExpired:
+        pass
+    elapsed = time.monotonic() - started
+    assert elapsed < 10
+
+
 def test_wrapper_and_deploy_sh() -> None:
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "18-ob-snapshot.sh" in deploy
@@ -245,6 +323,10 @@ if __name__ == "__main__":
     test_tenant_predicate_and_filter()
     test_collect_writes_artifacts()
     test_try_query_fallback()
+    test_sql_with_session_timeout()
+    test_try_query_stops_on_timeout()
+    test_run_snapshot_sql_closes_stdin()
+    test_run_snapshot_sql_enforces_timeout()
     test_wrapper_and_deploy_sh()
     test_self_test()
     print("ok")
