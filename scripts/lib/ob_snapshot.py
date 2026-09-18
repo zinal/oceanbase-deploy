@@ -15,9 +15,11 @@ SQL-параметров. query_sql обрезается до sql_head.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -795,6 +797,29 @@ def default_sql_pack_path() -> Path:
 # Выполнение
 # ---------------------------------------------------------------------------
 
+def sql_with_session_timeout(sql: str, timeout: int) -> str:
+    """Лимит сессии в мкс, иначе GLOBAL ob_query_timeout=3600s держит GV$ бесконечно."""
+    timeout_sec = max(1, int(timeout))
+    timeout_us = timeout_sec * 1_000_000
+    body = sql.strip().rstrip(";").strip()
+    return (
+        f"SET SESSION ob_query_timeout = {timeout_us}; "
+        f"SET SESSION ob_trx_timeout = {timeout_us}; "
+        f"{body};"
+    )
+
+
+def _kill_sql_client(proc: subprocess.Popen[Any]) -> None:
+    """Убить mysql/obclient вместе с pager/потомками, иначе communicate() ждёт pipe."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+
+
 def run_snapshot_sql(
     ob_sys: Any,
     endpoint: dict[str, Any],
@@ -803,25 +828,53 @@ def run_snapshot_sql(
     *,
     timeout: int = 90,
 ) -> Any:
+    timeout_sec = max(1, int(timeout))
     cmd = ob_sys._client_bin() + [
         f"-h{endpoint['ip']}",
         f"-P{endpoint['port']}",
         f"-u{endpoint['user']}",
         "--connect-timeout=15",
+        "-A",
         "-B",
         "-e",
-        sql,
+        sql_with_session_timeout(sql, timeout_sec),
     ]
     env = os.environ.copy()
     env["MYSQL_PWD"] = password
-    return subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         env=env,
-        check=False,
-        timeout=timeout,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+    except subprocess.TimeoutExpired as exc:
+        _kill_sql_client(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.wait(timeout=1)
+        raise subprocess.TimeoutExpired(
+            cmd,
+            timeout_sec,
+            output=exc.stdout,
+            stderr=exc.stderr,
+        ) from None
+    except BaseException:
+        _kill_sql_client(proc)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=2)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def try_query(
@@ -837,6 +890,9 @@ def try_query(
         started = time.monotonic()
         try:
             proc = runner(endpoint, password, sql, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            return "error", sql, f"timeout after {timeout}s", elapsed_ms
         except Exception as exc:  # noqa: BLE001 — хотим текст любой ошибки клиента
             errors.append(f"{type(exc).__name__}: {exc}")
             continue
@@ -968,7 +1024,13 @@ def collect_snapshot(
         "",
     ]
     failed_required = 0
+    total = len(queries)
     for index, query in enumerate(queries, start=1):
+        print(
+            f"snapshot: [{index}/{total}] {query.query_id} ...",
+            file=sys.stderr,
+            flush=True,
+        )
         prefix = f"{index:02d}-{query.query_id}"
         if query.scope == "tenant":
             if tenant_endpoint is None:
@@ -997,6 +1059,12 @@ def collect_snapshot(
             body = stdout.rstrip() or status
             if query.required and status == "error":
                 failed_required += 1
+        print(
+            f"snapshot: [{index}/{total}] {query.query_id} {status} "
+            f"{elapsed_ms}ms rows={rows}",
+            file=sys.stderr,
+            flush=True,
+        )
         summary.append(f"===== {query.query_id}: {query.title} [{status} {elapsed_ms}ms] =====")
         if query.note:
             summary.append(f"# {query.note}")
@@ -1200,7 +1268,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_collect.add_argument("--skip-schema", action="store_true")
     p_collect.add_argument("--all-tenants", action="store_true")
     p_collect.add_argument("--via", choices=("observer", "obproxy"), default="observer")
-    p_collect.add_argument("--timeout", type=int, default=90)
+    p_collect.add_argument(
+        "--timeout",
+        type=int,
+        default=90,
+        help="Таймаут одного SQL в секундах (по умолчанию 90). "
+        "Ставится как session ob_query_timeout; при истечении процесс клиента "
+        "убивается и fallback не пробуется.",
+    )
     p_collect.set_defaults(func=cmd_collect)
 
     p_test = sub.add_parser("self-test", help="Локальные проверки без кластера")
@@ -1213,6 +1288,9 @@ def main() -> None:
     args = parser.parse_args()
     try:
         args.func(args)
+    except KeyboardInterrupt:
+        print("ERROR: прервано", file=sys.stderr)
+        sys.exit(130)
     except Exception as exc:
         text = str(exc).strip() or type(exc).__name__
         print(f"ERROR: {text}", file=sys.stderr)

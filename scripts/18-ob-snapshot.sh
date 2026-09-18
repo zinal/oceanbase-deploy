@@ -34,7 +34,8 @@ collect:
   --skip-schema         без SHOW CREATE TABLE / partitions
   --all-tenants         все USER-тенанты
   --via observer|obproxy  (по умолчанию observer:2881)
-  --timeout SEC         таймаут одного SQL (по умолчанию 90)
+  --timeout SEC         таймаут одного SQL (по умолчанию 90). По истечении
+                        клиент убивается, fallback не вызывается.
 
 Пример:
   ./scripts/deploy.sh snapshot collect --label w45k06

@@ -95,3 +95,12 @@ generated/snapshots/20260918T142300Z_w45k06/
 Sys-запросы по умолчанию идут на **observer:2881** (`root@sys`): GV$ полнее, без
 pin ODP. Tenant-запросы — `root@<tenant>` через obproxy:2883, если он есть.
 `--via obproxy` для sys, если observer недоступен с jump host.
+
+Каждый SQL ограничен `--timeout` (по умолчанию 90 с): коллектор ставит
+`SET SESSION ob_query_timeout`, закрывает stdin клиента и убивает процессную
+группу, если `obclient`/`mysql` не вышел. Иначе GV$ (например `GV$OB_PARAMETERS`
+при недоступном observer) и глобальный `ob_query_timeout=3600s` после ADD SERVER
+держат `snapshot` бесконечно, а Ctrl-C оставляет traceback в `subprocess.run`.
+Прогресс пишется в stderr (`[n/m] query-id`). Timeout одного запроса — это
+`*.err` со строкой `timeout after 90s`, без цепочки fallback на тот же GV$.
+`--timeout 180`, если sql_audit на большой нагрузке не укладывается в 90 с.
