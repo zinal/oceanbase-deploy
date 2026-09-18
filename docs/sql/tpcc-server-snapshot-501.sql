@@ -4,6 +4,7 @@
 -- и как root@tpcc для scope=tenant (USE tpcc).
 -- Не включает bind-параметры / пароли / connection string.
 -- Подставьте tenant/database при другом имени.
+-- sql_audit: is_executor_rpc=0 и окно request_time 900s (0 = весь буфер).
 -- Перегенерация: python3 scripts/lib/ob_snapshot.py dump-sql --output docs/sql/tpcc-server-snapshot-501.sql
 
 -- ===== cluster-version: Версия и audit [sys] =====
@@ -26,56 +27,57 @@ FROM oceanbase.DBA_OB_TENANTS
 ORDER BY tenant_id;
 
 -- ===== sql-audit-by-id: GV$OB_SQL_AUDIT: sql_id / plan_id / server / ret_code / event [sys] =====
--- Не выбираем полный query_sql и bind-параметры — только агрегаты.
+-- Агрегаты без query_sql/params. Окно request_time 900s (0 = весь буфер); is_executor_rpc=0.
 SELECT sql_id, plan_id, svr_ip, ret_code, event, COUNT(*) AS executions, SUM(CASE WHEN ret_code <> 0 THEN 1 ELSE 0 END) AS errors, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, ROUND(AVG(queue_time)) AS avg_queue_us, ROUND(AVG(execute_time)) AS avg_execute_us, SUM(return_rows) AS return_rows, SUM(affected_rows) AS affected_rows
 FROM oceanbase.GV$OB_SQL_AUDIT
-WHERE is_inner_sql = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000)
 GROUP BY sql_id, plan_id, svr_ip, ret_code, event
 ORDER BY executions DESC
 LIMIT 200;
 
 -- ===== sql-audit-heads: Топ SQL (обрезанный sql_head, без параметров) [sys] =====
-SELECT sql_id, LEFT(query_sql, 120) AS sql_head, COUNT(*) AS executions, SUM(CASE WHEN ret_code IN (1205, 6235, -6235, -6210, -4012, 4012, 600) THEN 1 ELSE 0 END) AS lock_or_serial, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, MAX(elapsed_time) AS max_elapsed_us
+SELECT sql_id, MIN(LEFT(query_sql, 120)) AS sql_head, COUNT(*) AS executions, SUM(CASE WHEN ret_code IN (1205, 6235, -6235, -6210, -4012, 4012, 600) THEN 1 ELSE 0 END) AS lock_or_serial, ROUND(AVG(elapsed_time)) AS avg_elapsed_us, MAX(elapsed_time) AS max_elapsed_us
 FROM oceanbase.GV$OB_SQL_AUDIT
-WHERE is_inner_sql = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
-GROUP BY sql_id, LEFT(query_sql, 120)
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000)
+GROUP BY sql_id
 ORDER BY executions DESC
 LIMIT 80;
 
 -- ===== sql-audit-errors: 1205 / 6235 и соседние ret_code по sql_id и sql_head [sys] =====
 -- Класс блокирующей строки — в lock-waits rowkey, не в params.
-SELECT ret_code, sql_id, plan_id, svr_ip, LEFT(query_sql, 80) AS sql_head, COUNT(*) AS n, ROUND(AVG(elapsed_time)) AS avg_elapsed_us
+SELECT ret_code, sql_id, plan_id, svr_ip, MIN(LEFT(query_sql, 80)) AS sql_head, COUNT(*) AS n, ROUND(AVG(elapsed_time)) AS avg_elapsed_us
 FROM oceanbase.GV$OB_SQL_AUDIT
-WHERE is_inner_sql = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND ret_code IN (1205, 6235, -6235, -6210, -4012, 4012, 600)
-GROUP BY ret_code, sql_id, plan_id, svr_ip, LEFT(query_sql, 80)
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000) AND ret_code IN (1205, 6235, -6235, -6210, -4012, 4012, 600)
+GROUP BY ret_code, sql_id, plan_id, svr_ip
 ORDER BY n DESC
 LIMIT 100;
 
 -- ===== local-remote-dist: Local / remote / distributed (plan_type) по observer [sys] =====
 SELECT svr_ip, SUM(plan_type = 1) AS local_plan, SUM(plan_type = 2) AS remote_plan, SUM(plan_type = 3) AS dist_plan, SUM(partition_hit = 0) AS part_miss, SUM(partition_hit = 1) AS part_hit, COUNT(*) AS stmts
 FROM oceanbase.GV$OB_SQL_AUDIT
-WHERE is_inner_sql = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000)
 GROUP BY svr_ip
 ORDER BY stmts DESC;
 
 -- ===== local-remote-dist-by-sql: Local / remote / dist по sql_id (ожидаемая доля remote New-Order/Payment) [sys] =====
-SELECT sql_id, LEFT(query_sql, 80) AS sql_head, SUM(plan_type = 1) AS local_plan, SUM(plan_type = 2) AS remote_plan, SUM(plan_type = 3) AS dist_plan, COUNT(*) AS stmts
+SELECT sql_id, MIN(LEFT(query_sql, 80)) AS sql_head, SUM(plan_type = 1) AS local_plan, SUM(plan_type = 2) AS remote_plan, SUM(plan_type = 3) AS dist_plan, COUNT(*) AS stmts
 FROM oceanbase.GV$OB_SQL_AUDIT
-WHERE is_inner_sql = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
-GROUP BY sql_id, LEFT(query_sql, 80)
+WHERE is_inner_sql = 0 AND is_executor_rpc = 0 AND tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND request_time > (time_to_usec(now()) - 900000000)
+GROUP BY sql_id
 ORDER BY dist_plan DESC, remote_plan DESC, stmts DESC
 LIMIT 80;
 
--- ===== lock-waits: GV$OB_LOCK_WAIT_STAT: waiter / holder / rowkey [sys] =====
-SELECT w.tenant_id, w.svr_ip, w.table_id, w.tablet_id, LEFT(w.rowkey, 128) AS rowkey, w.session_id AS waiter_sid, w.block_session_id AS holder_sid, w.holder_tx_id, w.waiter_tx_id, w.lock_mode, w.type, w.try_lock_times, w.time_after_recv
-FROM oceanbase.GV$OB_LOCK_WAIT_STAT w
-WHERE w.tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
-ORDER BY w.time_after_recv DESC
+-- ===== lock-waits: Lock wait: waiter / holder / rowkey [sys] =====
+-- 5.0.x: нет GV$OB_LOCK_WAIT_STAT и колонки table_id; используется __all_virtual_lock_wait_stat / GV$OB_LOCKS.
+SELECT tenant_id, svr_ip, tablet_id, LEFT(rowkey, 128) AS rowkey, session_id AS waiter_sid, block_session_id AS holder_sid, holder_tx_id, waiter_tx_id, lock_mode, type, try_lock_times, time_after_recv
+FROM oceanbase.__all_virtual_lock_wait_stat
+WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
+ORDER BY time_after_recv DESC
 LIMIT 200;
 
 -- ===== lock-waits-with-sql: Lock wait + waiter SQL из processlist (обрезанный info) [sys] =====
-SELECT w.svr_ip, w.session_id AS waiter_sid, w.block_session_id AS holder_sid, w.holder_tx_id, w.waiter_tx_id, LEFT(w.rowkey, 128) AS rowkey, w.table_id, w.tablet_id, w.time_after_recv, LEFT(p.info, 80) AS waiter_sql_head
-FROM oceanbase.GV$OB_LOCK_WAIT_STAT w
+SELECT w.svr_ip, w.session_id AS waiter_sid, w.block_session_id AS holder_sid, LEFT(w.rowkey, 128) AS rowkey, w.tablet_id, w.time_after_recv, LEFT(p.info, 80) AS waiter_sql_head
+FROM oceanbase.__all_virtual_lock_wait_stat w
 LEFT JOIN oceanbase.GV$OB_PROCESSLIST p ON p.id = w.session_id AND p.svr_ip = w.svr_ip
 WHERE w.tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
 ORDER BY w.time_after_recv DESC
@@ -132,7 +134,7 @@ GROUP BY tenant, svr_ip, command
 ORDER BY sessions DESC;
 
 -- ===== memory: Память тенанта (GV$OB_MEMORY) [sys] =====
-SELECT tenant_id, svr_ip, ctx_name, hold, used, `limit`
+SELECT tenant_id, svr_ip, ctx_name, mod_name, hold, used
 FROM oceanbase.GV$OB_MEMORY
 WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc')
 ORDER BY hold DESC
@@ -145,9 +147,9 @@ WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_n
 ORDER BY svr_ip;
 
 -- ===== sysstat: CPU / RPC / IO / lock / throttle / freeze (GV$SYSSTAT) [sys] =====
-SELECT tenant_id, svr_ip, name, value
+SELECT con_id AS tenant_id, svr_ip, name, value
 FROM oceanbase.GV$SYSSTAT
-WHERE tenant_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND (name IN ('cpu usage', 'memory usage', 'sql execute count', 'trans commit count', 'trans rollback count', 'rpc packet in', 'rpc packet out', 'rpc packet in bytes', 'rpc packet out bytes', 'io read bytes', 'io write bytes', 'memstore used', 'memstore limit', 'clog disk used') OR name LIKE '%throttle%' OR name LIKE '%freeze%' OR name LIKE '%lock wait%' OR name LIKE '%rpc%' OR name LIKE '%cpu%')
+WHERE con_id = (SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = 'tpcc') AND (name IN ('cpu usage', 'memory usage', 'sql execute count', 'trans commit count', 'trans rollback count', 'rpc packet in', 'rpc packet out', 'rpc packet in bytes', 'rpc packet out bytes', 'io read bytes', 'io write bytes', 'memstore used', 'memstore limit', 'clog disk used') OR name LIKE '%throttle%' OR name LIKE '%freeze%' OR name LIKE '%lock wait%' OR name LIKE '%rpc%' OR name LIKE '%cpu%')
 ORDER BY name, svr_ip;
 
 -- ===== compaction: Major compaction / throttling [sys] =====
@@ -180,7 +182,7 @@ GROUP BY table_name, partition_method, subpartition_method, partition_expression
 ORDER BY table_name;
 
 -- ===== schema-tablegroups: Tablegroup / sharding (binding HASH) [tenant] =====
-SELECT tablegroup_name, sharding, tablegroup_id
+SELECT tablegroup_name, sharding, scope
 FROM oceanbase.DBA_OB_TABLEGROUPS;
 
 -- ===== schema-indexes: Индексы TPC-C [tenant] =====

@@ -17,6 +17,11 @@ Phase 0.4 плана
 Артефакты **не** содержат паролей, connection string, `params_value` и литералов
 SQL-параметров. Текст запроса обрезается до `sql_head` (80–120 символов).
 
+Запросы к `GV$OB_SQL_AUDIT` по умолчанию смотрят **последние 15 минут**
+(`request_time > time_to_usec(now()) - 900s`) и отбрасывают `is_executor_rpc`
+(дубли RPC на remote/dist). Иначе GROUP BY сканирует весь буфер на всех
+observer — десятки секунд при маленьком `.tsv`. Весь буфер: `--audit-window-sec 0`.
+
 ## Команды
 
 ```bash
@@ -88,9 +93,15 @@ generated/snapshots/20260918T142300Z_w45k06/
 ```
 
 Неизвестный view на конкретной сборке не валит весь снимок: пробуются fallback
-(имя 4.x `gv$sql_audit`, `__all_virtual_lock_wait_stat`, `CDB_OB_*`).
+(`gv$sql_audit`, `__all_virtual_lock_wait_stat` без `table_id`, `GV$OB_LOCKS`,
+`DBA_OB_TABLEGROUP_TABLES`, `CON_ID` в `GV$SYSSTAT`).
 Обязательный запрос, у которого не сработал ни один SQL, даёт ненулевой код
 и `*.err`.
+
+На OceanBase 5.0.x нет публичного `GV$OB_LOCK_WAIT_STAT` и колонки `table_id`
+у `__all_virtual_lock_wait_stat`; `GV$OB_MEMORY` без `limit` (есть `mod_name`);
+`GV$SYSSTAT` фильтруется по `CON_ID`, не `tenant_id`; `DBA_OB_TABLEGROUPS`
+без `tablegroup_id` (см. `DBA_OB_TABLEGROUP_TABLES` / `SHOW TABLEGROUPS`).
 
 Sys-запросы по умолчанию идут на **observer:2881** (`root@sys`): GV$ полнее, без
 pin ODP. Tenant-запросы — `root@<tenant>` через obproxy:2883, если он есть.

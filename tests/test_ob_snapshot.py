@@ -64,6 +64,11 @@ def test_catalog_covers_phase_04() -> None:
     assert "freeze" in blob
     assert "ob_query_timeout" in blob
     assert "show create table" in blob
+    assert "time_to_usec" in blob
+    assert "is_executor_rpc = 0" in blob
+    assert "con_id" in blob
+    assert "dba_ob_tablegroup_tables" in blob
+    assert "mod_name" in blob
 
 
 def test_pretty_sql_keeps_subquery() -> None:
@@ -87,7 +92,7 @@ def test_sql_pack_matches_docs() -> None:
     disk = path.read_text(encoding="utf-8")
     assert disk == pack
     assert "GV$OB_SQL_AUDIT" in disk
-    assert "GV$OB_LOCK_WAIT_STAT" in disk
+    assert "__all_virtual_lock_wait_stat" in disk
     assert "SHOW CREATE TABLE `tpcc`.`warehouse`" in disk
     assert "params_value" not in disk.lower()
 
@@ -100,6 +105,10 @@ def test_tenant_predicate_and_filter() -> None:
     quoted = snap.sql_literal("o'brien")
     assert quoted == "'o''brien'"
     assert "tenant_name = 'tpcc'" in snap.pred_tenant_name("tpcc")
+    windowed = snap.pred_sql_audit("tpcc", 900)
+    assert "is_executor_rpc = 0" in windowed
+    assert "time_to_usec(now()) - 900000000" in windowed
+    assert "time_to_usec" not in snap.pred_sql_audit("tpcc", 0)
     queries = snap.snapshot_queries("tpcc", "tpcc")
     only_audit = snap.filter_queries(queries, {"sql_audit"}, skip_schema=True)
     assert only_audit and all(q.topic == "sql_audit" for q in only_audit)

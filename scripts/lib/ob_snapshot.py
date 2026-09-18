@@ -52,6 +52,10 @@ PLAN_DOC = (
     "docs/oceanbase-efficiency-improvement-plan.md"
 )
 
+# Полный буфер GV$OB_SQL_AUDIT на кластере — десятки секунд на каждый GROUP BY.
+# 15 мин покрывает точку TPC-C; 0 = сканировать весь буфер.
+AUDIT_WINDOW_SEC_DEFAULT = 900
+
 
 @dataclass(frozen=True)
 class SnapshotQuery:
@@ -118,6 +122,22 @@ def pred_processlist_tenant(tenant_name: str | None) -> str:
     return "tenant NOT IN ('sys')"
 
 
+def pred_sql_audit(
+    tenant_name: str | None,
+    window_sec: int = AUDIT_WINDOW_SEC_DEFAULT,
+) -> str:
+    """Фильтр sql_audit: без inner/executor RPC и с окном request_time (мкс)."""
+    clauses = [
+        "is_inner_sql = 0",
+        "is_executor_rpc = 0",
+        pred_tenant_id(tenant_name),
+    ]
+    if window_sec and int(window_sec) > 0:
+        usec = int(window_sec) * 1_000_000
+        clauses.append(f"request_time > (time_to_usec(now()) - {usec})")
+    return " AND ".join(clauses)
+
+
 def compact_sql(sql: str) -> str:
     lines = [line.strip() for line in sql.strip().splitlines() if line.strip()]
     return " ".join(lines)
@@ -172,8 +192,14 @@ def pretty_sql(sql: str) -> str:
 # Каталог запросов Phase 0.4
 # ---------------------------------------------------------------------------
 
-def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQuery]:
+def snapshot_queries(
+    tenant_name: str | None,
+    database: str,
+    *,
+    audit_window_sec: int = AUDIT_WINDOW_SEC_DEFAULT,
+) -> list[SnapshotQuery]:
     tid = pred_tenant_id(tenant_name)
+    audit = pred_sql_audit(tenant_name, audit_window_sec)
     db_lit = sql_literal(database)
     db_id = sql_identifier(database)
     queries: list[SnapshotQuery] = [
@@ -233,7 +259,7 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
                 "SUM(return_rows) AS return_rows, "
                 "SUM(affected_rows) AS affected_rows "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 "GROUP BY sql_id, plan_id, svr_ip, ret_code, event "
                 "ORDER BY executions DESC LIMIT 200",
                 "SELECT sql_id, plan_id, svr_ip, ret_code, "
@@ -242,17 +268,18 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
                 "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
                 "ROUND(AVG(queue_time)) AS avg_queue_us "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 "GROUP BY sql_id, plan_id, svr_ip, ret_code "
                 "ORDER BY executions DESC LIMIT 200",
                 "SELECT sql_id, plan_id, svr_ip, ret_code, event, "
                 "COUNT(*) AS executions "
                 "FROM gv$sql_audit "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 "GROUP BY sql_id, plan_id, svr_ip, ret_code, event "
                 "ORDER BY executions DESC LIMIT 200",
             ),
-            note="Не выбираем полный query_sql и bind-параметры — только агрегаты.",
+            note="Агрегаты без query_sql/params. Окно request_time "
+            f"{audit_window_sec}s (0 = весь буфер); is_executor_rpc=0.",
         ),
         SnapshotQuery(
             query_id="sql-audit-heads",
@@ -261,15 +288,15 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="sys",
             required=True,
             sqls=(
-                "SELECT sql_id, LEFT(query_sql, 120) AS sql_head, "
+                "SELECT sql_id, MIN(LEFT(query_sql, 120)) AS sql_head, "
                 "COUNT(*) AS executions, "
                 f"SUM(CASE WHEN ret_code IN ({LOCK_OR_SERIAL_RET_CODES}) "
                 "THEN 1 ELSE 0 END) AS lock_or_serial, "
                 "ROUND(AVG(elapsed_time)) AS avg_elapsed_us, "
                 "MAX(elapsed_time) AS max_elapsed_us "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
-                "GROUP BY sql_id, LEFT(query_sql, 120) "
+                f"WHERE {audit} "
+                "GROUP BY sql_id "
                 "ORDER BY executions DESC LIMIT 80",
             ),
         ),
@@ -281,20 +308,19 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             required=True,
             sqls=(
                 "SELECT ret_code, sql_id, plan_id, svr_ip, "
-                "LEFT(query_sql, 80) AS sql_head, COUNT(*) AS n, "
+                "MIN(LEFT(query_sql, 80)) AS sql_head, COUNT(*) AS n, "
                 "ROUND(AVG(elapsed_time)) AS avg_elapsed_us "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 f"AND ret_code IN ({LOCK_OR_SERIAL_RET_CODES}) "
-                "GROUP BY ret_code, sql_id, plan_id, svr_ip, LEFT(query_sql, 80) "
+                "GROUP BY ret_code, sql_id, plan_id, svr_ip "
                 "ORDER BY n DESC LIMIT 100",
-                "SELECT ret_code, sql_id, plan_id, svr_ip, table_name, "
-                "LEFT(query_sql, 80) AS sql_head, COUNT(*) AS n "
+                "SELECT ret_code, sql_id, plan_id, svr_ip, COUNT(*) AS n "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 f"AND ret_code IN ({LOCK_OR_SERIAL_RET_CODES}) "
-                "GROUP BY ret_code, sql_id, plan_id, svr_ip, table_name, "
-                "LEFT(query_sql, 80) ORDER BY n DESC LIMIT 100",
+                "GROUP BY ret_code, sql_id, plan_id, svr_ip "
+                "ORDER BY n DESC LIMIT 100",
             ),
             note="Класс блокирующей строки — в lock-waits rowkey, не в params.",
         ),
@@ -313,7 +339,7 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
                 "SUM(partition_hit = 1) AS part_hit, "
                 "COUNT(*) AS stmts "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
+                f"WHERE {audit} "
                 "GROUP BY svr_ip ORDER BY stmts DESC",
             ),
         ),
@@ -324,24 +350,44 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="sys",
             required=True,
             sqls=(
-                "SELECT sql_id, LEFT(query_sql, 80) AS sql_head, "
+                "SELECT sql_id, MIN(LEFT(query_sql, 80)) AS sql_head, "
                 "SUM(plan_type = 1) AS local_plan, "
                 "SUM(plan_type = 2) AS remote_plan, "
                 "SUM(plan_type = 3) AS dist_plan, "
                 "COUNT(*) AS stmts "
                 "FROM oceanbase.GV$OB_SQL_AUDIT "
-                f"WHERE is_inner_sql = 0 AND {tid} "
-                "GROUP BY sql_id, LEFT(query_sql, 80) "
+                f"WHERE {audit} "
+                "GROUP BY sql_id "
                 "ORDER BY dist_plan DESC, remote_plan DESC, stmts DESC LIMIT 80",
             ),
         ),
         SnapshotQuery(
             query_id="lock-waits",
-            title="GV$OB_LOCK_WAIT_STAT: waiter / holder / rowkey",
+            title="Lock wait: waiter / holder / rowkey",
             topic="lock_waits",
             scope="sys",
             required=True,
             sqls=(
+                "SELECT tenant_id, svr_ip, tablet_id, "
+                "LEFT(rowkey, 128) AS rowkey, session_id AS waiter_sid, "
+                "block_session_id AS holder_sid, holder_tx_id, waiter_tx_id, "
+                "lock_mode, type, try_lock_times, time_after_recv "
+                "FROM oceanbase.__all_virtual_lock_wait_stat "
+                f"WHERE {tid} "
+                "ORDER BY time_after_recv DESC LIMIT 200",
+                "SELECT tenant_id, svr_ip, tablet_id, "
+                "LEFT(rowkey, 128) AS rowkey, session_id AS waiter_sid, "
+                "block_session_id AS holder_sid, holder_trans_id, "
+                "lock_mode, type, try_lock_times, time_after_recv "
+                "FROM oceanbase.__all_virtual_lock_wait_stat "
+                f"WHERE {tid} "
+                "ORDER BY time_after_recv DESC LIMIT 200",
+                "SELECT tenant_id, svr_ip, LEFT(rowkey, 128) AS rowkey, "
+                "session_id AS waiter_sid, block_session_id AS holder_sid, "
+                "try_lock_times, time_after_recv "
+                "FROM oceanbase.__all_virtual_lock_wait_stat "
+                f"WHERE {tid} "
+                "ORDER BY time_after_recv DESC LIMIT 200",
                 "SELECT w.tenant_id, w.svr_ip, w.table_id, w.tablet_id, "
                 "LEFT(w.rowkey, 128) AS rowkey, w.session_id AS waiter_sid, "
                 "w.block_session_id AS holder_sid, w.holder_tx_id, "
@@ -350,13 +396,14 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
                 "FROM oceanbase.GV$OB_LOCK_WAIT_STAT w "
                 f"WHERE {pred_tenant_id(tenant_name, 'w.tenant_id')} "
                 "ORDER BY w.time_after_recv DESC LIMIT 200",
-                "SELECT tenant_id, svr_ip, table_id, tablet_id, "
-                "LEFT(rowkey, 128) AS rowkey, session_id, block_session_id, "
-                "try_lock_times, time_after_recv "
-                "FROM oceanbase.__all_virtual_lock_wait_stat "
-                f"WHERE {tid} "
-                "ORDER BY time_after_recv DESC LIMIT 200",
+                "SELECT tenant_id, svr_ip, session_id, trans_id, type, "
+                "id1, id2, LEFT(id3, 128) AS rowkey, lmode, request, "
+                "ctime, block FROM oceanbase.GV$OB_LOCKS "
+                f"WHERE {tid} AND block = 1 "
+                "ORDER BY ctime DESC LIMIT 200",
             ),
+            note="5.0.x: нет GV$OB_LOCK_WAIT_STAT и колонки table_id; "
+            "используется __all_virtual_lock_wait_stat / GV$OB_LOCKS.",
         ),
         SnapshotQuery(
             query_id="lock-waits-with-sql",
@@ -365,6 +412,15 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="sys",
             required=False,
             sqls=(
+                "SELECT w.svr_ip, w.session_id AS waiter_sid, "
+                "w.block_session_id AS holder_sid, "
+                "LEFT(w.rowkey, 128) AS rowkey, w.tablet_id, "
+                "w.time_after_recv, LEFT(p.info, 80) AS waiter_sql_head "
+                "FROM oceanbase.__all_virtual_lock_wait_stat w "
+                "LEFT JOIN oceanbase.GV$OB_PROCESSLIST p "
+                "ON p.id = w.session_id AND p.svr_ip = w.svr_ip "
+                f"WHERE {pred_tenant_id(tenant_name, 'w.tenant_id')} "
+                "ORDER BY w.time_after_recv DESC LIMIT 200",
                 "SELECT w.svr_ip, w.session_id AS waiter_sid, "
                 "w.block_session_id AS holder_sid, w.holder_tx_id, "
                 "w.waiter_tx_id, LEFT(w.rowkey, 128) AS rowkey, "
@@ -506,12 +562,12 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="sys",
             required=True,
             sqls=(
-                "SELECT tenant_id, svr_ip, ctx_name, hold, used, `limit` "
+                "SELECT tenant_id, svr_ip, ctx_name, mod_name, hold, used "
                 "FROM oceanbase.GV$OB_MEMORY "
                 f"WHERE {tid} ORDER BY hold DESC LIMIT 80",
-                "SELECT tenant_id, svr_ip, ctx_name, hold, used "
+                "SELECT tenant_id, svr_ip, hold, free "
                 "FROM oceanbase.GV$OB_TENANT_MEMORY "
-                f"WHERE {tid} ORDER BY hold DESC LIMIT 80",
+                f"WHERE {tid} ORDER BY hold DESC",
             ),
         ),
         SnapshotQuery(
@@ -540,9 +596,9 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="sys",
             required=True,
             sqls=(
-                "SELECT tenant_id, svr_ip, name, value "
+                "SELECT con_id AS tenant_id, svr_ip, name, value "
                 "FROM oceanbase.GV$SYSSTAT "
-                f"WHERE {tid} AND ("
+                f"WHERE {pred_tenant_id(tenant_name, 'con_id')} AND ("
                 "name IN ("
                 "'cpu usage', 'memory usage', "
                 "'sql execute count', 'trans commit count', 'trans rollback count', "
@@ -555,7 +611,7 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
                 "OR name LIKE '%cpu%') "
                 "ORDER BY name, svr_ip",
                 "SELECT tenant_id, svr_ip, name, value "
-                "FROM oceanbase.GV$OB_SYSSTAT "
+                "FROM oceanbase.__all_virtual_sysstat "
                 f"WHERE {tid} AND ("
                 "name LIKE '%cpu%' OR name LIKE '%rpc%' OR name LIKE '%throttle%' "
                 "OR name LIKE '%freeze%' OR name LIKE '%lock%' OR name LIKE '%memstore%'"
@@ -644,10 +700,12 @@ def snapshot_queries(tenant_name: str | None, database: str) -> list[SnapshotQue
             scope="tenant",
             required=False,
             sqls=(
-                "SELECT tablegroup_name, sharding, tablegroup_id "
+                "SELECT tablegroup_name, sharding, scope "
                 "FROM oceanbase.DBA_OB_TABLEGROUPS",
-                f"SELECT table_name, tablegroup_name FROM oceanbase.DBA_OB_TABLES "
-                f"WHERE database_name = {db_lit} OR table_schema = {db_lit}",
+                "SELECT tablegroup_name, owner, table_name, sharding "
+                "FROM oceanbase.DBA_OB_TABLEGROUP_TABLES "
+                f"WHERE owner = {db_lit}",
+                "SHOW TABLEGROUPS",
             ),
         ),
         SnapshotQuery(
@@ -708,8 +766,15 @@ REQUIRED_TOPICS: tuple[str, ...] = (
 def queries_by_id(
     tenant_name: str | None,
     database: str,
+    *,
+    audit_window_sec: int = AUDIT_WINDOW_SEC_DEFAULT,
 ) -> dict[str, SnapshotQuery]:
-    return {q.query_id: q for q in snapshot_queries(tenant_name, database)}
+    return {
+        q.query_id: q
+        for q in snapshot_queries(
+            tenant_name, database, audit_window_sec=audit_window_sec
+        )
+    }
 
 
 def filter_queries(
@@ -746,10 +811,20 @@ def assert_catalog_safe(queries: list[SnapshotQuery] | None = None) -> None:
     audit = next(q for q in queries if q.query_id == "sql-audit-by-id")
     assert "GROUP BY sql_id, plan_id, svr_ip, ret_code, event" in audit.sqls[0]
     assert "GV$OB_SQL_AUDIT" in audit.sqls[0]
+    assert "is_executor_rpc = 0" in audit.sqls[0]
+    assert "time_to_usec" in audit.sqls[0]
     locks = next(q for q in queries if q.query_id == "lock-waits")
-    assert "GV$OB_LOCK_WAIT_STAT" in locks.sqls[0]
-    assert "rowkey" in locks.sqls[0]
-    assert "holder_tx_id" in locks.sqls[0]
+    lock_sql = "\n".join(locks.sqls)
+    assert "__all_virtual_lock_wait_stat" in lock_sql
+    assert "GV$OB_LOCK_WAIT_STAT" in lock_sql
+    assert "rowkey" in lock_sql
+    assert "holder_tx_id" in lock_sql
+    mem = next(q for q in queries if q.query_id == "memory")
+    assert "`limit`" not in mem.sqls[0]
+    assert "mod_name" in mem.sqls[0]
+    groups = next(q for q in queries if q.query_id == "schema-tablegroups")
+    assert "DBA_OB_TABLEGROUP_TABLES" in "\n".join(groups.sqls)
+    assert "tablegroup_id" not in groups.sqls[0]
     plans = next(q for q in queries if q.query_id == "plan-cache-stat")
     assert "hit_count" in plans.sqls[0]
     dist = next(q for q in queries if q.query_id == "local-remote-dist")
@@ -760,6 +835,7 @@ def assert_catalog_safe(queries: list[SnapshotQuery] | None = None) -> None:
     assert "DBA_OB_UNITS" in units.sqls[0]
     sysstat = next(q for q in queries if q.query_id == "sysstat")
     blob = sysstat.sqls[0].lower()
+    assert "con_id" in blob
     for token in ("cpu", "rpc", "throttle", "freeze"):
         if token not in blob:
             raise AssertionError(f"sysstat не покрывает {token}")
@@ -769,7 +845,12 @@ def assert_catalog_safe(queries: list[SnapshotQuery] | None = None) -> None:
             raise AssertionError(f"нет SHOW CREATE TABLE для {table}")
 
 
-def render_sql_pack(tenant_name: str = "tpcc", database: str = "tpcc") -> str:
+def render_sql_pack(
+    tenant_name: str = "tpcc",
+    database: str = "tpcc",
+    *,
+    audit_window_sec: int = AUDIT_WINDOW_SEC_DEFAULT,
+) -> str:
     lines = [
         "-- Серверный снимок OceanBase 5.0.x для точки TPC-C (Phase 0.4).",
         f"-- План: {PLAN_DOC}",
@@ -777,10 +858,14 @@ def render_sql_pack(tenant_name: str = "tpcc", database: str = "tpcc") -> str:
         f"-- и как root@{tenant_name} для scope=tenant (USE {database}).",
         "-- Не включает bind-параметры / пароли / connection string.",
         "-- Подставьте tenant/database при другом имени.",
+        f"-- sql_audit: is_executor_rpc=0 и окно request_time {audit_window_sec}s "
+        "(0 = весь буфер).",
         "-- Перегенерация: python3 scripts/lib/ob_snapshot.py dump-sql --output docs/sql/tpcc-server-snapshot-501.sql",
         "",
     ]
-    for query in snapshot_queries(tenant_name, database):
+    for query in snapshot_queries(
+        tenant_name, database, audit_window_sec=audit_window_sec
+    ):
         lines.append(f"-- ===== {query.query_id}: {query.title} [{query.scope}] =====")
         if query.note:
             lines.append(f"-- {query.note}")
@@ -981,6 +1066,7 @@ def collect_snapshot(
     skip_schema: bool,
     via: str,
     timeout: int,
+    audit_window_sec: int = AUDIT_WINDOW_SEC_DEFAULT,
     runner: Callable[..., Any] | None = None,
     ob_sys: Any | None = None,
     tenant_mod: Any | None = None,
@@ -991,7 +1077,13 @@ def collect_snapshot(
 ) -> dict[str, Any]:
     ob_sys = ob_sys or _load_ob_sys()
     tenant_mod = tenant_mod or _load_tenant_create()
-    queries = filter_queries(snapshot_queries(tenant_name, database), only, skip_schema)
+    queries = filter_queries(
+        snapshot_queries(
+            tenant_name, database, audit_window_sec=audit_window_sec
+        ),
+        only,
+        skip_schema,
+    )
     if sys_endpoint is None:
         sys_endpoint, sys_password = connect_sys(ob_sys, cfg, inv, via)
     if runner is None:
@@ -1018,6 +1110,7 @@ def collect_snapshot(
         f"OceanBase TPC-C server snapshot  label={label}",
         f"captured_at={(datetime.now(timezone.utc).isoformat())}",
         f"tenant={tenant_name or '*'} database={database}",
+        f"audit_window_sec={audit_window_sec}",
         f"sys={sys_endpoint.get('ip')}:{sys_endpoint.get('port')} "
         f"via={sys_endpoint.get('via')} user={sys_endpoint.get('user')}",
         f"plan={PLAN_DOC}",
@@ -1105,6 +1198,7 @@ def collect_snapshot(
             "user": sys_endpoint.get("user"),
         },
         "plan": PLAN_DOC,
+        "audit_window_sec": audit_window_sec,
         "queries": results,
         "warnings": warnings,
         "failed_required": failed_required,
@@ -1141,7 +1235,8 @@ def cmd_list(args: argparse.Namespace) -> None:
 def cmd_dump_sql(args: argparse.Namespace) -> None:
     tenant = args.tenant or "tpcc"
     database = args.database or "tpcc"
-    text = render_sql_pack(tenant, database)
+    window = getattr(args, "audit_window_sec", AUDIT_WINDOW_SEC_DEFAULT)
+    text = render_sql_pack(tenant, database, audit_window_sec=window)
     if args.output:
         path = Path(args.output)
         write_text(path, text)
@@ -1153,7 +1248,9 @@ def cmd_dump_sql(args: argparse.Namespace) -> None:
 def cmd_print_sql(args: argparse.Namespace) -> None:
     tenant = args.tenant or "tpcc"
     database = args.database or "tpcc"
-    found = queries_by_id(tenant, database).get(args.query_id)
+    found = queries_by_id(
+        tenant, database, audit_window_sec=getattr(args, "audit_window_sec", AUDIT_WINDOW_SEC_DEFAULT)
+    ).get(args.query_id)
     if found is None:
         raise RuntimeError(f"Нет запроса {args.query_id!r}. Смотрите: snapshot list")
     for index, sql in enumerate(found.sqls):
@@ -1191,6 +1288,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
         skip_schema=args.skip_schema,
         via=args.via,
         timeout=args.timeout,
+        audit_window_sec=args.audit_window_sec,
         ob_sys=ob_sys,
     )
     print(f"snapshot: {out_dir}")
@@ -1208,7 +1306,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert_catalog_safe()
     pack = render_sql_pack()
     assert "GV$OB_SQL_AUDIT" in pack
-    assert "GV$OB_LOCK_WAIT_STAT" in pack
+    assert "__all_virtual_lock_wait_stat" in pack
     sql_blob = "\n".join("\n".join(q.sqls) for q in snapshot_queries("tpcc", "tpcc"))
     assert "params_value" not in sql_blob.lower()
     assert "password" not in sql_blob.lower()
@@ -1247,12 +1345,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Файл (по умолчанию stdout). Для репозитория: docs/sql/tpcc-server-snapshot-501.sql",
     )
+    p_dump.add_argument(
+        "--audit-window-sec",
+        type=int,
+        default=AUDIT_WINDOW_SEC_DEFAULT,
+        help="Окно GV$OB_SQL_AUDIT в секундах (по умолчанию 900, 0 = весь буфер)",
+    )
     p_dump.set_defaults(func=cmd_dump_sql)
 
     p_print = sub.add_parser("print-sql", help="Печать одного запроса")
     p_print.add_argument("query_id")
     p_print.add_argument("--tenant", default="tpcc")
     p_print.add_argument("--database", default="tpcc")
+    p_print.add_argument(
+        "--audit-window-sec",
+        type=int,
+        default=AUDIT_WINDOW_SEC_DEFAULT,
+        help="Окно GV$OB_SQL_AUDIT в секундах (по умолчанию 900, 0 = весь буфер)",
+    )
     p_print.set_defaults(func=cmd_print_sql)
 
     p_collect = sub.add_parser("collect", help="Снять snapshot с живого кластера")
@@ -1275,6 +1385,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Таймаут одного SQL в секундах (по умолчанию 90). "
         "Ставится как session ob_query_timeout; при истечении процесс клиента "
         "убивается и fallback не пробуется.",
+    )
+    p_collect.add_argument(
+        "--audit-window-sec",
+        type=int,
+        default=AUDIT_WINDOW_SEC_DEFAULT,
+        help="Окно GV$OB_SQL_AUDIT в секундах (по умолчанию 900). "
+        "0 = сканировать весь буфер (медленно на нагруженном кластере).",
     )
     p_collect.set_defaults(func=cmd_collect)
 
