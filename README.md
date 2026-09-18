@@ -99,6 +99,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh obproxy-log     # снизить детальность логов ODP (syslog_level)
 ./scripts/deploy.sh obproxy-mem     # поднять proxy_mem_limited (дефолт 2G ≠ RAM хоста)
 ./scripts/deploy.sh observer-log    # снизить детальность логов observer (syslog_level)
+./scripts/deploy.sh open-cursors    # лимит PS-хендлов (open_cursors; дефолт вендора 50 → 5930)
 ./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3 (секция backup в deploy.yaml)
 ./scripts/deploy.sh backup full     # полный физический бэкап тенанта
 ./scripts/deploy.sh restore         # restore в новый standby из того же S3
@@ -126,8 +127,10 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 | `vm_profiles` | Ресурсы по ролям: observer, obproxy, configserver, monitoring, **ocp**, **runner** |
 | `oceanbase` | Параметры кластера, OBD, **версия** (`version`, по умолчанию 5.0.1.0) |
 | `ocp` | OceanBase Cloud Platform: порт, пароли, meta/monitor tenants |
-| `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`) |
+| `tenant` | User tenant после deploy: имя, пользователь, БД, пароли, режим (`mode` → `obd -o`), **`open_cursors`** (лимит PS, [docs/open-cursors.md](docs/open-cursors.md)) |
 | `backup` | S3 dest для физического бэкапа, архива clog и restore (`./scripts/deploy.sh backup` / `archive-log` / `restore`) |
+
+`tenant.open_cursors` — лимит курсоров и prepared statement на одну сессию (дефолт OceanBase **50**). JDBC Connector/J 2.x кэширует 250 PS на соединение и под нагрузкой ловит `-5930`. В этом репозитории по умолчанию **1000**. Подробности и JDBC-параметры: [лимит PS-хендлов](docs/open-cursors.md).
 
 `tenant.mode` — сценарий оптимизации OBD (`obd cluster tenant create -o`, OceanBase ≥ 4.3):
 
@@ -308,6 +311,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── obproxy-logging.md             # детальность логов ODP (WDIAG → INFO)
 │   ├── obproxy-memory.md              # proxy_mem_limited vs RAM хоста (do_monitor_mem)
 │   ├── observer-logging.md            # детальность логов observer (WDIAG → INFO)
+│   ├── open-cursors.md                # 5930: лимит PS-хендлов (open_cursors)
 │   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
 │   ├── sql/tpcc-server-snapshot-501.sql # снимок TPC-C: audit/locks/plan/leaders
 │   ├── tpcc-server-snapshot.md    # Phase 0.4: сбор серверной диагностики
@@ -342,6 +346,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 16-restore.sh            # restore из S3 в новый standby
 │   ├── 17-obproxy-mem.sh        # proxy_mem_limited (RSS ≠ free хоста)
 │   ├── 18-ob-snapshot.sh        # серверный снимок TPC-C (Phase 0.4)
+│   ├── 19-open-cursors.sh       # open_cursors (лимит PS-хендлов, ошибка 5930)
+│   ├── lib/open_cursors.py      # ALTER SYSTEM SET open_cursors TENANT=…
 │   ├── lib/ob_snapshot.py       # каталог SQL Phase 0.4 + collect
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
@@ -521,6 +527,8 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 `do_monitor_mem` / `memory is out of limit` при живом `free` — это потолок процесса `proxy_mem_limited` (дефолт **2G**), не RAM хоста: [память OBProxy](docs/obproxy-memory.md). `deploy` и `all` ставят лимит от `vm_profiles.obproxy.memory_gb` (или `oceanbase.obproxy.proxy_mem_limited`). Если ВМ уже увеличили в YC, а yaml ещё 4 GB: `./scripts/deploy.sh obproxy-mem apply --size 8G`.
 
 Логи observer — тот же `WDIAG` в `observer.log` / `election.log` / `rootservice.log` и конкуренция с clog за IO: [логи OBServer](docs/observer-logging.md). `deploy` и `all` сами делают `observer-log apply` из `oceanbase.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh observer-log apply`.
+
+`-5930 maximum open cursors / prepared statement handles exceeded` на горячем JDBC — вендорский `open_cursors=50` против кэша Connector/J 2.x на 250: [лимит PS-хендлов](docs/open-cursors.md). `./scripts/deploy.sh tenant` ставит **1000**; на уже живом тенанте — `./scripts/deploy.sh open-cursors apply`.
 
 На точке TPC-C снимите серверный snapshot (sql_audit, lock waits, plan cache, лидеры, CPU/RAM/RPC): [серверный снимок TPC-C](docs/tpcc-server-snapshot.md).
 

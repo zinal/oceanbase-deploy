@@ -28,6 +28,8 @@ DEFAULTS: dict[str, str] = {
     "root_password": "ChangeMe!",
     "user_password": "ChangeMe!",
     "mode": "htap",
+    # Лимит cursor/PS на сессию. Вендор 50; Connector/J 2.x кэширует 250.
+    "open_cursors": "1000",
 }
 
 # Значения `obd cluster tenant create -o` / `--optimize` (OceanBase ≥ 4.3).
@@ -101,6 +103,10 @@ def validate_tenant_cfg(tenant_cfg: dict[str, str]) -> list[str]:
     for label in ("root_password", "user_password"):
         if not tenant_cfg.get(label):
             issues.append(f"ERROR: tenant.{label} не задан")
+    try:
+        _load_open_cursors().parse_open_cursors(tenant_cfg.get("open_cursors"))
+    except ValueError as exc:
+        issues.append(f"ERROR: {exc}")
     return issues
 
 
@@ -335,6 +341,34 @@ def apply_obproxy_log_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None
         print("  WARN: не все obproxy приняли log_mode — ./scripts/deploy.sh obproxy-log apply")
 
 
+def _load_open_cursors() -> Any:
+    spec = importlib.util.spec_from_file_location("open_cursors", LIB_DIR / "open_cursors.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Не удалось загрузить open_cursors.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def apply_open_cursors_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None:
+    """После создания тенанта поднять open_cursors (дефолт вендора 50 → 5930)."""
+    if not inv.get("OBSERVER_COUNT") or int(inv.get("OBSERVER_COUNT", "0") or 0) < 1:
+        if not inv.get("OBPROXY_COUNT") or int(inv.get("OBPROXY_COUNT", "0") or 0) < 1:
+            print("Нет SQL-endpoint — пропуск open_cursors")
+            return
+    oc = _load_open_cursors()
+    value = oc.value_from_cfg(cfg)
+    tenant_name = oc.tenant_name_from_cfg(cfg)
+    print(f"open_cursors={value} для тенанта {tenant_name}: docs/open-cursors.md")
+    try:
+        failed = oc.apply_all(cfg, inv, skip_if_ok=True)
+    except Exception as exc:
+        print(f"  WARN: {exc} — ./scripts/deploy.sh open-cursors apply")
+        return
+    if failed:
+        print("  WARN: ALTER SYSTEM open_cursors не применился — ./scripts/deploy.sh open-cursors apply")
+
+
 def apply_obproxy_mem_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None:
     """После создания тенанта выставить proxy_mem_limited на каждом obproxy."""
     spec = importlib.util.spec_from_file_location("obproxy_mem", LIB_DIR / "obproxy_mem.py")
@@ -394,6 +428,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     verify_tenant_login(ob_sys, tenant_endpoint, tenant_cfg["root_password"])
 
     ensure_tenant_primary_zone_random(ob_sys, sys_endpoint, sys_password, tenant_name)
+    apply_open_cursors_defaults(cfg, inv)
     apply_obproxy_even_routing(cfg, inv)
     apply_obproxy_log_defaults(cfg, inv)
     apply_obproxy_mem_defaults(cfg, inv)
@@ -430,6 +465,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     print("Логи ODP: docs/obproxy-logging.md, ./scripts/deploy.sh obproxy-log")
     print("Память ODP: docs/obproxy-memory.md, ./scripts/deploy.sh obproxy-mem")
     print("Логи observer: docs/observer-logging.md, ./scripts/deploy.sh observer-log")
+    print("PS-хендлы (open_cursors): docs/open-cursors.md, ./scripts/deploy.sh open-cursors")
 
 
 def cmd_validate(args: argparse.Namespace) -> None:
@@ -453,6 +489,7 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     resolved = resolve_tenant_cfg(cfg)
     assert resolved["mode"] == "express_oltp"
     assert resolved["username"] == "tpcc"
+    assert resolved["open_cursors"] == "1000"
     assert resolve_optimize("oltp") == "express_oltp"
     assert resolve_optimize("htap") == "htap"
     assert sql_identifier("tpcc") == "`tpcc`"
@@ -464,6 +501,10 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert any("tenant.mode" in i for i in issues)
     for mode in TENANT_OPTIMIZE_MODES:
         assert validate_tenant_cfg({**DEFAULTS, "mode": mode}) == []
+    assert any(
+        "open_cursors" in i
+        for i in validate_tenant_cfg({**DEFAULTS, "open_cursors": "70000"})
+    )
     assert tenant_primary_zone_sql("RANDOM\n") == "RANDOM"
     assert tenant_primary_zone_sql("'zone1'\n") == "zone1"
     print("self-test ok")

@@ -427,6 +427,8 @@ ALTER SYSTEM SET max_syslog_file_count = 1000;
 
 Отдельно: **obproxy** с 4.2.3 пишет `syslog_level=WDIAG` и на нагрузке легко даёт >25 ГБ/сутки на инстанс (boot-диск в облаке часто 20 ГБ). Снижение детальности — [docs/obproxy-logging.md](obproxy-logging.md), `ALTER PROXYCONFIG SET syslog_level='INFO'` на каждом ODP.
 
+JDBC под нагрузкой часто ловит `-5930` (`maximum open cursors / prepared statement handles exceeded`): вендорский **`open_cursors=50`** на сессию, а Connector/J 2.x кэширует **250** PS. Это tenant-параметр, не ODP. Рекомендация OLTP — **1000**, JDBC-кэш строго меньше лимита: [open-cursors.md](open-cursors.md), `./scripts/deploy.sh open-cursors apply`.
+
 ---
 
 ## 10. Сводка «что купить / как нарезать» на узел 128 vCPU / 1 ТБ
