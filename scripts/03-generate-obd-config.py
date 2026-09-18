@@ -61,6 +61,10 @@ def _obproxy_log_mod():
     return _lib_mod("obproxy_log")
 
 
+def _obproxy_mem_mod():
+    return _lib_mod("obproxy_mem")
+
+
 def _observer_log_mod():
     return _lib_mod("observer_log")
 
@@ -383,7 +387,10 @@ def build_obd_config(cfg: dict, inv: dict[str, str]) -> dict:
         }
         # Только ключи из OBD parameter.yaml. syslog_level — ALTER PROXYCONFIG
         # (docs/obproxy-logging.md, ./scripts/deploy.sh obproxy-log).
+        # proxy_mem_limited OBD знает; на живом процессе его всё равно ставит
+        # ALTER PROXYCONFIG (docs/obproxy-memory.md).
         proxy_global.update(_obproxy_log_mod().obd_log_settings(cfg))
+        proxy_global.update(_obproxy_mem_mod().obd_mem_settings(cfg))
         result["obproxy-ce"] = {
             "depends": ["oceanbase-ce"],
             "servers": proxy_hosts,

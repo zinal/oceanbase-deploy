@@ -282,8 +282,14 @@ oceanbase:
   # Детальность логов ODP. С 4.2.3 дефолт syslog_level=WDIAG даёт десятки ГБ/сутки.
   # info — продакшен (INFO); warn — только WARN+; debug — вернуть WDIAG.
   # Живой кластер: ./scripts/deploy.sh obproxy-log apply
+  # Память ODP (proxy_mem_limited, дефолт вендора 2G): docs/obproxy-memory.md
   obproxy:
     log_mode: info
+    # Потолок RSS процесса. Дефолт вендора 2G; на большой ВМ do_monitor_mem
+    # отключит alloc с OS, хотя free ещё десятки гигабайт.
+    # Пустое = auto от vm_profiles.obproxy.memory_gb (4G ВМ → 2G, 16G → 8G, 32G+ → 16G).
+    # Живой кластер: ./scripts/deploy.sh obproxy-mem apply [--size 8G]
+    # proxy_mem_limited: 8G
   # Версия oceanbase-ce в generated/obd-cluster.yaml (obd cluster deploy -V нет).
   # Пустая = latest из доступных зеркал. All-in-One 4.6.x держит remote выключенным
   # и кладёт 4.6.0 в local — без этой строки новые кластера останутся на 4.6.0.

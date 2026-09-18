@@ -92,11 +92,12 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh provision   # async: диски → ВМ → READY → SSH
 ./scripts/deploy.sh prepare     # подготовка серверов
 ./scripts/deploy.sh config      # obd-cluster.yaml
-./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp + observer-log/obproxy-log/obproxy-route apply
+./scripts/deploy.sh deploy      # prepare + ocp-clockdiff (если OCP) + seed + scale-out + export-to-ocp + observer-log/obproxy-log/obproxy-mem/obproxy-route apply
 ./scripts/deploy.sh diagnose    # зависание start (oceanbase/obshell bootstrap)
 ./scripts/deploy.sh tenant      # user tenant + пользователь + БД (после deploy)
 ./scripts/deploy.sh obproxy-route   # равномерная маршрутизация ODP (можно на живом кластере)
 ./scripts/deploy.sh obproxy-log     # снизить детальность логов ODP (syslog_level)
+./scripts/deploy.sh obproxy-mem     # поднять proxy_mem_limited (дефолт 2G ≠ RAM хоста)
 ./scripts/deploy.sh observer-log    # снизить детальность логов observer (syslog_level)
 ./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3 (секция backup в deploy.yaml)
 ./scripts/deploy.sh backup full     # полный физический бэкап тенанта
@@ -304,6 +305,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── haproxy-obproxy-tcp-lb.md      # HAProxy tcp LB перед obproxy
 │   ├── obproxy-session-routing.md     # равномерные сессии ODP (не один observer)
 │   ├── obproxy-logging.md             # детальность логов ODP (WDIAG → INFO)
+│   ├── obproxy-memory.md              # proxy_mem_limited vs RAM хоста (do_monitor_mem)
 │   ├── observer-logging.md            # детальность логов observer (WDIAG → INFO)
 │   ├── sql/obproxy-route-diag-501.sql # диагностика pin на OceanBase 5.0.1
 │   ├── node-recovery.md           # потеря одного observer/obproxy
@@ -335,6 +337,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── 14-backup.sh             # полный / инкрементальный бэкап на S3
 │   ├── 15-archive-log.sh        # ARCHIVELOG on/off
 │   ├── 16-restore.sh            # restore из S3 в новый standby
+│   ├── 17-obproxy-mem.sh        # proxy_mem_limited (RSS ≠ free хоста)
+│   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
 │   ├── 05-scale-out.sh          # добавление observer-узлов
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
@@ -508,6 +512,8 @@ User tenant после `./scripts/deploy.sh tenant` — пользователь
 Если почти весь SQL сидит на одном observer при ровных лидерах — это fallback ODP (`enable_cached_server` / `enable_primary_zone`), не HAProxy: [равномерные сессии OBProxy](docs/obproxy-session-routing.md). `deploy` и `all` сами делают `obproxy-route apply`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-route apply`.
 
 Логи ODP по умолчанию с 4.2.3 — `syslog_level=WDIAG` (десятки ГБ/сутки на инстанс). Продакшен: [логи OBProxy](docs/obproxy-logging.md). `deploy` и `all` сами делают `obproxy-log apply` из `oceanbase.obproxy.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh obproxy-log apply`.
+
+`do_monitor_mem` / `memory is out of limit` при живом `free` — это потолок процесса `proxy_mem_limited` (дефолт **2G**), не RAM хоста: [память OBProxy](docs/obproxy-memory.md). `deploy` и `all` ставят лимит от `vm_profiles.obproxy.memory_gb` (или `oceanbase.obproxy.proxy_mem_limited`). Если ВМ уже увеличили в YC, а yaml ещё 4 GB: `./scripts/deploy.sh obproxy-mem apply --size 8G`.
 
 Логи observer — тот же `WDIAG` в `observer.log` / `election.log` / `rootservice.log` и конкуренция с clog за IO: [логи OBServer](docs/observer-logging.md). `deploy` и `all` сами делают `observer-log apply` из `oceanbase.log_mode`; на уже поднятом кластере — `./scripts/deploy.sh observer-log apply`.
 

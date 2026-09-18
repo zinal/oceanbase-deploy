@@ -335,6 +335,27 @@ def apply_obproxy_log_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None
         print("  WARN: не все obproxy приняли log_mode — ./scripts/deploy.sh obproxy-log apply")
 
 
+def apply_obproxy_mem_defaults(cfg: dict[str, Any], inv: dict[str, str]) -> None:
+    """После создания тенанта выставить proxy_mem_limited на каждом obproxy."""
+    spec = importlib.util.spec_from_file_location("obproxy_mem", LIB_DIR / "obproxy_mem.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Не удалось загрузить obproxy_mem.py")
+    memmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(memmod)
+    if not inv.get("OBPROXY_COUNT") or int(inv.get("OBPROXY_COUNT", "0") or 0) < 1:
+        print("OBPROXY_COUNT=0 — пропуск proxy_mem_limited")
+        return
+    limit = memmod.resolve_proxy_mem_limited(cfg)
+    print(f"Память ODP (proxy_mem_limited={limit}): docs/obproxy-memory.md")
+    try:
+        failed = memmod.apply_all(cfg, inv, skip_if_ok=True)
+    except Exception as exc:
+        print(f"  WARN: {exc} — ./scripts/deploy.sh obproxy-mem apply")
+        return
+    if failed:
+        print("  WARN: не все obproxy приняли proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply")
+
+
 def cmd_create(args: argparse.Namespace) -> None:
     ob_sys = _load_ob_sys()
     cfg = ob_sys.load_yaml(Path(args.config))
@@ -375,6 +396,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     ensure_tenant_primary_zone_random(ob_sys, sys_endpoint, sys_password, tenant_name)
     apply_obproxy_even_routing(cfg, inv)
     apply_obproxy_log_defaults(cfg, inv)
+    apply_obproxy_mem_defaults(cfg, inv)
     apply_observer_log_defaults(cfg, inv)
 
     print(
@@ -406,6 +428,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     print(f"  (пароль пользователя — tenant.user_password в config/deploy.yaml)")
     print("Маршрутизация ODP: docs/obproxy-session-routing.md, ./scripts/deploy.sh obproxy-route")
     print("Логи ODP: docs/obproxy-logging.md, ./scripts/deploy.sh obproxy-log")
+    print("Память ODP: docs/obproxy-memory.md, ./scripts/deploy.sh obproxy-mem")
     print("Логи observer: docs/observer-logging.md, ./scripts/deploy.sh observer-log")
 
 
