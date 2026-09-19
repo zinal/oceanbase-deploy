@@ -89,36 +89,123 @@ def replace_inventory_hosts(
     return updated
 
 
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_IPV4_FIND_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def _looks_like_ipv4(value: str) -> bool:
+    host = value.split("%", 1)[0].split(":", 1)[0]
+    if not _IPV4_RE.match(host):
+        return False
+    return all(0 <= int(part) <= 255 for part in host.split("."))
+
+
 def component_server_ips(data: dict[str, Any], component: str) -> list[str]:
-    """IP серверов компонента из YAML OBD (config.yaml / scale-out)."""
+    """IP серверов компонента из YAML OBD (servers + named-блоки + ключ-IP)."""
     block = data.get(component)
     if not isinstance(block, dict):
         return []
-    ips: list[str] = []
-    for entry in block.get("servers") or []:
-        ip = _server_ip(entry)
-        if ip:
-            ips.append(ip)
-    return ips
+    return _collect_component_ips(block)
+
+
+def _collect_component_ips(component: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(ip: str | None) -> None:
+        if not ip:
+            return
+        host = ip.split("%", 1)[0].split(":", 1)[0]
+        if not _looks_like_ipv4(host) or host in seen:
+            return
+        seen.add(host)
+        out.append(host)
+
+    for entry in component.get("servers") or []:
+        add(_server_ip(entry))
+        if isinstance(entry, dict):
+            for key in ("ip", "svr_ip", "address"):
+                if entry.get(key):
+                    add(str(entry[key]))
+    for key, node in component.items():
+        if key in {"servers", "global", "depends", "version"}:
+            continue
+        if _looks_like_ipv4(str(key)):
+            add(str(key))
+        if isinstance(node, dict):
+            add(_server_ip(node))
+            for field in ("ip", "svr_ip", "address"):
+                if node.get(field):
+                    add(str(node[field]))
+    return out
+
+
+def iter_obd_yaml_files(obd_dir: Path) -> list[Path]:
+    """Все YAML кластера OBD, кроме backup-копий clean-obd."""
+    if not obd_dir.is_dir():
+        return []
+    files: list[Path] = []
+    for path in sorted(obd_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in {".yaml", ".yml"}:
+            continue
+        if ".bak-" in path.name:
+            continue
+        files.append(path)
+    return files
 
 
 def list_obd_component_ips(obd_dir: Path, component: str) -> list[str]:
-    """Уникальные IP компонента из config.yaml / inner_config.yaml кластера OBD."""
+    """Уникальные IP компонента из всех YAML ~/.obd/cluster/<name>/."""
     seen: set[str] = set()
     out: list[str] = []
-    if not obd_dir.is_dir():
-        return out
-    for name in ("config.yaml", "inner_config.yaml", "config.yml", "inner_config.yml", "conf.yaml"):
-        path = obd_dir / name
-        if not path.exists():
+    for path in iter_obd_yaml_files(obd_dir):
+        try:
+            data = load_yaml(path)
+        except Exception:
             continue
-        data = load_yaml(path)
         if not isinstance(data, dict):
             continue
-        for ip in component_server_ips(data, component):
-            if ip not in seen:
-                seen.add(ip)
-                out.append(ip)
+        blocks: list[dict[str, Any]] = []
+        if isinstance(data.get(component), dict):
+            blocks.append(data[component])
+        # Иногда внутренние файлы — это сразу тело компонента без обёртки.
+        if path.name.startswith(component) or path.stem.startswith(component):
+            blocks.append(data)
+        for block in blocks:
+            for ip in _collect_component_ips(block):
+                if ip not in seen:
+                    seen.add(ip)
+                    out.append(ip)
+    return out
+
+
+def parse_obd_display_component_ips(text: str, component: str) -> list[str]:
+    """IP компонента из вывода `obd cluster display` (таблица после заголовка)."""
+    lines = text.splitlines()
+    capture = False
+    seen: set[str] = set()
+    out: list[str] = []
+    header = re.compile(rf"^\s*{re.escape(component)}\b", re.IGNORECASE)
+    other = re.compile(
+        r"^\s*(oceanbase-ce|obproxy-ce|obagent|ocp-server-ce|ob-configserver|prometheus|grafana)\b",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        stripped = line.strip()
+        if header.match(stripped):
+            capture = True
+            continue
+        if capture and other.match(stripped) and not header.match(stripped):
+            capture = False
+            continue
+        if not capture:
+            continue
+        for match in _IPV4_FIND_RE.findall(line):
+            if _looks_like_ipv4(match) and match not in seen:
+                seen.add(match)
+                out.append(match)
     return out
 
 
@@ -389,24 +476,31 @@ def remove_ip_from_obd_component(component: dict[str, Any], old_ip: str) -> bool
         if isinstance(node, dict) and str(node.get("ip", "")) == old_ip:
             del component[key]
             changed = True
+        if str(key) == old_ip:
+            del component[key]
+            changed = True
     return changed
 
 
 def clean_obd_metadata(obd_dir: Path, old_ip: str, *, backup: bool = True) -> list[str]:
-    """Официальный KB: после DELETE SERVER вычистить IP из config.yaml и inner_config.yaml."""
+    """Вычистить IP из всех YAML ~/.obd/cluster/<name>/ (не только config.yaml)."""
     changed_files: list[str] = []
     if not obd_dir.is_dir():
         return changed_files
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    for name in ("config.yaml", "inner_config.yaml", "config.yml", "inner_config.yml", "conf.yaml"):
-        path = obd_dir / name
-        if not path.exists():
+    for path in iter_obd_yaml_files(obd_dir):
+        try:
+            data = load_yaml(path)
+        except Exception:
             continue
-        data = load_yaml(path)
+        if not isinstance(data, dict):
+            continue
         file_changed = False
         for key, value in list(data.items()):
             if isinstance(value, dict) and remove_ip_from_obd_component(value, old_ip):
                 file_changed = True
+        if isinstance(data.get("servers"), list) and remove_ip_from_obd_component(data, old_ip):
+            file_changed = True
         if file_changed:
             if backup:
                 shutil.copy2(path, path.with_name(f"{path.name}.bak-{stamp}"))
@@ -486,7 +580,21 @@ def cmd_replace_inventory(args: argparse.Namespace) -> None:
 
 def cmd_list_component_ips(args: argparse.Namespace) -> None:
     obd_dir = Path(args.obd_dir) if args.obd_dir else Path.home() / ".obd" / "cluster" / args.deploy_name
-    for ip in list_obd_component_ips(obd_dir, args.component):
+    ips = list_obd_component_ips(obd_dir, args.component)
+    if args.display_file:
+        text = Path(args.display_file).read_text(encoding="utf-8", errors="replace")
+        for ip in parse_obd_display_component_ips(text, args.component):
+            if ip not in ips:
+                ips.append(ip)
+    for ip in ips:
+        print(ip)
+
+
+def cmd_parse_display(args: argparse.Namespace) -> None:
+    text = sys.stdin.read() if args.display_file in ("", "-") else Path(args.display_file).read_text(
+        encoding="utf-8", errors="replace"
+    )
+    for ip in parse_obd_display_component_ips(text, args.component):
         print(ip)
 
 
@@ -574,6 +682,24 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert "OBPROXY_2_IP" not in shrunk
     assert "OBPROXY_3_NAME" not in shrunk
     assert component_server_ips(sample, "obproxy-ce") == ["10.0.1.2"]
+    named = {
+        "obproxy-ce": {
+            "servers": [{"name": "p1", "ip": "10.130.0.7"}],
+            "p3": {"ip": "10.130.0.5"},
+            "10.130.0.9": {"listen_port": 2883},
+        }
+    }
+    assert component_server_ips(named, "obproxy-ce") == ["10.130.0.7", "10.130.0.5", "10.130.0.9"]
+    display = """
+oceanbase-ce
+  10.0.0.1 running
+obproxy-ce
+| 10.130.0.7 | running |
+| 10.130.0.5 | stopped |
+obagent
+  10.0.0.1 running
+"""
+    assert parse_obd_display_component_ips(display, "obproxy-ce") == ["10.130.0.7", "10.130.0.5"]
     cfg["ocp"] = {"root_password": "ChangeMe1!"}
     assert discover_root_passwords(cfg, "ob-yc-prod") == ["ChangeMe1!", ""]
     print("self-test ok")
@@ -629,7 +755,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ips.add_argument("--component", default="obproxy-ce")
     p_ips.add_argument("--deploy-name", required=True)
     p_ips.add_argument("--obd-dir", default=None)
+    p_ips.add_argument("--display-file", default="", help="Дополнить IP из obd cluster display")
     p_ips.set_defaults(func=cmd_list_component_ips)
+
+    p_disp = sub.add_parser("parse-display", help="IP компонента из текста obd cluster display")
+    p_disp.add_argument("--component", default="obproxy-ce")
+    p_disp.add_argument("--display-file", default="-")
+    p_disp.set_defaults(func=cmd_parse_display)
 
     p_obd = sub.add_parser("clean-obd", help="Убрать старый IP из метаданных OBD")
     p_obd.add_argument("--ip", required=True)
