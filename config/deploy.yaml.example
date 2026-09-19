@@ -77,7 +77,9 @@ vm_profiles:
       size_gb: 279                 # ~3× memory_limit (28G), кратно 93
       mount_point: /ob-log
 
-  # OBProxy — stateless прокси, масштабируется отдельно
+  # OBProxy — stateless прокси, масштабируется отдельно.
+  # На уже живом кластере: поправьте count/cores/memory_gb и
+  # ./scripts/deploy.sh scale-obproxy (старые ВМ скрипт не удаляет).
   obproxy:
     count: 2
     platform: standard-v3

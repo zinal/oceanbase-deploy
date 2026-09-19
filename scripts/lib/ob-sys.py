@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,68 @@ def update_inventory_ip(inv: dict[str, str], prefix: str, idx: int, ip: str, nam
     if name:
         updated[f"{prefix}_{idx}_NAME"] = name
     return updated
+
+
+_INVENTORY_HOST_KEY = re.compile(r"^([A-Z][A-Z0-9]*)_(\d+)_(NAME|IP)$")
+
+
+def replace_inventory_hosts(
+    inv: dict[str, str],
+    prefix: str,
+    hosts: list[tuple[int, str, str]],
+) -> dict[str, str]:
+    """Заменить все PREFIX_N_{NAME,IP} и PREFIX_COUNT. Остальные ключи не трогаем."""
+    prefix = prefix.strip().upper()
+    updated = dict(inv)
+    for key in list(updated):
+        match = _INVENTORY_HOST_KEY.match(key)
+        if match and match.group(1) == prefix:
+            del updated[key]
+    updated.pop(f"{prefix}_COUNT", None)
+    for idx, name, ip in hosts:
+        if idx < 1:
+            raise ValueError(f"{prefix}: индекс должен быть >= 1, получено {idx}")
+        if not name:
+            raise ValueError(f"{prefix}_{idx}: пустое имя ВМ")
+        if not ip:
+            raise ValueError(f"{prefix}_{idx}: пустой IP")
+        updated[f"{prefix}_{idx}_NAME"] = name
+        updated[f"{prefix}_{idx}_IP"] = ip
+    updated[f"{prefix}_COUNT"] = str(len(hosts))
+    return updated
+
+
+def component_server_ips(data: dict[str, Any], component: str) -> list[str]:
+    """IP серверов компонента из YAML OBD (config.yaml / scale-out)."""
+    block = data.get(component)
+    if not isinstance(block, dict):
+        return []
+    ips: list[str] = []
+    for entry in block.get("servers") or []:
+        ip = _server_ip(entry)
+        if ip:
+            ips.append(ip)
+    return ips
+
+
+def list_obd_component_ips(obd_dir: Path, component: str) -> list[str]:
+    """Уникальные IP компонента из config.yaml / inner_config.yaml кластера OBD."""
+    seen: set[str] = set()
+    out: list[str] = []
+    if not obd_dir.is_dir():
+        return out
+    for name in ("config.yaml", "inner_config.yaml", "config.yml", "inner_config.yml", "conf.yaml"):
+        path = obd_dir / name
+        if not path.exists():
+            continue
+        data = load_yaml(path)
+        if not isinstance(data, dict):
+            continue
+        for ip in component_server_ips(data, component):
+            if ip not in seen:
+                seen.add(ip)
+                out.append(ip)
+    return out
 
 
 def cfg_int(cfg: dict[str, Any], dotted: str, default: int) -> int:
@@ -407,6 +470,26 @@ def cmd_update_inventory(args: argparse.Namespace) -> None:
     print(f"{args.prefix}_{args.index}_IP={args.ip}")
 
 
+def cmd_replace_inventory(args: argparse.Namespace) -> None:
+    path = Path(args.inventory)
+    hosts: list[tuple[int, str, str]] = []
+    for raw in args.entry:
+        parts = [part.strip() for part in raw.split(",")]
+        if len(parts) != 3:
+            raise SystemExit(f"--entry ожидает index,name,ip; получено: {raw}")
+        hosts.append((int(parts[0]), parts[1], parts[2]))
+    hosts.sort(key=lambda item: item[0])
+    inv = replace_inventory_hosts(load_inventory(path), args.prefix, hosts)
+    write_inventory(path, inv)
+    print(f"{args.prefix}_COUNT={inv[f'{args.prefix}_COUNT']}")
+
+
+def cmd_list_component_ips(args: argparse.Namespace) -> None:
+    obd_dir = Path(args.obd_dir) if args.obd_dir else Path.home() / ".obd" / "cluster" / args.deploy_name
+    for ip in list_obd_component_ips(obd_dir, args.component):
+        print(ip)
+
+
 def cmd_clean_obd(args: argparse.Namespace) -> None:
     deploy = args.deploy_name
     obd_dir = Path(args.obd_dir) if args.obd_dir else Path.home() / ".obd" / "cluster" / deploy
@@ -473,6 +556,24 @@ def cmd_self_test(_args: argparse.Namespace) -> None:
     assert remove_ip_from_obd_component(sample["obproxy-ce"], "10.0.1.1")
     assert sample["obproxy-ce"]["servers"] == ["10.0.1.2"]
     assert update_inventory_ip(inv, "OBSERVER", 2, "10.9.9.9")["OBSERVER_2_IP"] == "10.9.9.9"
+    replaced = replace_inventory_hosts(
+        inv,
+        "OBPROXY",
+        [(1, "ob-yc-prod-obproxy-1", "10.0.9.1"), (2, "ob-yc-prod-obproxy-2", "10.0.9.2"),
+         (3, "ob-yc-prod-obproxy-3", "10.0.9.3")],
+    )
+    assert replaced["OBPROXY_COUNT"] == "3"
+    assert replaced["OBPROXY_3_IP"] == "10.0.9.3"
+    assert replaced["OBSERVER_1_IP"] == "10.0.0.1"
+    shrunk = replace_inventory_hosts(
+        replaced,
+        "OBPROXY",
+        [(1, "ob-yc-prod-obproxy-1", "10.0.9.1")],
+    )
+    assert shrunk["OBPROXY_COUNT"] == "1"
+    assert "OBPROXY_2_IP" not in shrunk
+    assert "OBPROXY_3_NAME" not in shrunk
+    assert component_server_ips(sample, "obproxy-ce") == ["10.0.1.2"]
     cfg["ocp"] = {"root_password": "ChangeMe1!"}
     assert discover_root_passwords(cfg, "ob-yc-prod") == ["ChangeMe1!", ""]
     print("self-test ok")
@@ -513,6 +614,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_inv.add_argument("--ip", required=True)
     p_inv.add_argument("--name", default=None)
     p_inv.set_defaults(func=cmd_update_inventory)
+
+    p_rep = sub.add_parser("replace-inventory", help="Заменить все хосты роли в inventory.env")
+    p_rep.add_argument("--prefix", required=True)
+    p_rep.add_argument(
+        "--entry",
+        action="append",
+        default=[],
+        help="index,name,ip (можно повторить)",
+    )
+    p_rep.set_defaults(func=cmd_replace_inventory)
+
+    p_ips = sub.add_parser("list-component-ips", help="IP компонента из метаданных OBD")
+    p_ips.add_argument("--component", default="obproxy-ce")
+    p_ips.add_argument("--deploy-name", required=True)
+    p_ips.add_argument("--obd-dir", default=None)
+    p_ips.set_defaults(func=cmd_list_component_ips)
 
     p_obd = sub.add_parser("clean-obd", help="Убрать старый IP из метаданных OBD")
     p_obd.add_argument("--ip", required=True)

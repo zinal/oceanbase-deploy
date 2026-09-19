@@ -110,7 +110,7 @@ print_temporary_plan() {
   2. Дождаться RUNNING и SSH
   3. obd cluster start ${DEPLOY_NAME} -c obproxy-ce -s ${OLD_IP}
      запасной путь: cd home_path && ./bin/obproxy
-  HAProxy не меняем — IP тот же.
+  4. Если IP сменился или есть runner — reload HAProxy на всех runner
 EOF
 }
 
@@ -122,8 +122,20 @@ print_replace_plan() {
   3. obd cluster scale_out ${DEPLOY_NAME} — только новый obproxy-ce
   4. Вычистить ${OLD_IP} из ~/.obd/cluster/${DEPLOY_NAME}/
   5. Обновить inventory и generated/obd-cluster.yaml
-  6. Если есть HAProxy — убрать старый IP из backend (docs/haproxy-obproxy-tcp-lb.md)
+  6. Если есть runner-ВМ — переписать HAProxy на всех (имена obproxy, затем reload)
 EOF
+}
+
+refresh_runner_haproxy() {
+  load_inventory
+  if [[ "${RUNNER_COUNT:-0}" -lt 1 ]]; then
+    info "Нет runner-ВМ — HAProxy не обновляю"
+    return 0
+  fi
+  info "Обновление HAProxy на всех runner..."
+  if ! bash "${SCRIPTS_DIR}/10-runner-haproxy.sh" --skip-if-none; then
+    warn "HAProxy не обновлён — ./scripts/deploy.sh runner-haproxy"
+  fi
 }
 
 recover_obproxy_temporary() {
@@ -159,6 +171,7 @@ recover_obproxy_temporary() {
   if ! bash "${SCRIPTS_DIR}/17-obproxy-mem.sh" apply --skip-if-ok; then
     warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
   fi
+  refresh_runner_haproxy
   cat <<EOF
 
 Временное восстановление obproxy-${INDEX} завершено.
@@ -239,8 +252,9 @@ if ! bash "${SCRIPTS_DIR}/12-obproxy-log.sh" apply --skip-if-ok; then
   warn "не удалось выставить логи ODP — ./scripts/deploy.sh obproxy-log apply"
 fi
 if ! bash "${SCRIPTS_DIR}/17-obproxy-mem.sh" apply --skip-if-ok; then
-  warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
-fi
+    warn "не удалось выставить proxy_mem_limited — ./scripts/deploy.sh obproxy-mem apply"
+  fi
+refresh_runner_haproxy
 
 cat <<EOF
 
@@ -248,7 +262,7 @@ cat <<EOF
   Старый IP: ${OLD_IP}
   Новый IP:  ${NEW_IP}
 
-Если перед obproxy стоит HAProxy — обновите backend (старый IP больше не существует).
-См. docs/haproxy-obproxy-tcp-lb.md и config/haproxy-obproxy-tcp-lb.cfg.example.
+HAProxy на runner переписан из текущего inventory (backend — имена obproxy).
+Если балансировщик стоит ещё где-то — см. docs/haproxy-obproxy-tcp-lb.md.
 
 EOF

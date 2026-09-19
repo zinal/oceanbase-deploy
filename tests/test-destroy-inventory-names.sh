@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash -n "${ROOT}/scripts/01-provision-vms.sh"
 bash -n "${ROOT}/scripts/10-runner-haproxy.sh"
+bash -n "${ROOT}/scripts/20-scale-obproxy.sh"
+bash -n "${ROOT}/scripts/07-recover-obproxy.sh"
 bash -n "${ROOT}/scripts/lib/yc-instance.sh"
 bash -n "${ROOT}/scripts/lib/yc-async.sh"
 
