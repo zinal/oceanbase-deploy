@@ -93,8 +93,10 @@ PROXY_MEM="$(yaml_get vm_profiles.obproxy.memory_gb)"
 
 EXISTING_FILE="${GENERATED_DIR}/scale-obproxy-existing.txt"
 OBD_IPS_FILE="${GENERATED_DIR}/scale-obproxy-obd-ips.txt"
+FORCE_SCALE_FILE="${GENERATED_DIR}/scale-obproxy-force-scale.txt"
 PLAN_JSON="${GENERATED_DIR}/scale-obproxy-plan.json"
 PLAN_DIR="${GENERATED_DIR}/scale-obproxy"
+: > "${FORCE_SCALE_FILE}"
 
 collect_existing() {
   local -a check_names=()
@@ -136,6 +138,7 @@ write_plan() {
     --inventory "${GENERATED_DIR}/inventory.env" \
     --existing-file "${EXISTING_FILE}" \
     --obd-ips-file "${OBD_IPS_FILE}" \
+    --force-scale-file "${FORCE_SCALE_FILE}" \
     --output "${PLAN_JSON}" \
     --text
 }
@@ -160,6 +163,10 @@ elif val not in (None, ""):
 PY
 }
 
+obproxy_home_path() {
+  printf '/home/%s/obproxy' "$(observer_deploy_user)"
+}
+
 # Короткий SSH: OBD scale_out ходит по всем уже прописанным obproxy.
 # Мёртвый адрес даёт OBD-1013 (connect failed: timed out).
 ssh_probe() {
@@ -173,6 +180,82 @@ ssh_probe() {
     -o ConnectTimeout=5 -o ConnectionAttempts=1 -o BatchMode=yes \
     -o LogLevel=ERROR \
     "${user}@${host}" "echo ok" >/dev/null 2>&1
+}
+
+# running | installed | empty | unreachable
+obproxy_host_state() {
+  local host="$1"
+  local user key port home state
+  if ! ssh_probe "${host}"; then
+    printf '%s\n' "unreachable"
+    return 0
+  fi
+  user="$(ssh_connect_user)"
+  key="$(ssh_private_key_path)"
+  port="$(ssh_connect_port)"
+  home="$(obproxy_home_path)"
+  state="$(ssh -T -p "${port}" -i "${key}" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=8 -o ConnectionAttempts=1 -o BatchMode=yes \
+    -o LogLevel=ERROR \
+    "${user}@${host}" "bash -s" <<REMOTE
+set -euo pipefail
+HOME_PATH="${home}"
+if pgrep -f '[/]bin/obproxy' >/dev/null 2>&1; then
+  echo running
+  exit 0
+fi
+if [[ -x "\${HOME_PATH}/bin/obproxy" ]]; then
+  echo installed
+  exit 0
+fi
+echo empty
+REMOTE
+)" || state="unreachable"
+  printf '%s\n' "${state:-unreachable}"
+}
+
+# OBD scale_out требует, чтобы уже прописанные obproxy-ce были running.
+# Пересозданная ВМ с тем же IP: SSH есть, бинаря нет → «is not running».
+# $1=true — можно делать obd start (после подтверждения, не в dry-run).
+probe_obd_obproxy_peers() {
+  local allow_start="${1:-false}"
+  local ip state
+  : > "${FORCE_SCALE_FILE}"
+  if [[ "${SKIP_OBD}" == "true" ]]; then
+    return 0
+  fi
+  while IFS= read -r ip; do
+    [[ -n "${ip}" ]] || continue
+    state="$(obproxy_host_state "${ip}")"
+    case "${state}" in
+      running)
+        info "OBD peer ${ip}: obproxy running"
+        ;;
+      installed)
+        if [[ "${allow_start}" == "true" ]]; then
+          info "OBD peer ${ip}: бинарь есть, процесс не запущен — пробую obd start"
+          if obd_start_component "${DEPLOY_NAME}" "obproxy-ce" "${ip}" \
+            && [[ "$(obproxy_host_state "${ip}")" == "running" ]]; then
+            info "OBD peer ${ip}: процесс поднят"
+          else
+            warn "OBD peer ${ip}: start не помог — сниму из OBD и поставлю scale_out"
+            echo "${ip}" >> "${FORCE_SCALE_FILE}"
+          fi
+        else
+          info "OBD peer ${ip}: бинарь есть, процесс не запущен (после подтверждения — start)"
+        fi
+        ;;
+      empty)
+        info "OBD peer ${ip}: ВМ пустая (нет $(obproxy_home_path)/bin) — сниму из OBD и поставлю scale_out"
+        echo "${ip}" >> "${FORCE_SCALE_FILE}"
+        ;;
+      *)
+        info "OBD peer ${ip}: ${state} — сниму из OBD до scale_out"
+        echo "${ip}" >> "${FORCE_SCALE_FILE}"
+        ;;
+    esac
+  done < "${OBD_IPS_FILE}"
 }
 
 final_ips() {
@@ -231,6 +314,7 @@ info "Сейчас в inventory: ${OBPROXY_COUNT:-0}"
 
 collect_existing
 collect_obd_ips
+probe_obd_obproxy_peers false
 write_plan
 
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -290,10 +374,11 @@ else
   bash "${SCRIPTS_DIR}/02-prepare-servers.sh" --role obproxy "${new_hosts[@]}"
 fi
 
-# После create IP известны — пересчитать план.
+# После create IP известны — пересчитать план и состояние уже прописанных peer.
 load_inventory
 collect_existing
 collect_obd_ips
+probe_obd_obproxy_peers true
 write_plan >/dev/null
 
 missing_ip="$(plan_rows missing_ip | tr '\n' ' ')"
@@ -315,7 +400,7 @@ if [[ "${SKIP_OBD}" != "true" ]]; then
     ob_sys write-scale-out --role obproxy --index "${idx}" --ip "${ip}" --output "${scale_out}"
     info "OBD scale_out obproxy-ce ${name} (${ip})..."
     if ! obd cluster scale_out "${DEPLOY_NAME}" -c "${scale_out}"; then
-      die "OBD scale_out ${name} (${ip}) не удался. Если в логе OBD-1013 — в ~/.obd/cluster/${DEPLOY_NAME}/ ещё мёртвый IP. Вычистите: python3 scripts/lib/ob-sys.py clean-obd --ip <старый_ip> --deploy-name ${DEPLOY_NAME} и повторите ./scripts/deploy.sh scale-obproxy --yes --skip-provision"
+      die "OBD scale_out ${name} (${ip}) не удался. OBD-1013 — мёртвый IP в ~/.obd/cluster/${DEPLOY_NAME}/; «obproxy-ce is not running» — уже прописанный peer без процесса (пересозданная ВМ). Повторите ./scripts/deploy.sh scale-obproxy --yes --skip-provision (скрипт снимет пустые peer и поставит их заново)."
     fi
   done < <(plan_rows scale_out)
 fi

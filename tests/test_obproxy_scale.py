@@ -108,6 +108,41 @@ def test_deleted_old_ip_is_cleaned_before_scale_out_text() -> None:
     assert "OBD-1013" in text
 
 
+def test_empty_recreated_peer_is_force_scaled() -> None:
+    """IP уже в OBD, но ВМ пересоздана — нужно снять запись и scale_out заново."""
+    inv = _inv(
+        OBPROXY_COUNT="3",
+        OBPROXY_1_NAME="ob-yc-prod-obproxy-1",
+        OBPROXY_1_IP="10.130.0.7",
+        OBPROXY_2_NAME="ob-yc-prod-obproxy-2",
+        OBPROXY_2_IP="10.130.0.47",
+        OBPROXY_3_NAME="ob-yc-prod-obproxy-3",
+        OBPROXY_3_IP="10.130.0.5",
+    )
+    existing = {
+        "ob-yc-prod-obproxy-1": "10.130.0.7",
+        "ob-yc-prod-obproxy-2": "10.130.0.58",
+        "ob-yc-prod-obproxy-3": "10.130.0.5",
+        "ob-yc-prod-obproxy-4": "10.130.0.27",
+    }
+    plan = SCALE.plan_obproxy_scale(
+        deploy_name="ob-yc-prod",
+        desired_count=4,
+        existing=existing,
+        inventory=inv,
+        obd_ips=["10.130.0.7", "10.130.0.47", "10.130.0.5"],
+        force_scale_ips=["10.130.0.7", "10.130.0.5"],
+    )
+    assert set(plan["clean_obd_ips"]) == {"10.130.0.47", "10.130.0.7", "10.130.0.5"}
+    assert [row["ip"] for row in plan["scale_out"]] == [
+        "10.130.0.7",
+        "10.130.0.58",
+        "10.130.0.5",
+        "10.130.0.27",
+    ]
+    assert "10.130.0.7" in " ".join(plan["warnings"])
+
+
 def test_scale_out_after_new_ips() -> None:
     inv = _inv(OBPROXY_COUNT="2", OBPROXY_1_IP="10.0.1.1", OBPROXY_2_IP="10.0.1.2")
     plan = SCALE.plan_obproxy_scale(
@@ -307,6 +342,8 @@ def test_deploy_sh_has_scale_obproxy() -> None:
     assert "10-runner-haproxy.sh" in script
     assert "не удаляет" in script
     assert "OBD-1013" in script
+    assert "obproxy-ce is not running" in script
+    assert "probe_obd_obproxy_peers" in script
     clean_fn = script.find("clean_stale_obproxy_obd")
     scale_cmd = script.find('obd cluster scale_out "${DEPLOY_NAME}"')
     assert 0 <= clean_fn < scale_cmd
@@ -321,6 +358,7 @@ def main() -> None:
         test_canonical_name,
         test_increase_creates_missing_only,
         test_deleted_old_ip_is_cleaned_before_scale_out_text,
+        test_empty_recreated_peer_is_force_scaled,
         test_scale_out_after_new_ips,
         test_user_deleted_old_vms_recreate_and_clean_obd,
         test_refuse_shrink_while_extra_vms_live,
