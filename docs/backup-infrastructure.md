@@ -146,7 +146,7 @@ flowchart LR
 ./scripts/deploy.sh backup show
 ```
 
-`on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` — только для `full`. Скрипт ждёт конец job по **активным + history** views: завершённый backup исчезает из `CDB_OB_BACKUP_JOBS` и остаётся в `CDB_OB_BACKUP_JOB_HISTORY` (`COMPLETED`); restore в `CDB_OB_RESTORE_HISTORY` имеет `STATUS=SUCCESS`, не `RESTORE_SUCCESS`.
+`on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` и профиль `backup.plus_archivelog` — только для `full` (`backup incremental` PLUS не добавляет). Скрипт ждёт конец job по **активным + history** views: завершённый backup исчезает из `CDB_OB_BACKUP_JOBS` и остаётся в `CDB_OB_BACKUP_JOB_HISTORY` (`COMPLETED`); restore в `CDB_OB_RESTORE_HISTORY` имеет `STATUS=SUCCESS`, не `RESTORE_SUCCESS`.
 
 ### Restore из того же dest
 

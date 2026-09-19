@@ -249,7 +249,7 @@ tenant:
 # Ключи можно не писать в yaml, а задать OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
 backup:
   tenant: ""                       # пустое = tenant.tenant_name
-  plus_archivelog: false           # BACKUP … PLUS ARCHIVELOG для full
+  plus_archivelog: false           # BACKUP … PLUS ARCHIVELOG только для full; incremental игнорирует
   wait_doing_sec: 180              # ждать STATUS=DOING перед backup / после archive on
   wait_stop_sec: 180               # ждать STOP после archive off
   wait_backup_sec: 7200            # ждать COMPLETED у backup job

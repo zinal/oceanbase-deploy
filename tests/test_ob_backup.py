@@ -129,6 +129,22 @@ def test_uri_and_sql() -> None:
     )
 
 
+def test_plus_archivelog_cfg_ignored_for_incremental() -> None:
+    cfg = {"backup": {"plus_archivelog": True}}
+    assert ob_backup.plus_archivelog_from_cfg(cfg, None) is True
+    assert ob_backup.plus_archivelog_from_cfg(cfg, None, mode="full") is True
+    assert ob_backup.plus_archivelog_from_cfg(cfg, None, mode="incremental") is False
+    assert ob_backup.plus_archivelog_from_cfg(cfg, None, mode="incr") is False
+    assert ob_backup.plus_archivelog_from_cfg({"backup": {}}, None, mode="full") is False
+    plus = ob_backup.plus_archivelog_from_cfg(cfg, None, mode="incremental")
+    assert (
+        ob_backup.backup_sql("tpcc", "incremental", plus_archivelog=plus)
+        == "ALTER SYSTEM BACKUP INCREMENTAL TENANT = tpcc"
+    )
+    # явный CLI --plus-archivelog на incremental по-прежнему запрещён
+    assert ob_backup.plus_archivelog_from_cfg(cfg, True, mode="incremental") is True
+
+
 def test_tenant_and_forbidden() -> None:
     assert ob_backup.resolve_tenant({"backup": {"tenant": "app1"}}) == "app1"
     try:
@@ -296,6 +312,9 @@ def test_cli_flags_after_subcommand() -> None:
     assert args.tenant == "app1"
     assert args.plus_archivelog is True
     assert args.no_wait is True
+    args = parser.parse_args(["backup", "incremental"])
+    assert args.mode == "incremental"
+    assert args.plus_archivelog is False
     args = parser.parse_args(["archive", "off", "--tenant", "app1"])
     assert args.action == "off"
     assert args.tenant == "app1"
@@ -350,6 +369,8 @@ def test_wrappers_and_deploy_sh() -> None:
     assert "16-restore.sh" in deploy
     assert "run|activate|show|validate" in deploy
     assert "backup:" in example
+    assert "plus_archivelog:" in example
+    assert "incremental игнорирует" in example
     assert "access_id:" in example
     assert "access_key:" in example
     assert "pool_list:" in example
@@ -476,6 +497,7 @@ if __name__ == "__main__":
     test_partial_yaml_still_errors_before_sql()
     test_aws_requires_region()
     test_uri_and_sql()
+    test_plus_archivelog_cfg_ignored_for_incremental()
     test_tenant_and_forbidden()
     test_bad_uri_chars()
     test_parse_status()
