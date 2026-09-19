@@ -119,8 +119,8 @@ print_replace_plan() {
 План замены obproxy ${INDEX} (${OLD_NAME}, ${OLD_IP}):
   1. Удалить ВМ ${OLD_NAME} в Yandex Cloud
   2. Создать замену с тем же именем и подготовить ОС
-  3. obd cluster scale_out ${DEPLOY_NAME} — только новый obproxy-ce
-  4. Вычистить ${OLD_IP} из ~/.obd/cluster/${DEPLOY_NAME}/
+  3. Вычистить ${OLD_IP} из ~/.obd/cluster/${DEPLOY_NAME}/ (до scale_out, иначе OBD-1013)
+  4. obd cluster scale_out ${DEPLOY_NAME} — только новый obproxy-ce
   5. Обновить inventory и generated/obd-cluster.yaml
   6. Если есть runner-ВМ — переписать HAProxy на всех (имена obproxy, затем reload)
 EOF
@@ -238,11 +238,19 @@ fi
 SCALE_OUT="${GENERATED_DIR}/recover-obproxy-${INDEX}.yaml"
 ob_sys write-scale-out --role obproxy --index "${INDEX}" --ip "${NEW_IP}" --output "${SCALE_OUT}"
 
+# OBD scale_out открывает SSH ко всем уже прописанным obproxy.
+# Старую ВМ мы уже удалили — если оставить OLD_IP в ~/.obd/cluster, будет OBD-1013.
+if [[ "${OLD_IP}" != "${NEW_IP}" ]]; then
+  info "Вычищаю старый IP ${OLD_IP} из метаданных OBD до scale_out..."
+  ob_sys clean-obd --ip "${OLD_IP}" --deploy-name "${DEPLOY_NAME}" || true
+fi
+
 info "OBD scale_out obproxy-ce (${NEW_IP})..."
-obd cluster scale_out "${DEPLOY_NAME}" -c "${SCALE_OUT}"
+if ! obd cluster scale_out "${DEPLOY_NAME}" -c "${SCALE_OUT}"; then
+  die "OBD scale_out (${NEW_IP}) не удался. Если OBD-1013 — вычистите мёртвый IP: python3 scripts/lib/ob-sys.py clean-obd --ip <старый_ip> --deploy-name ${DEPLOY_NAME}"
+fi
 
 info "Синхронизация метаданных OBD..."
-ob_sys clean-obd --ip "${OLD_IP}" --deploy-name "${DEPLOY_NAME}" || true
 ob_sys update-inventory --prefix OBPROXY --index "${INDEX}" --ip "${NEW_IP}" --name "${OLD_NAME}"
 python3 "${SCRIPTS_DIR}/03-generate-obd-config.py" --output "${GENERATED_DIR}/obd-cluster.yaml"
 

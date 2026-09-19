@@ -187,15 +187,18 @@ def render_plan_text(plan: dict[str, Any]) -> str:
     if plan["keep"]:
         kept = ", ".join(f"{item['name']}={item['ip'] or '?'}" for item in plan["keep"])
         lines.append(f"  оставить: {kept}")
-    if plan["scale_out"]:
-        ips = ", ".join(f"{item['name']}={item['ip']}" for item in plan["scale_out"])
-        lines.append(f"  OBD scale_out: {ips}")
-    else:
-        lines.append("  OBD scale_out: нет новых IP")
     if plan["clean_obd_ips"]:
-        lines.append("  убрать из OBD/inventory старые IP: " + ", ".join(plan["clean_obd_ips"]))
+        lines.append(
+            "  сначала убрать из OBD мёртвые IP (иначе OBD-1013 на scale_out): "
+            + ", ".join(plan["clean_obd_ips"])
+        )
     else:
         lines.append("  убрать из OBD: нечего")
+    if plan["scale_out"]:
+        ips = ", ".join(f"{item['name']}={item['ip']}" for item in plan["scale_out"])
+        lines.append(f"  затем OBD scale_out: {ips}")
+    else:
+        lines.append("  OBD scale_out: нет новых IP")
     lines.append("  ВМ скрипт не удаляет. Затем HAProxy на всех runner.")
     for warn in plan.get("warnings") or []:
         lines.append(f"  WARN: {warn}")

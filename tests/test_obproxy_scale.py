@@ -80,6 +80,34 @@ def test_increase_creates_missing_only() -> None:
     assert "ВМ скрипт не удаляет" in text
 
 
+def test_deleted_old_ip_is_cleaned_before_scale_out_text() -> None:
+    inv = _inv(
+        OBPROXY_COUNT="2",
+        OBPROXY_1_NAME="ob-yc-prod-obproxy-1",
+        OBPROXY_1_IP="10.0.1.1",
+        OBPROXY_2_NAME="ob-yc-prod-obproxy-2",
+        OBPROXY_2_IP="10.0.1.47",
+    )
+    plan = SCALE.plan_obproxy_scale(
+        deploy_name="ob-yc-prod",
+        desired_count=2,
+        existing={
+            "ob-yc-prod-obproxy-1": "10.0.1.1",
+            "ob-yc-prod-obproxy-2": "10.0.1.58",
+        },
+        inventory=inv,
+        obd_ips=["10.0.1.1", "10.0.1.47"],
+    )
+    assert plan["clean_obd_ips"] == ["10.0.1.47"]
+    assert [row["ip"] for row in plan["scale_out"]] == ["10.0.1.58"]
+    text = SCALE.render_plan_text(plan)
+    clean_at = text.find("сначала убрать из OBD мёртвые IP")
+    scale_at = text.find("затем OBD scale_out")
+    assert 0 <= clean_at < scale_at
+    assert "10.0.1.47" in text
+    assert "OBD-1013" in text
+
+
 def test_scale_out_after_new_ips() -> None:
     inv = _inv(OBPROXY_COUNT="2", OBPROXY_1_IP="10.0.1.1", OBPROXY_2_IP="10.0.1.2")
     plan = SCALE.plan_obproxy_scale(
@@ -278,12 +306,21 @@ def test_deploy_sh_has_scale_obproxy() -> None:
     script = (ROOT / "scripts" / "20-scale-obproxy.sh").read_text(encoding="utf-8")
     assert "10-runner-haproxy.sh" in script
     assert "не удаляет" in script
+    assert "OBD-1013" in script
+    clean_fn = script.find("clean_stale_obproxy_obd")
+    scale_cmd = script.find('obd cluster scale_out "${DEPLOY_NAME}"')
+    assert 0 <= clean_fn < scale_cmd
+    recover = (ROOT / "scripts" / "07-recover-obproxy.sh").read_text(encoding="utf-8")
+    recover_clean = recover.find('clean-obd --ip "${OLD_IP}"')
+    recover_scale = recover.find('obd cluster scale_out "${DEPLOY_NAME}"')
+    assert 0 <= recover_clean < recover_scale
 
 
 def main() -> None:
     tests = [
         test_canonical_name,
         test_increase_creates_missing_only,
+        test_deleted_old_ip_is_cleaned_before_scale_out_text,
         test_scale_out_after_new_ips,
         test_user_deleted_old_vms_recreate_and_clean_obd,
         test_refuse_shrink_while_extra_vms_live,

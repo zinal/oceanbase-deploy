@@ -160,6 +160,46 @@ elif val not in (None, ""):
 PY
 }
 
+# Короткий SSH: OBD scale_out ходит по всем уже прописанным obproxy.
+# Мёртвый адрес даёт OBD-1013 (connect failed: timed out).
+ssh_probe() {
+  local host="$1"
+  local user key port
+  user="$(ssh_connect_user)"
+  key="$(ssh_private_key_path)"
+  port="$(ssh_connect_port)"
+  ssh -T -p "${port}" -i "${key}" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=5 -o ConnectionAttempts=1 -o BatchMode=yes \
+    -o LogLevel=ERROR \
+    "${user}@${host}" "echo ok" >/dev/null 2>&1
+}
+
+final_ips() {
+  plan_rows final | awk -F'\t' '$3 != "" { print $3 }'
+}
+
+clean_stale_obproxy_obd() {
+  local old_ip
+  while IFS= read -r old_ip; do
+    [[ -n "${old_ip}" ]] || continue
+    info "Вычищаю старый IP ${old_ip} из метаданных OBD до scale_out (иначе OBD-1013)..."
+    ob_sys clean-obd --ip "${old_ip}" --deploy-name "${DEPLOY_NAME}" || true
+  done < <(plan_rows clean_obd_ips)
+
+  while IFS= read -r old_ip; do
+    [[ -n "${old_ip}" ]] || continue
+    if final_ips | grep -qx "${old_ip}"; then
+      continue
+    fi
+    if ssh_probe "${old_ip}"; then
+      continue
+    fi
+    info "OBD ещё знает ${old_ip}, SSH не отвечает — убираю до scale_out"
+    ob_sys clean-obd --ip "${old_ip}" --deploy-name "${DEPLOY_NAME}" || true
+  done < <(ob_sys list-component-ips --component obproxy-ce --deploy-name "${DEPLOY_NAME}" || true)
+}
+
 refresh_runner_haproxy() {
   if [[ "${SKIP_HAPROXY}" == "true" ]]; then
     info "HAProxy пропущен (--skip-haproxy)"
@@ -263,19 +303,21 @@ fi
 
 mkdir -p "${PLAN_DIR}"
 if [[ "${SKIP_OBD}" != "true" ]]; then
+  # OBD scale_out открывает SSH ко всем уже зарегистрированным obproxy.
+  # Если старые ВМ уже удалены, их IP нужно вычистить ДО scale_out.
+  clean_stale_obproxy_obd
+  collect_obd_ips
+  write_plan >/dev/null
+
   while IFS=$'\t' read -r idx name ip; do
     [[ -n "${ip}" ]] || continue
     scale_out="${PLAN_DIR}/obproxy-${idx}.yaml"
     ob_sys write-scale-out --role obproxy --index "${idx}" --ip "${ip}" --output "${scale_out}"
     info "OBD scale_out obproxy-ce ${name} (${ip})..."
-    obd cluster scale_out "${DEPLOY_NAME}" -c "${scale_out}"
+    if ! obd cluster scale_out "${DEPLOY_NAME}" -c "${scale_out}"; then
+      die "OBD scale_out ${name} (${ip}) не удался. Если в логе OBD-1013 — в ~/.obd/cluster/${DEPLOY_NAME}/ ещё мёртвый IP. Вычистите: python3 scripts/lib/ob-sys.py clean-obd --ip <старый_ip> --deploy-name ${DEPLOY_NAME} и повторите ./scripts/deploy.sh scale-obproxy --yes --skip-provision"
+    fi
   done < <(plan_rows scale_out)
-
-  while IFS= read -r old_ip; do
-    [[ -n "${old_ip}" ]] || continue
-    info "Вычищаю старый IP ${old_ip} из метаданных OBD..."
-    ob_sys clean-obd --ip "${old_ip}" --deploy-name "${DEPLOY_NAME}" || true
-  done < <(plan_rows clean_obd_ips)
 fi
 
 replace_args=()
