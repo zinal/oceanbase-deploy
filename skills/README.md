@@ -39,6 +39,7 @@ cp -R oceanbase-skills/skills/oceanbase-deploy .cursor/skills/
 | `18-ob-snapshot.sh` | TPC-C Phase 0.4: GV$OB_SQL_AUDIT / locks / plan cache / leaders |
 | `09-ocp-register.sh` | OCP CE takeover (`check4ocp`, `export-to-ocp`) |
 | `05-scale-out.sh` | scale_out |
+| `20-scale-obproxy.sh` | ODP scale_out + HAProxy на всех runner |
 | `join-empty-observer.sh` | leftover observer / ERROR 4179 ADD SERVER |
 | `06-recover-observer.sh` | node failure / replace |
 

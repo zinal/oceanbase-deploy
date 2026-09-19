@@ -12,6 +12,8 @@
 
 Нужны `vm_profiles.runner.enabled: true` (и уже выполненный `provision`). `./scripts/deploy.sh all` всегда вызывает тот же шаг; без runner-ВМ он завершается пропуском.
 
+После смены состава obproxy на живом кластере конфиг нужно переписать **на каждом** runner (новые имена backend и reload, чтобы подтянуть свежий DNS). Это делают `./scripts/deploy.sh scale-obproxy` и `recover-obproxy`; отдельно — снова `runner-haproxy`.
+
 ## Схема
 
 ```mermaid

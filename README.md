@@ -105,6 +105,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh restore         # restore в новый standby из того же S3
 ./scripts/deploy.sh snapshot collect --label w45k06  # серверный снимок TPC-C (Phase 0.4)
 ./scripts/deploy.sh runner-haproxy  # HAProxy на ob-runner-N (если runner включены)
+./scripts/deploy.sh scale-obproxy   # живой кластер: больше obproxy + HAProxy на всех runner
 ```
 
 `provision` создаёт ресурсы асинхронно (как [ydb-snippets/admin/vms](https://github.com/zinal/ydb-snippets/tree/main/admin/vms)):
@@ -324,6 +325,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 ├── scripts/
 │   ├── lib/vm_profiles.py       # профили, валидация, округление дисков
 │   ├── lib/runner_haproxy.py    # генерация haproxy.cfg (имена obproxy)
+│   ├── lib/obproxy_scale.py     # план scale-obproxy (create / scale_out / clean-obd)
 │   ├── lib/yc-async.sh          # async + retry + wait (ydb-snippets pattern)
 │   ├── deploy.sh                # главный сценарий
 │   ├── 00-check-prerequisites.sh
@@ -352,6 +354,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
 │   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── 20-scale-obproxy.sh      # живой кластер: +obproxy по yaml, HAProxy на всех runner
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
 │   ├── 07-recover-obproxy.sh    # замена погибшего obproxy
@@ -377,6 +380,29 @@ SSH и подготовка серверов используют **внутре
 конфигурациями только для новых узлов. Observer и OBAgent добавляются раздельно;
 при добавлении нескольких узлов план идёт сбалансированными раундами, но каждый
 вызов OBD содержит ровно один новый observer.
+
+### Obproxy на уже живом кластере
+
+`05-scale-out.sh` добавляет только observer. Чтобы увеличить число obproxy
+и/или поднять новые ВМ с другими `cores` / `memory_gb` / диском из
+`vm_profiles.obproxy`, не трогая старые машины:
+
+1. Поправьте `vm_profiles.obproxy` в `config/deploy.yaml` (count — больше текущего).
+2. Досоздайте недостающие `{deployment.name}-obproxy-N`, впишите их в OBD и
+   перепишите HAProxy на **всех** runner:
+
+```bash
+./scripts/deploy.sh scale-obproxy --yes
+# то же самое: ./scripts/20-scale-obproxy.sh --yes
+```
+
+Существующие ВМ скрипт **не удаляет и не ресайзит**. Официальная замена ODP —
+сначала add, потом delete: когда трафик уже идёт на новые прокси, старые ВМ
+удалите сами. Повторный `scale-obproxy` создаст освободившиеся имена `1..N`
+уже с новыми параметрами yaml, вычистит старые IP из `~/.obd/cluster/` и снова
+обновит HAProxy.
+
+`--dry-run` печатает план. Если runner-ВМ нет, шаг HAProxy пропускается.
 
 ## Восстановление узла
 

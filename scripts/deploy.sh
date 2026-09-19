@@ -110,6 +110,9 @@ case "${STEP}" in
   recover-obproxy)
     run_cmd bash "${ROOT}/scripts/07-recover-obproxy.sh" "${@:2}"
     ;;
+  scale-obproxy)
+    run_cmd bash "${ROOT}/scripts/20-scale-obproxy.sh" "${@:2}"
+    ;;
   runner-haproxy)
     run_cmd bash "${ROOT}/scripts/10-runner-haproxy.sh" "${@:2}"
     ;;
@@ -176,6 +179,7 @@ case "${STEP}" in
   ocp-clockdiff — wrapper /usr/sbin/clockdiff + выключить precheck в OCP (Retry takeover)
   recover-observer — observer: --temporary или --replace (docs/node-recovery.md)
   recover-obproxy  — obproxy: --temporary или --replace
+  scale-obproxy    — довести число/параметры obproxy до yaml (ВМ не удаляет; HAProxy на всех runner)
   runner-haproxy — HAProxy на runner-ВМ (backend obproxy по именам)
   obproxy-route  — маршрутизация ODP: show|apply|diagnose (docs/obproxy-session-routing.md)
   obproxy-log    — детальность логов ODP: show|apply (docs/obproxy-logging.md)

@@ -136,6 +136,8 @@ def test_runner_profile_defaults() -> None:
 def test_deploy_all_always_calls_runner_haproxy() -> None:
     """./scripts/deploy.sh all должен вызывать 10-runner-haproxy.sh без yaml-условия."""
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "scale-obproxy)" in deploy
+    assert "20-scale-obproxy.sh" in deploy
     all_case = deploy.split("\n  all)")[1].split("\n  destroy)")[0]
     assert "10-runner-haproxy.sh" in all_case
     assert "run_step 10-runner-haproxy.sh" in all_case

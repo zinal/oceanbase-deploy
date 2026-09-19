@@ -169,7 +169,9 @@ OBProxy stateless. Официальная замена: **сначала доб�
 3. `obd cluster scale_out` с YAML только из нового IP в `obproxy-ce.servers`.
 4. Вычищает старый IP из метаданных OBD, обновляет inventory.
 
-Клиенты, ходившие напрямую на старый IP, должны переключиться на новый. Если перед прокси стоит HAProxy — уберите мёртвый backend из `config/haproxy-obproxy-tcp-lb.cfg.example` / боевого конфига и сделайте `reload`.
+Клиенты, ходившие напрямую на старый IP, должны переключиться на новый. HAProxy на всех runner-ВМ скрипт переписывает сам (`./scripts/deploy.sh runner-haproxy`: backend — имена из inventory, затем reload). Если балансировщик стоит ещё где-то — обновите его вручную, см. [haproxy-obproxy-tcp-lb.md](haproxy-obproxy-tcp-lb.md).
+
+Чтобы **увеличить число** obproxy или поднять новые ВМ с другими параметрами yaml, не удаляя старые машины автоматически, используйте `./scripts/deploy.sh scale-obproxy` (см. README, раздел «Масштабирование»).
 
 Единственный obproxy: до окончания `scale_out` SQL через 2883 недоступен. Observer:2881 при этом жив.
 
