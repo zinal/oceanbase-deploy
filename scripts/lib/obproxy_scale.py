@@ -99,6 +99,7 @@ def plan_obproxy_scale(
     existing: dict[str, str],
     inventory: dict[str, str],
     obd_ips: list[str],
+    force_scale_ips: list[str] | None = None,
 ) -> dict[str, Any]:
     if desired_count < 1:
         raise ValueError("vm_profiles.obproxy.count должен быть >= 1")
@@ -133,11 +134,15 @@ def plan_obproxy_scale(
         final.append(row)
 
     known_final_ips = {row["ip"] for row in final if row["ip"]}
-    obd_set = set(obd_ips)
+    force = {ip for ip in (force_scale_ips or []) if ip}
+    # Пересозданная ВМ с тем же IP: OBD думает, что obproxy уже стоит,
+    # а процесса/бинаря нет — scale_out других узлов падает с
+    # «obproxy-ce is not running». Снимаем запись и ставим заново.
+    healthy_obd = {ip for ip in obd_ips if ip and ip not in force}
     scale_out = [
         {"index": row["index"], "name": row["name"], "ip": row["ip"]}
         for row in final
-        if row["ip"] and row["ip"] not in obd_set
+        if row["ip"] and row["ip"] not in healthy_obd
     ]
     stale_inventory_ips: list[str] = []
     for _idx, ip, _name in ob_sys().inventory_ips(inventory, "OBPROXY"):
@@ -146,6 +151,9 @@ def plan_obproxy_scale(
     clean_obd_ips = [ip for ip in obd_ips if ip and ip not in known_final_ips]
     for ip in stale_inventory_ips:
         if ip not in clean_obd_ips:
+            clean_obd_ips.append(ip)
+    for ip in obd_ips:
+        if ip in force and ip not in clean_obd_ips:
             clean_obd_ips.append(ip)
 
     if desired_count < inv_count:
@@ -158,6 +166,11 @@ def plan_obproxy_scale(
             "В YC есть лишние obproxy-ВМ сверх нового count; скрипт их не удаляет: "
             + ", ".join(sorted(extra_live))
         )
+    if force:
+        warnings.append(
+            "OBD знает эти IP, но obproxy не работает — сниму из метаданных "
+            "и сделаю scale_out заново: " + ", ".join(sorted(force))
+        )
 
     return {
         "deploy_name": deploy_name,
@@ -168,6 +181,7 @@ def plan_obproxy_scale(
         "final": final,
         "scale_out": scale_out,
         "clean_obd_ips": clean_obd_ips,
+        "force_scale_ips": sorted(force),
         "stale_inventory_ips": stale_inventory_ips,
         "missing_ip": missing_ip,
         "warnings": warnings,
@@ -232,12 +246,19 @@ def cmd_plan(args: argparse.Namespace) -> None:
             ip = raw.strip()
             if ip and ip not in obd_ips:
                 obd_ips.append(ip)
+    force_ips = [ip.strip() for ip in (args.force_scale_ip or []) if ip.strip()]
+    if args.force_scale_file and Path(args.force_scale_file).exists():
+        for raw in Path(args.force_scale_file).read_text(encoding="utf-8").splitlines():
+            ip = raw.strip()
+            if ip and ip not in force_ips:
+                force_ips.append(ip)
     plan = plan_obproxy_scale(
         deploy_name=args.deploy_name,
         desired_count=args.desired_count,
         existing=_load_existing_arg(args),
         inventory=inv,
         obd_ips=obd_ips,
+        force_scale_ips=force_ips,
     )
     if args.output:
         out = Path(args.output)
@@ -267,6 +288,13 @@ def main() -> None:
     p_plan.add_argument("--existing-file", default="")
     p_plan.add_argument("--obd-ip", action="append", default=[])
     p_plan.add_argument("--obd-ips-file", default="")
+    p_plan.add_argument(
+        "--force-scale-ip",
+        action="append",
+        default=[],
+        help="IP уже в OBD, но процесс/бинарь отсутствует — clean + scale_out",
+    )
+    p_plan.add_argument("--force-scale-file", default="")
     p_plan.add_argument("--output", default="")
     p_plan.add_argument("--text", action="store_true")
     p_plan.set_defaults(func=cmd_plan)
