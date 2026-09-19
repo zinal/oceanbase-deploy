@@ -94,9 +94,11 @@ PROXY_MEM="$(yaml_get vm_profiles.obproxy.memory_gb)"
 EXISTING_FILE="${GENERATED_DIR}/scale-obproxy-existing.txt"
 OBD_IPS_FILE="${GENERATED_DIR}/scale-obproxy-obd-ips.txt"
 FORCE_SCALE_FILE="${GENERATED_DIR}/scale-obproxy-force-scale.txt"
+DISPLAY_FILE="${GENERATED_DIR}/scale-obproxy-display.txt"
 PLAN_JSON="${GENERATED_DIR}/scale-obproxy-plan.json"
 PLAN_DIR="${GENERATED_DIR}/scale-obproxy"
 : > "${FORCE_SCALE_FILE}"
+: > "${DISPLAY_FILE}"
 
 collect_existing() {
   local -a check_names=()
@@ -123,12 +125,20 @@ collect_existing() {
 }
 
 collect_obd_ips() {
+  local -a display_arg=()
   : > "${OBD_IPS_FILE}"
+  : > "${DISPLAY_FILE}"
   if [[ "${SKIP_OBD}" == "true" ]]; then
     return 0
   fi
+  if command -v obd >/dev/null 2>&1; then
+    obd cluster display "${DEPLOY_NAME}" >"${DISPLAY_FILE}" 2>/dev/null || true
+  fi
+  if [[ -s "${DISPLAY_FILE}" ]]; then
+    display_arg=(--display-file "${DISPLAY_FILE}")
+  fi
   ob_sys list-component-ips --component obproxy-ce --deploy-name "${DEPLOY_NAME}" \
-    > "${OBD_IPS_FILE}" || true
+    "${display_arg[@]}" > "${OBD_IPS_FILE}" || true
 }
 
 write_plan() {
@@ -272,15 +282,33 @@ clean_stale_obproxy_obd() {
 
   while IFS= read -r old_ip; do
     [[ -n "${old_ip}" ]] || continue
-    if final_ips | grep -qx "${old_ip}"; then
-      continue
-    fi
-    if ssh_probe "${old_ip}"; then
-      continue
-    fi
-    info "OBD ещё знает ${old_ip}, SSH не отвечает — убираю до scale_out"
+    info "Вычищаю пустой/мёртвый OBD peer ${old_ip}..."
     ob_sys clean-obd --ip "${old_ip}" --deploy-name "${DEPLOY_NAME}" || true
-  done < <(ob_sys list-component-ips --component obproxy-ce --deploy-name "${DEPLOY_NAME}" || true)
+  done < "${FORCE_SCALE_FILE}"
+}
+
+# Пока в YAML/display остаются пустые peer — scale_out других узлов падает.
+# Повторяем list+probe+clean: 10.130.0.5 мог быть только в inner_config / display.
+purge_empty_obd_peers() {
+  local allow_start="${1:-false}"
+  local round
+  if [[ "${SKIP_OBD}" == "true" ]]; then
+    return 0
+  fi
+  for round in 1 2 3 4 5; do
+    collect_obd_ips
+    probe_obd_obproxy_peers "${allow_start}"
+    if [[ ! -s "${FORCE_SCALE_FILE}" ]]; then
+      return 0
+    fi
+    info "Раунд ${round}: в OBD ещё пустые peer ($(tr '\n' ' ' < "${FORCE_SCALE_FILE}")) — чищу и перечитываю"
+    clean_stale_obproxy_obd
+  done
+  collect_obd_ips
+  probe_obd_obproxy_peers false
+  if [[ -s "${FORCE_SCALE_FILE}" ]]; then
+    warn "После 5 раундов OBD всё ещё знает пустые peer: $(tr '\n' ' ' < "${FORCE_SCALE_FILE}")"
+  fi
 }
 
 refresh_runner_haproxy() {
@@ -374,11 +402,14 @@ else
   bash "${SCRIPTS_DIR}/02-prepare-servers.sh" --role obproxy "${new_hosts[@]}"
 fi
 
-# После create IP известны — пересчитать план и состояние уже прописанных peer.
+# После create IP известны — пересчитать план и снять все пустые OBD peer
+# (не только те, что нашлись в первом config.yaml — 10.130.0.5 мог быть
+# только в inner_config / obd cluster display).
 load_inventory
 collect_existing
-collect_obd_ips
-probe_obd_obproxy_peers true
+if [[ "${SKIP_OBD}" != "true" ]]; then
+  purge_empty_obd_peers true
+fi
 write_plan >/dev/null
 
 missing_ip="$(plan_rows missing_ip | tr '\n' ' ')"
@@ -388,12 +419,6 @@ fi
 
 mkdir -p "${PLAN_DIR}"
 if [[ "${SKIP_OBD}" != "true" ]]; then
-  # OBD scale_out открывает SSH ко всем уже зарегистрированным obproxy.
-  # Если старые ВМ уже удалены, их IP нужно вычистить ДО scale_out.
-  clean_stale_obproxy_obd
-  collect_obd_ips
-  write_plan >/dev/null
-
   while IFS=$'\t' read -r idx name ip; do
     [[ -n "${ip}" ]] || continue
     scale_out="${PLAN_DIR}/obproxy-${idx}.yaml"

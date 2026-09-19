@@ -331,6 +331,38 @@ def test_cli_plan_and_names(tmp_path: Path) -> None:
     assert proc.returncode == 0
 
 
+def test_lists_obproxy_ips_from_inner_named_blocks(tmp_path: Path) -> None:
+    """10.130.0.5 мог быть только в inner_config named-блоке — его тоже нужно видеть."""
+    obd_dir = tmp_path / "cluster"
+    obd_dir.mkdir(parents=True)
+    (obd_dir / "config.yaml").write_text(
+        "obproxy-ce:\n  servers:\n    - 10.130.0.7\n",
+        encoding="utf-8",
+    )
+    (obd_dir / "inner_config.yaml").write_text(
+        "obproxy-ce:\n  servers:\n    - name: p1\n      ip: 10.130.0.7\n  p3:\n    ip: 10.130.0.5\n",
+        encoding="utf-8",
+    )
+    (obd_dir / "extra.yaml").write_text(
+        "obproxy-ce:\n  10.130.0.9:\n    listen_port: 2883\n",
+        encoding="utf-8",
+    )
+    ips = OB_SYS.list_obd_component_ips(obd_dir, "obproxy-ce")
+    assert "10.130.0.7" in ips
+    assert "10.130.0.5" in ips
+    assert "10.130.0.9" in ips
+    display = "obproxy-ce\n| 10.130.0.5 | not running |\n| 10.130.0.11 | running |\noceanbase-ce\n"
+    assert OB_SYS.parse_obd_display_component_ips(display, "obproxy-ce") == [
+        "10.130.0.5",
+        "10.130.0.11",
+    ]
+    changed = OB_SYS.clean_obd_metadata(obd_dir, "10.130.0.5", backup=False)
+    assert changed
+    ips_after = OB_SYS.list_obd_component_ips(obd_dir, "obproxy-ce")
+    assert "10.130.0.5" not in ips_after
+    assert "10.130.0.7" in ips_after
+
+
 def test_deploy_sh_has_scale_obproxy() -> None:
     deploy = (ROOT / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "20-scale-obproxy.sh" in deploy
@@ -344,6 +376,8 @@ def test_deploy_sh_has_scale_obproxy() -> None:
     assert "OBD-1013" in script
     assert "obproxy-ce is not running" in script
     assert "probe_obd_obproxy_peers" in script
+    assert "purge_empty_obd_peers" in script
+    assert "--display-file" in script
     clean_fn = script.find("clean_stale_obproxy_obd")
     scale_cmd = script.find('obd cluster scale_out "${DEPLOY_NAME}"')
     assert 0 <= clean_fn < scale_cmd
@@ -370,9 +404,12 @@ def main() -> None:
         fn()
         print(f"OK {fn.__name__}")
     with tempfile.TemporaryDirectory() as tmp:
-        test_cli_plan_and_names(Path(tmp))
+        tmp_path = Path(tmp)
+        test_cli_plan_and_names(tmp_path)
         print("OK test_cli_plan_and_names")
-    print(f"OK: {len(tests) + 1} tests")
+        test_lists_obproxy_ips_from_inner_named_blocks(tmp_path / "obd")
+        print("OK test_lists_obproxy_ips_from_inner_named_blocks")
+    print(f"OK: {len(tests) + 2} tests")
 
 
 if __name__ == "__main__":
