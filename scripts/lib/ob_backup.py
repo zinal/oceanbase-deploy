@@ -677,9 +677,16 @@ def wait_cfg_seconds(cfg: dict[str, Any], key: str, default: int) -> int:
         raise BackupConfigError(f"backup.{key}={raw!r} — целое число секунд") from exc
 
 
-def plus_archivelog_from_cfg(cfg: dict[str, Any], override: bool | None) -> bool:
+def plus_archivelog_from_cfg(
+    cfg: dict[str, Any], override: bool | None, *, mode: str = ""
+) -> bool:
     if override is not None:
         return override
+    # PLUS ARCHIVELOG есть только у полного набора; профиль backup.plus_archivelog
+    # — умолчание для full, incremental его не берёт.
+    key = (mode or "").strip().lower()
+    if key in {"incremental", "incr", "inc"}:
+        return False
     backup = _section(cfg, "backup")
     raw = backup.get("plus_archivelog")
     if isinstance(raw, bool):
@@ -985,7 +992,7 @@ def run_backup(
 ) -> int:
     name = resolve_tenant(cfg, tenant)
     s3 = resolve_s3(cfg, name, environ)
-    plus = plus_archivelog_from_cfg(cfg, plus_archivelog)
+    plus = plus_archivelog_from_cfg(cfg, plus_archivelog, mode=mode)
     uri = build_s3_uri(s3, s3["data_prefix"])
     sql = backup_sql(name, mode, plus_archivelog=plus)
     ob_sys, endpoint, password = connect(cfg, inv)

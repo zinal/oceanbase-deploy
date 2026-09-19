@@ -27,7 +27,7 @@ case "${ACTION}" in
   show         — STATUS архива и CDB_OB_BACKUP_JOBS
   validate     — проверить backup.s3 в профиле, без SQL
 
-Опции (после команды): --tenant NAME, --plus-archivelog (только full), --no-wait
+Опции (после команды): --tenant NAME, --plus-archivelog (только full; incremental его не берёт), --no-wait
 Профиль S3: backup.s3.{host,bucket,access_id,access_key} в config/deploy.yaml
 или OB_BACKUP_S3_HOST / OB_BACKUP_S3_BUCKET / OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
 Архив должен быть DOING: ./scripts/deploy.sh archive-log on
