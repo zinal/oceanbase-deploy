@@ -166,8 +166,8 @@ OBProxy stateless. Официальная замена: **сначала доб�
 
 1. Удаляет погибшую ВМ (дисков data/log у роли нет).
 2. Создаёт замену с тем же именем, готовит ОС (`--role obproxy`).
-3. `obd cluster scale_out` с YAML только из нового IP в `obproxy-ce.servers`.
-4. Вычищает старый IP из метаданных OBD, обновляет inventory.
+3. Вычищает старый IP из метаданных OBD **до** `scale_out` (иначе OBD-1013: SSH timeout на уже удалённый адрес).
+4. `obd cluster scale_out` с YAML только из нового IP в `obproxy-ce.servers`, обновляет inventory.
 
 Клиенты, ходившие напрямую на старый IP, должны переключиться на новый. HAProxy на всех runner-ВМ скрипт переписывает сам (`./scripts/deploy.sh runner-haproxy`: backend — имена из inventory, затем reload). Если балансировщик стоит ещё где-то — обновите его вручную, см. [haproxy-obproxy-tcp-lb.md](haproxy-obproxy-tcp-lb.md).
 
