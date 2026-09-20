@@ -1,0 +1,26 @@
+run_id=w60k01 result_class=engineering workers_complete=true assignment_valid=true clock_skew_ok=true integrity_ok=false tpcc_settings_conformant=false
+integrity_error=required check report missing: after-import.json
+integrity_error=required check report missing: after-test.json
+tpcc_settings_deviation=workload.remote_warehouse_percent.new_order=0; TPC-C requires 1
+tpcc_settings_deviation=workload.remote_warehouse_percent.payment=0; TPC-C requires 15
+tpcc_settings_deviation=phases.measurement=1200000ms; TPC-C requires >= 120m (7200000ms)
+=== TPC-C Results ===
+  Scale: 60000 warehouses
+  Measured Duration: 1200.0s (configured: 1200s)
+  New-Order Throughput: 770702.85 tpmC
+  Efficiency: 99.9%
+  Total Failed: 17
+  NewOrder: OK=15260473 UserAborted=153584 Failed=3 min=16.3ms max=2811.2ms avg=36.8ms p50=32.8ms p90=48.1ms p99=99.3ms
+    components: admission_wait_p99=0.0ms transaction_p99=99.3ms pure_p99=99.3ms session_pool_wait_p99=0.0ms retry_backoff_p99=0.0ms
+  Delivery: OK=1368877 UserAborted=0 Failed=1 min=17.3ms max=1783.1ms avg=32.7ms p50=29.4ms p90=40.4ms p99=86.0ms
+    components: admission_wait_p99=0.0ms transaction_p99=86.0ms pure_p99=86.0ms session_pool_wait_p99=0.0ms retry_backoff_p99=0.0ms
+  OrderStatus: OK=1369622 UserAborted=0 Failed=0 min=6.6ms max=1763.7ms avg=17.4ms p50=15.4ms p90=22.0ms p99=58.9ms
+    components: admission_wait_p99=0.0ms transaction_p99=58.9ms pure_p99=58.9ms session_pool_wait_p99=0.0ms retry_backoff_p99=0.0ms
+  Payment: OK=14733145 UserAborted=0 Failed=13 min=8.3ms max=1907.3ms avg=22.9ms p50=19.7ms p90=29.7ms p99=79.9ms
+    components: admission_wait_p99=0.0ms transaction_p99=79.9ms pure_p99=79.9ms session_pool_wait_p99=0.0ms retry_backoff_p99=0.0ms
+  StockLevel: OK=1371964 UserAborted=0 Failed=0 min=6.6ms max=1780.9ms avg=18.5ms p50=16ms p90=23.6ms p99=63.5ms
+    components: admission_wait_p99=0.0ms transaction_p99=63.5ms pure_p99=63.5ms session_pool_wait_p99=0.0ms retry_backoff_p99=0.0ms
+  Clients: 60
+  threads_per_worker: 4
+  max_inflight_per_worker: 150
+  Worker threads: ob-runner-1-3=4, ob-runner-1-4=4, ob-runner-1-5=4, ob-runner-1-6=4, ob-runner-10-3=4, ob-runner-10-4=4, ob-runner-10-5=4, ob-runner-10-6=4, ob-runner-11-1=4, ob-runner-11-2=4, ob-runner-11-3=4, ob-runner-11-4=4, ob-runner-12-1=4, ob-runner-12-2=4, ob-runner-12-3=4, ob-runner-12-4=4, ob-runner-13-1=4, ob-runner-13-2=4, ob-runner-13-3=4, ob-runner-13-4=4, ob-runner-14-1=4, ob-runner-14-2=4, ob-runner-14-3=4, ob-runner-14-4=4, ob-runner-15-1=4, ob-runner-15-2=4, ob-runner-15-3=4, ob-runner-15-4=4, ob-runner-2-3=4, ob-runner-2-4=4, ob-runner-2-5=4, ob-runner-2-6=4, ob-runner-3-3=4, ob-runner-3-4=4, ob-runner-3-5=4, ob-runner-3-6=4, ob-runner-4-3=4, ob-runner-4-4=4, ob-runner-4-5=4, ob-runner-4-6=4, ob-runner-5-3=4, ob-runner-5-4=4, ob-runner-5-5=4, ob-runner-5-6=4, ob-runner-6-3=4, ob-runner-6-4=4, ob-runner-6-5=4, ob-runner-6-6=4, ob-runner-7-3=4, ob-runner-7-4=4, ob-runner-7-5=4, ob-runner-7-6=4, ob-runner-8-3=4, ob-runner-8-4=4, ob-runner-8-5=4, ob-runner-8-6=4, ob-runner-9-3=4, ob-runner-9-4=4, ob-runner-9-5=4, ob-runner-9-6=4

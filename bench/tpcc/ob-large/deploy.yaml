@@ -1,0 +1,275 @@
+yandex_cloud:
+  folder_id: ""
+  zone: ru-central1-d
+  network_name: oceanbase-testing-1
+  subnet_name: oceanbase-testing-1-d
+  # Публичный IP (NAT): false — только приватный адрес в подсети (как ydb-snippets)
+  nat_enabled: false
+  # Ускорение сети (как в ydb-snippets/admin/vms): software-accelerated | standard
+  network_acceleration: software-accelerated
+  ssh_public_key_file: ~/.ssh/id_ecdsa.pub
+  ssh_user: obadmin
+  # ssh_user и ssh_public_key_file — пользователь/ключ в cloud-init на ВМ.
+  # ssh.private_key_file (ниже) — тот же ключ для подключения с jump host.
+  # Образ ОС из каталога standard-images (см. ydb-snippets/admin/vms/options.sh-static)
+  image_folder_id: standard-images
+  image_family: ubuntu-2204-lts
+  # Альтернатива image_family — указать image_name:
+  # image_name: redsoft-red-os-standart-server-7-3-v20240402
+
+deployment:
+  name: ob-yc-prod
+  control_mode: local
+
+# Общие параметры вычислительных ресурсов ВМ (переопределяются в vm_profiles.<role>)
+vm_defaults:
+  platform: standard-v3
+  core_fraction: 100
+
+# Профили ВМ по типу компонента OceanBase — раздельные ресурсы
+vm_profiles:
+  # OceanBase observer + obagent (основная нагрузка)
+  observer:
+    count: 21
+    platform: standard-v3
+    cores: 32                      # мин. 4 (OceanBase production)
+    memory_gb: 128                 # мин. 16 (OceanBase production)
+    boot_disk:
+      # home_path, бинарники observer — потеря недопустима
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # SSTable реплицируется между observer (Paxos) — можно non-replicated
+      type: network-ssd-nonreplicated
+      size_gb: 930                 # ~900 GB, кратно 93 (требование YC)
+      mount_point: /ob-data
+    log_disk:
+      enabled: true
+      # clog/redo реплицируется Paxos (majority persist) — можно non-replicated
+      # размер рекомендуется 3–4× memory_limit
+      type: network-ssd-nonreplicated
+      size_gb: 558                 # ~3× memory_limit (28G), кратно 93
+      mount_point: /ob-log
+
+  # OBProxy — stateless прокси, масштабируется отдельно
+  obproxy:
+    count: 9
+    platform: standard-v3
+    cores: 8
+    memory_gb: 24
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  # ob-configserver — по умолчанию на observer-1; dedicated=true для отдельной ВМ
+  configserver:
+    dedicated: true
+    count: 1
+    platform: standard-v3
+    cores: 8
+    memory_gb: 32
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+  # OceanBase Cloud Platform (OCP) — отдельная ВМ для управления кластером
+  ocp:
+    enabled: false
+    count: 1
+    platform: standard-v3
+    cores: 8                       # мин. 4 vCPU для OCP
+    memory_gb: 32                  # мин. 16 GB RAM
+    boot_disk:
+      type: network-ssd-io-m3
+      size_gb: 150
+    data_disk:
+      enabled: true
+      # Пакеты OCP, логи, временные файлы
+      type: network-ssd-io-m3
+      size_gb: 372
+      mount_point: /ocp-data
+    log_disk:
+      enabled: false
+
+  # Prometheus + Grafana (опционально)
+  monitoring:
+    enabled: true
+    count: 1
+    platform: standard-v3
+    cores: 4
+    memory_gb: 16
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: true
+      # метрики — потеря нежелательна
+      type: network-ssd-io-m3
+      size_gb: 186
+      mount_point: /data
+    log_disk:
+      enabled: false
+
+  # ВМ для прикладной нагрузки (TPC-C и т.п.). Имена: ob-runner-1 .. ob-runner-N.
+  # Не входят в OBD-кластер. HAProxy: ./scripts/deploy.sh runner-haproxy
+  runner:
+    enabled: true
+    count: 15
+    name_prefix: ob-runner
+    platform: standard-v3
+    cores: 16
+    memory_gb: 48
+    boot_disk:
+      type: network-ssd
+      size_gb: 50
+    data_disk:
+      enabled: false
+    log_disk:
+      enabled: false
+
+# OceanBase Cloud Platform — веб-консоль управления кластером (OBD + ocp-server-ce)
+# Требует vm_profiles.ocp.enabled: true и отдельную ВМ.
+# Документация: docs/ocp-deployment.md
+ocp:
+  enabled: true
+  version: ""                      # опционально: версия ocp-server-ce
+  port: 8080
+  admin_username: admin
+  admin_password: "ChangeMe1!"     # смените перед production!
+  memory_size: 16G
+  home_path: /home/obadmin/ocp
+  soft_dir: /ocp-data/software
+  log_dir: /ocp-data/logs
+  # Пароли OceanBase для создания meta/monitor tenants (при integrated deploy)
+  root_password: "ChangeMe1!"
+  proxyro_password: "ChangeMe1!"
+  meta_tenant:
+    tenant_name: ocp_meta
+    max_cpu: 2.0
+    memory_size: 4G
+    username: root
+    password: ocp_meta_root
+    database: meta_database
+  monitor_tenant:
+    tenant_name: ocp_monitor
+    max_cpu: 2.0
+    memory_size: 4G
+    username: root
+    password: ocp_monitor_root
+    database: monitor_database
+
+# Настройки мониторинга (Prometheus/Grafana через OBD на monitoring-ВМ)
+monitoring:
+  node_exporter:
+    enabled: true
+    port: 9100
+    version: "1.8.2"
+  prometheus:
+    port: 9090
+  obagent:
+    http_port: 8088
+    basic_auth_user: admin
+    basic_auth_password: oceanbase
+  grafana_password: oceanbase
+
+oceanbase:
+  cluster_name: obcluster
+  version: ""
+  deploy_user: obadmin
+  home_path: /home/obadmin/observer
+  data_dir: /ob-data/1
+  redo_dir: /ob-log/1
+
+  auto_tune: true
+  memory_limit: 102G
+  system_memory: 19G
+  datafile_size: 900G
+  log_disk_size: 500G
+  cpu_count: 30
+
+  components:
+    oceanbase_ce: true
+    obproxy_ce: true
+    obagent: true
+    ob_configserver: true
+    # При ocp.enabled=true добавляется ocp-server-ce (см. секцию ocp)
+    ocp_server: false
+    # При vm_profiles.monitoring.enabled=true prometheus/grafana включаются автоматически
+    prometheus: true
+    grafana: true
+
+  ports:
+    mysql: 2881
+    rpc: 2882
+    obshell: 2886
+    obproxy: 2883
+
+ssh:
+  port: 22
+  private_key_file: ~/.ssh/id_ecdsa  # пара к yandex_cloud.ssh_public_key_file
+  password: ""
+
+tenant:
+  tenant_name: tpcc
+  username: tpcc
+  database: tpcc
+  root_password: "ChangeMe1!"       # пароль root@<tenant_name>
+  user_password: "ChangeMe1!"       # пароль application user
+  # Режим нагрузки → obd cluster tenant create -o / --optimize (OceanBase ≥ 4.3):
+  #   express_oltp — простой OLTP (высокая конкуренция, короткие запросы)
+  #   complex_oltp — сложный OLTP (join, PL, длинные/большие транзакции)
+  #   olap         — аналитика / real-time DW
+  #   htap         — смешанные OLTP и OLAP (по умолчанию)
+  #   kv           — key-value и wide-column нагрузки
+  # Алиас: oltp = express_oltp
+  mode: complex_oltp
+
+# Физический бэкап user-тенанта на S3-совместимое хранилище (Yandex Object Storage).
+# Документация: docs/backup-infrastructure.md
+# Команды (без обязательных полей s3 сразу ошибка, SQL к кластеру не идёт):
+#   ./scripts/deploy.sh archive-log on|off|show|validate
+#   ./scripts/deploy.sh backup full|incremental|show|validate
+#   ./scripts/deploy.sh restore run|show|validate
+# Restore создаёт НОВЫЙ standby (не перезаписывает исходный тенант).
+# pool_list обязателен: существующий пустой resource pool.
+# Ключи можно не писать в yaml, а задать OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
+backup:
+  tenant: "tpcc"                   # пустое = tenant.tenant_name
+  plus_archivelog: true            # BACKUP … PLUS ARCHIVELOG для full
+  wait_doing_sec: 180              # ждать STATUS=DOING перед backup / после archive on
+  wait_stop_sec: 180               # ждать STOP после archive off
+  wait_backup_sec: 7200            # ждать COMPLETED у backup job
+  s3:
+    host: "storage.yandexcloud.net"  # обязательно: storage.yandexcloud.net
+    bucket: "ob-demo-backup-1"       # обязательно
+    access_id: ""                          # обязательно (или OB_BACKUP_S3_ACCESS_ID)
+    access_key: ""          # обязательно (или OB_BACKUP_S3_ACCESS_KEY)
+    s3_region: "ru-central1"                  # обязательно только для AWS (*.amazonaws.com)
+    addressing_model: virtual_hosted_style   # path_style | virtual_hosted_style
+    checksum_type: md5             # md5 (S3-compatible) | crc32 (AWS)
+    delete_mode: delete            # delete | tagging
+    data_prefix: obbackup2/{tenant}/data
+    archive_prefix: obbackup2/{tenant}/archive
+  archive:
+    binding: Optional              # Optional | Mandatory
+    piece_switch_interval: 1d      # 1d … 7d
+  restore:
+    dest_tenant: ""                # пустое = {tenant}_restore; не должен существовать
+    pool_list: ""                  # обязательно: пустой resource pool
+    locality: ""
+    primary_zone: ""
+    concurrency: ""
+    method: full                   # full | quick (quick — только standby, без activate)
+    until_time: ""                 # PITR: YYYY-MM-DD HH:MM:SS
+    until_scn: ""                  # PITR по SCN (не вместе с until_time)
+    activate: false                # ACTIVATE STANDBY после RESTORE_SUCCESS
+    wait_restore_sec: 7200         # ждать RESTORE_SUCCESS
