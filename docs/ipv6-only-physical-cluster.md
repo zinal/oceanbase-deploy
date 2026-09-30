@@ -234,4 +234,4 @@ OCP с метаданными в том же кластере требует, ч
 - Не использовать link-local и временные адреса как `local_ip`.
 - Не планировать Binlog Service на этих адресах.
 
-`./scripts/deploy.sh` по-прежнему только для IPv4 в Yandex Cloud. Расширение физического IPv6-кластера — `scripts/21-expand-observer.sh` и `scripts/22-expand-obproxy.sh`.
+`./scripts/deploy.sh` по-прежнему только для IPv4 в Yandex Cloud. Первые три узла физического IPv6-кластера — `scripts/23-bootstrap-cluster.sh`, расширение — `scripts/21-expand-observer.sh` и `scripts/22-expand-obproxy.sh`.
