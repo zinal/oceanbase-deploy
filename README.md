@@ -355,6 +355,7 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
 │   ├── 05-scale-out.sh          # добавление observer-узлов (YC + OBD)
+│   ├── 23-bootstrap-cluster.sh  # первые 3 observer: BOOTSTRAP, без OCP и OBD
 │   ├── 21-expand-observer.sh    # ADD SERVER на железе, без OCP и OBD
 │   ├── 22-expand-obproxy.sh     # ещё один obproxy и строка L4, без OCP и OBD
 │   ├── lib/ob_expand.py         # адреса IPv6, команда observer, SQL ADD SERVER
@@ -647,7 +648,7 @@ OCP ходит к observer/obproxy по внутренней сети YC; с н�
 
 Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
 
-Установка на физические хосты с сетью только IPv6 и расширение кластера без OCP и OBD: [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md) (`scripts/21-expand-observer.sh`, `scripts/22-expand-obproxy.sh`). Текущий `./scripts/deploy.sh` этот контур не ставит.
+Установка на физические хосты с сетью только IPv6 без OCP и OBD: [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md) (`scripts/23-bootstrap-cluster.sh`, затем `21-expand-observer.sh` и `22-expand-obproxy.sh`). Текущий `./scripts/deploy.sh` этот контур не ставит.
 
 ## Лицензия
 

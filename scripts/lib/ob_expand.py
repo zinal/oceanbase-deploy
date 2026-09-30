@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Расширение кластера OceanBase без OCP и OBD.
+"""Установка и расширение кластера OceanBase без OCP и OBD.
 
-Новый observer запускается своим бинарём с -6 и списком Root Service в
-скобках. В кластер он входит через ALTER SYSTEM ADD SERVER. OBProxy —
-отдельный процесс без членства в DBA_OB_SERVERS: его достаточно запустить
-и добавить в L4.
+Первые три узла запускаются своим бинарём и собираются через
+ALTER SYSTEM BOOTSTRAP. Следующий observer входит через ADD SERVER.
+Список Root Service для IPv6 пишется в скобках. OBProxy — отдельный
+процесс без членства в DBA_OB_SERVERS.
 """
 
 from __future__ import annotations
@@ -131,15 +131,26 @@ class ObserverStart:
     datafile_size: str = "192G"
     log_disk_size: str = "192G"
     wipe: bool = False
+    bootstrap: bool = False
 
     def argv(self) -> list[str]:
         if self.cluster_id < 1:
             raise ExpandError(f"cluster_id должен быть >= 1, получено {self.cluster_id}")
         ip = str(parse_ip(self.ip))
         zone = check_zone(self.zone)
-        roots = [item for item in self.roots if not same_ip(item, ip)]
-        if not roots:
-            raise ExpandError("в --rs нужен хотя бы один уже работающий observer, не новый узел")
+        if self.bootstrap:
+            roots = [str(parse_ip(item)) for item in self.roots]
+            unique = {parse_ip(item) for item in roots}
+            if len(unique) != 3:
+                raise ExpandError("bootstrap запускает ровно 3 разных узла")
+            if not any(same_ip(item, ip) for item in roots):
+                raise ExpandError("список -r при bootstrap должен включать этот узел")
+            if len({type(parse_ip(item)) for item in roots}) != 1:
+                raise ExpandError("смешивать IPv4 и IPv6 в одном bootstrap нельзя")
+        else:
+            roots = [item for item in self.roots if not same_ip(item, ip)]
+            if not roots:
+                raise ExpandError("в --rs нужен хотя бы один уже работающий observer, не новый узел")
         ipv6 = is_ipv6(ip)
         opt = ",".join(
             [
@@ -190,6 +201,36 @@ class ObserverStart:
         )
 
 
+def bootstrap_sql(
+    nodes: list[tuple[str, str]],
+    rpc_port: int = 2882,
+    timeout_us: int = 3_600_000_000,
+) -> str:
+    """nodes — пары (zone, ip). Ровно три разные zone и три разных адреса одной семьи."""
+    if timeout_us < 1:
+        raise ExpandError("timeout_us должен быть положительным")
+    check_port(rpc_port)
+    if len(nodes) != 3:
+        raise ExpandError("начальная установка — ровно 3 узла, по одному на zone")
+    zones: list[str] = []
+    addrs: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    parts: list[str] = []
+    for zone, ip in nodes:
+        zone_name = check_zone(zone)
+        addr = parse_ip(ip)
+        zones.append(zone_name)
+        addrs.append(addr)
+        parts.append(f"ZONE '{zone_name}' SERVER '{server_endpoint(str(addr), rpc_port)}'")
+    if len(set(zones)) != 3:
+        raise ExpandError("три узла должны лежать в трёх разных zone")
+    if len(set(addrs)) != 3:
+        raise ExpandError("адреса трёх узлов должны различаться")
+    if len({type(addr) for addr in addrs}) != 1:
+        raise ExpandError("смешивать IPv4 и IPv6 в одном bootstrap нельзя")
+    body = ", ".join(parts)
+    return f"SET SESSION ob_query_timeout = {timeout_us}; ALTER SYSTEM BOOTSTRAP {body}"
+
+
 def shell_quote(value: str) -> str:
     return shlex.quote(value)
 
@@ -206,6 +247,10 @@ def remote_observer_script(spec: ObserverStart) -> str:
     if data == redo:
         raise ExpandError("data_dir и redo_dir должны быть разными каталогами")
     wipe = "1" if spec.wipe else "0"
+    if spec.bootstrap:
+        clog_hint = "Повторный bootstrap по непустому clog невозможен. Запустите с --wipe"
+    else:
+        clog_hint = "Повторный ADD SERVER даст ERROR 4179. Запустите с --wipe"
     rendered = " ".join(shell_quote(part) for part in cmd)
     return f"""#!/bin/bash
 set -euo pipefail
@@ -237,7 +282,7 @@ fi
 clog="$DATA_DIR/clog"
 if [[ -d "$clog" ]] && [[ -n "$(find "$clog" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   if [[ "$WIPE" != "1" ]]; then
-    echo "clog в $clog не пуст. Повторный ADD SERVER даст ERROR 4179. Запустите с --wipe" >&2
+    echo "clog в $clog не пуст. {clog_hint}" >&2
     exit 2
   fi
 fi
@@ -360,6 +405,7 @@ def _observer_from_args(ns: argparse.Namespace) -> ObserverStart:
         datafile_size=ns.datafile_size,
         log_disk_size=ns.log_disk_size,
         wipe=ns.wipe,
+        bootstrap=bool(getattr(ns, "bootstrap", False)),
     )
 
 
@@ -387,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
 
     observer = sub.add_parser("observer-remote")
     _add_observer_flags(observer, require_zone=True)
+    observer.add_argument("--bootstrap", action="store_true")
 
     sql = sub.add_parser("add-server-sql")
     _add_observer_flags(sql, require_zone=True)
@@ -407,6 +454,12 @@ def main(argv: list[str] | None = None) -> int:
 
     match = sub.add_parser("status-active")
     match.add_argument("--ip", required=True)
+
+    boot = sub.add_parser("bootstrap-sql")
+    boot.add_argument("--zone1", required=True)
+    boot.add_argument("--zone2", required=True)
+    boot.add_argument("--zone3", required=True)
+    boot.add_argument("--rpc-port", type=int, default=2882)
 
     ns = parser.parse_args(argv)
     try:
@@ -439,6 +492,13 @@ def main(argv: list[str] | None = None) -> int:
             rows = sys.stdin.read()
             if not status_is_active(rows, ns.ip):
                 return 1
+        elif ns.cmd == "bootstrap-sql":
+            print(
+                bootstrap_sql(
+                    [("zone1", ns.zone1), ("zone2", ns.zone2), ("zone3", ns.zone3)],
+                    rpc_port=ns.rpc_port,
+                )
+            )
         return 0
     except ExpandError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

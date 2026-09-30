@@ -15,6 +15,7 @@ from ob_expand import (  # noqa: E402
     ExpandError,
     ObserverStart,
     ObproxyStart,
+    bootstrap_sql,
     obproxy_rs_list,
     parse_ip,
     remote_observer_script,
@@ -164,6 +165,84 @@ class ExpandCliTest(unittest.TestCase):
         )
         self.assertIn("local_bound_ipv6_ip=2001:db8:1::31", printed.stdout)
         self.assertIn("server obp4 [2001:db8:1::31]:2883 check", printed.stdout)
+
+
+class BootstrapTest(unittest.TestCase):
+    def _start(self, ip: str, zone: str, **kwargs) -> ObserverStart:
+        base = dict(
+            ip=ip,
+            zone=zone,
+            roots=("2001:db8:1::11", "2001:db8:1::12", "2001:db8:1::13"),
+            appname="obcluster",
+            cluster_id=1,
+            home_path="/home/obadmin/observer",
+            data_dir="/data/1",
+            redo_dir="/data/log1",
+            bootstrap=True,
+        )
+        base.update(kwargs)
+        return ObserverStart(**base)
+
+    def test_bootstrap_rs_includes_every_node(self):
+        argv = self._start("2001:db8:1::12", "zone2").argv()
+        rs = argv[argv.index("-r") + 1]
+        self.assertEqual(
+            rs,
+            "[2001:db8:1::11]:2882:2881;[2001:db8:1::12]:2882:2881;[2001:db8:1::13]:2882:2881",
+        )
+        self.assertIn("-6", argv)
+        self.assertIn("use_ipv6=true", argv[argv.index("-o") + 1])
+
+    def test_bootstrap_sql_uses_rpc_port_and_brackets(self):
+        sql = bootstrap_sql(
+            [
+                ("zone1", "2001:db8:1::11"),
+                ("zone2", "2001:db8:1::12"),
+                ("zone3", "2001:db8:1::13"),
+            ]
+        )
+        self.assertIn(
+            "ALTER SYSTEM BOOTSTRAP "
+            "ZONE 'zone1' SERVER '[2001:db8:1::11]:2882', "
+            "ZONE 'zone2' SERVER '[2001:db8:1::12]:2882', "
+            "ZONE 'zone3' SERVER '[2001:db8:1::13]:2882'",
+            sql,
+        )
+
+    def test_bootstrap_rejects_mixed_family_and_duplicates(self):
+        with self.assertRaises(ExpandError):
+            bootstrap_sql([("zone1", "10.0.0.1"), ("zone2", "2001:db8:1::12"), ("zone3", "2001:db8:1::13")])
+        with self.assertRaises(ExpandError):
+            bootstrap_sql(
+                [("zone1", "2001:db8:1::11"), ("zone1", "2001:db8:1::12"), ("zone3", "2001:db8:1::13")]
+            )
+        with self.assertRaises(ExpandError):
+            self._start("2001:db8:1::11", "zone1", roots=("2001:db8:1::11", "10.0.0.2", "10.0.0.3")).argv()
+
+    def test_print_shows_three_starts_and_bootstrap_sql(self):
+        script = ROOT / "scripts" / "23-bootstrap-cluster.sh"
+        proc = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--zone1",
+                "2001:db8:1::11",
+                "--zone2",
+                "2001:db8:1::12",
+                "--zone3",
+                "2001:db8:1::13",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(proc.stdout.count("не выполнен"), 3)
+        self.assertIn("ALTER SYSTEM BOOTSTRAP", proc.stdout)
+        self.assertIn("-z zone1", proc.stdout)
+        self.assertIn("-z zone2", proc.stdout)
+        self.assertIn("-z zone3", proc.stdout)
+        self.assertNotIn("obd ", proc.stdout)
+        self.assertNotIn("ADD SERVER", proc.stdout)
 
 
 if __name__ == "__main__":
