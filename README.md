@@ -354,7 +354,10 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── lib/ob_snapshot.py       # каталог SQL Phase 0.4 + collect
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
-│   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── 05-scale-out.sh          # добавление observer-узлов (YC + OBD)
+│   ├── 21-expand-observer.sh    # ADD SERVER на железе, без OCP и OBD
+│   ├── 22-expand-obproxy.sh     # ещё один obproxy и строка L4, без OCP и OBD
+│   ├── lib/ob_expand.py         # адреса IPv6, команда observer, SQL ADD SERVER
 │   ├── 20-scale-obproxy.sh      # живой кластер: +obproxy по yaml, HAProxy на всех runner
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -644,7 +647,7 @@ OCP ходит к observer/obproxy по внутренней сети YC; с н�
 
 Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
 
-Установка на физические хосты с сетью только IPv6 (версии, ограничения OBD, пилот и OCP): [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md). Текущий `./scripts/deploy.sh` этот контур не ставит.
+Установка на физические хосты с сетью только IPv6 и расширение кластера без OCP и OBD: [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md) (`scripts/21-expand-observer.sh`, `scripts/22-expand-obproxy.sh`). Текущий `./scripts/deploy.sh` этот контур не ставит.
 
 ## Лицензия
 
