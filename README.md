@@ -318,7 +318,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── tpcc-server-snapshot.md    # Phase 0.4: сбор серверной диагностики
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   ├── backup-infrastructure.md   # физический бэкап: носители, режимы, YC
-│   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
+│   ├── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
+│   └── ipv6-only-physical-cluster.md              # физические хосты только с IPv6
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
 │   └── haproxy-obproxy-tcp-lb.cfg.example
@@ -642,6 +643,8 @@ http://<OCP_1_IP>:8080
 OCP ходит к observer/obproxy по внутренней сети YC; с ноутбука нужен VPN/ssh-туннель, если 8080 не опубликован в интернет. Подробности — [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
+
+Установка на физические хосты с сетью только IPv6 (версии, ограничения OBD, пилот и OCP): [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md). Текущий `./scripts/deploy.sh` этот контур не ставит.
 
 ## Лицензия
 
