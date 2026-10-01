@@ -318,7 +318,8 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── tpcc-server-snapshot.md    # Phase 0.4: сбор серверной диагностики
 │   ├── node-recovery.md           # потеря одного observer/obproxy
 │   ├── backup-infrastructure.md   # физический бэкап: носители, режимы, YC
-│   └── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
+│   ├── large-physical-cluster-recommendations.md  # крупный bare-metal кластер (десятки серверов)
+│   └── ipv6-only-physical-cluster.md              # физические хосты только с IPv6
 ├── config/
 │   ├── deploy.yaml.example            # шаблон конфигурации
 │   └── haproxy-obproxy-tcp-lb.cfg.example
@@ -353,7 +354,11 @@ python3 scripts/lib/vm_profiles.py validate --config config/deploy.yaml
 │   ├── lib/ob_snapshot.py       # каталог SQL Phase 0.4 + collect
 │   ├── lib/obproxy_mem.py       # auto / ALTER PROXYCONFIG proxy_mem_limited
 │   ├── lib/ob_backup.py         # профиль backup.s3, SQL dest/backup/archive/restore
-│   ├── 05-scale-out.sh          # добавление observer-узлов
+│   ├── 05-scale-out.sh          # добавление observer-узлов (YC + OBD)
+│   ├── 23-bootstrap-cluster.sh  # первые 3 observer: BOOTSTRAP, без OCP и OBD
+│   ├── 21-expand-observer.sh    # ADD SERVER на железе, без OCP и OBD
+│   ├── 22-expand-obproxy.sh     # ещё один obproxy и строка L4, без OCP и OBD
+│   ├── lib/ob_expand.py         # адреса IPv6, команда observer, SQL ADD SERVER
 │   ├── 20-scale-obproxy.sh      # живой кластер: +obproxy по yaml, HAProxy на всех runner
 │   ├── join-empty-observer.sh   # leftover observer / ERROR 4179
 │   ├── 06-recover-observer.sh   # замена погибшего observer
@@ -642,6 +647,8 @@ http://<OCP_1_IP>:8080
 OCP ходит к observer/obproxy по внутренней сети YC; с ноутбука нужен VPN/ssh-туннель, если 8080 не опубликован в интернет. Подробности — [docs/ocp-deployment.md](docs/ocp-deployment.md).
 
 Рекомендации по крупному on-prem кластеру (десятки физических серверов, 128 vCPU / 1 ТБ, NVMe, 3 ДЦ): [docs/large-physical-cluster-recommendations.md](docs/large-physical-cluster-recommendations.md).
+
+Установка на физические хосты с сетью только IPv6 без OCP и OBD: [docs/ipv6-only-physical-cluster.md](docs/ipv6-only-physical-cluster.md) (`scripts/23-bootstrap-cluster.sh`, затем `21-expand-observer.sh` и `22-expand-obproxy.sh`). Текущий `./scripts/deploy.sh` этот контур не ставит.
 
 ## Лицензия
 
