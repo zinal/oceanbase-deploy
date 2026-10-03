@@ -3,6 +3,7 @@
 # Включение требует полный профиль backup.s3; выключение — только имя тенанта.
 #
 #   ./scripts/deploy.sh archive-log on
+#   ./scripts/deploy.sh archive-log on --optional
 #   ./scripts/deploy.sh archive-log off
 #   ./scripts/deploy.sh archive-log show
 
@@ -22,11 +23,14 @@ case "${ACTION}" in
 Использование: ./scripts/deploy.sh archive-log <on|off|show|validate> [опции]
 
   on        — SET LOG_ARCHIVE_DEST + ALTER SYSTEM ARCHIVELOG, ждать STATUS=DOING
+              По умолчанию BINDING=Mandatory (запись ждёт архив).
+              Архив не включается при создании тенанта — только эта команда.
   off       — ALTER SYSTEM NOARCHIVELOG (S3 не нужен)
   show      — STATUS архива и backup jobs
   validate  — проверить backup.s3 в профиле, без SQL
 
-Опции: --tenant NAME, --no-wait
+Опции: --tenant NAME, --no-wait, --optional
+  --optional — BINDING=Optional на этот запуск (то же постоянно: backup.archive.binding)
 Для on обязательны backup.s3.{host,bucket,access_id,access_key} в config/deploy.yaml
 или OB_BACKUP_S3_HOST / OB_BACKUP_S3_BUCKET / OB_BACKUP_S3_ACCESS_ID / OB_BACKUP_S3_ACCESS_KEY.
 USAGE

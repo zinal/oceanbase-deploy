@@ -7,6 +7,9 @@
 (существующий пустой resource pool) и создаёт новый standby-тенант.
 
 Официально: сначала ARCHIVELOG (STATUS=DOING), потом BACKUP.
+archive-log on ставит BINDING=Mandatory (гарантированный архив).
+Optional — backup.archive.binding или флаг --optional. Создание тенанта
+ARCHIVELOG не включает.
 RESTORE создаёт новый standby и не перезаписывает существующий
 тенант (имя dest может совпадать с исходным, если того уже нет).
 https://www.oceanbase.com/docs/common-oceanbase-database-cn-1000000006615585
@@ -47,6 +50,8 @@ S3_ENV = {
 }
 DEFAULT_DATA_PREFIX = "backup/{tenant}/data"
 DEFAULT_ARCHIVE_PREFIX = "backup/{tenant}/archive"
+# Mandatory: запись тенанта ждёт архив. Optional — только явный yaml или --optional.
+DEFAULT_ARCHIVE_BINDING = "Mandatory"
 DEFAULT_DEST_TENANT = "{tenant}_restore"
 DEFAULT_RESTORE_METHOD = "full"
 RESERVED_PREFIX_CHARS = re.compile(r"[?#&=\s]")
@@ -198,10 +203,21 @@ def _normalize_prefix(prefix: str, tenant: str) -> str:
     return text
 
 
+def normalize_binding(binding: str) -> str:
+    bind_l = binding.lower()
+    if bind_l not in {"optional", "mandatory"}:
+        raise BackupConfigError(
+            f"backup.archive.binding={binding!r} — Optional или Mandatory"
+        )
+    return "Optional" if bind_l == "optional" else "Mandatory"
+
+
 def resolve_s3(
     cfg: dict[str, Any],
     tenant: str,
     environ: dict[str, str] | None = None,
+    *,
+    optional: bool = False,
 ) -> dict[str, str]:
     env = environ if environ is not None else os.environ
     require_s3_profile(cfg, env)
@@ -219,7 +235,13 @@ def resolve_s3(
     delete_mode = _as_str(s3.get("delete_mode")) or "delete"
     data_prefix = _as_str(s3.get("data_prefix")) or DEFAULT_DATA_PREFIX
     archive_prefix = _as_str(s3.get("archive_prefix")) or DEFAULT_ARCHIVE_PREFIX
-    binding = _as_str(archive.get("binding")) or "Optional"
+    # --optional перекрывает backup.archive.binding на один запуск.
+    if optional:
+        binding = "Optional"
+    else:
+        binding = normalize_binding(
+            _as_str(archive.get("binding")) or DEFAULT_ARCHIVE_BINDING
+        )
     piece = _as_str(archive.get("piece_switch_interval")) or "1d"
 
     addressing_l = addressing.lower().replace("-", "_")
@@ -245,13 +267,6 @@ def resolve_s3(
             f"backup.s3.delete_mode={delete_mode!r} — delete или tagging"
         )
     delete_mode = delete_l
-
-    bind_l = binding.lower()
-    if bind_l not in {"optional", "mandatory"}:
-        raise BackupConfigError(
-            f"backup.archive.binding={binding!r} — Optional или Mandatory"
-        )
-    binding = "Optional" if bind_l == "optional" else "Mandatory"
 
     piece = piece.lower()
     if not PIECE_RE.match(piece):
@@ -920,9 +935,10 @@ def archive_on(
     tenant: str | None = None,
     environ: dict[str, str] | None = None,
     wait: bool = True,
+    optional: bool = False,
 ) -> int:
     name = resolve_tenant(cfg, tenant)
-    s3 = resolve_s3(cfg, name, environ)
+    s3 = resolve_s3(cfg, name, environ, optional=optional)
     uri = build_s3_uri(s3, s3["archive_prefix"])
     ob_sys, endpoint, password = connect(cfg, inv)
     sql = log_archive_dest_sql(
@@ -1254,11 +1270,20 @@ def cmd_backup(args: argparse.Namespace) -> None:
 def cmd_archive(args: argparse.Namespace) -> None:
     cfg = _load_cfg(args)
     resolve_tenant(cfg, args.tenant)
+    optional = bool(getattr(args, "optional", False))
     if args.action == "on":
         require_s3_profile(cfg)
         cfg, inv = _load_io(args)
-        archive_on(cfg, inv, tenant=args.tenant, wait=not args.no_wait)
+        archive_on(
+            cfg,
+            inv,
+            tenant=args.tenant,
+            wait=not args.no_wait,
+            optional=optional,
+        )
         return
+    if optional:
+        raise BackupConfigError("--optional задаёт BINDING только для archive-log on")
     cfg, inv = _load_io(args)
     archive_off(cfg, inv, tenant=args.tenant, wait=not args.no_wait)
 
@@ -1271,10 +1296,13 @@ def cmd_show(args: argparse.Namespace) -> None:
 def cmd_validate(args: argparse.Namespace) -> None:
     cfg = _load_cfg(args)
     tenant = resolve_tenant(cfg, args.tenant)
-    s3 = resolve_s3(cfg, tenant)
+    s3 = resolve_s3(cfg, tenant, optional=bool(getattr(args, "optional", False)))
     print(f"тенант: {tenant}")
     print(f"data:    {redact_uri(build_s3_uri(s3, s3['data_prefix']))}")
     print(f"archive: {redact_uri(build_s3_uri(s3, s3['archive_prefix']))}")
+    print(
+        f"BINDING={s3['binding']} PIECE_SWITCH_INTERVAL={s3['piece_switch_interval']}"
+    )
     print("профиль backup.s3 полный")
 
 
@@ -1355,6 +1383,14 @@ def _add_io_args(parser: argparse.ArgumentParser, *, with_defaults: bool) -> Non
     parser.add_argument("--tenant", default=argparse.SUPPRESS)
 
 
+def _add_optional_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--optional",
+        action="store_true",
+        help="BINDING=Optional: запись не ждёт архив (по умолчанию Mandatory)",
+    )
+
+
 def _add_restore_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "action",
@@ -1396,6 +1432,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_val = sub.add_parser("validate", help="проверить профиль S3 без SQL")
     _add_io_args(p_val, with_defaults=False)
+    _add_optional_arg(p_val)
     p_val.set_defaults(func=cmd_validate)
 
     p_show = sub.add_parser("show", help="статус архива и backup jobs")
@@ -1416,6 +1453,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_arch = sub.add_parser("archive", help="включить или выключить ARCHIVELOG")
     _add_io_args(p_arch, with_defaults=False)
     p_arch.add_argument("action", choices=("on", "off"))
+    _add_optional_arg(p_arch)
     p_arch.add_argument("--no-wait", action="store_true")
     p_arch.set_defaults(func=cmd_archive)
 

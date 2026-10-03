@@ -24,6 +24,8 @@ fi
 info "Проверка секции tenant в ${CONFIG_FILE}..."
 python3 "${LIB_DIR}/lib/tenant-create.py" validate --config "${CONFIG_FILE}"
 
+# ARCHIVELOG здесь не включается: ручной ./scripts/deploy.sh archive-log on
+# (по умолчанию BINDING=Mandatory; Optional — --optional или backup.archive.binding).
 info "Создание тенанта (obd cluster tenant create + user/database)..."
 python3 "${LIB_DIR}/lib/tenant-create.py" create \
   --config "${CONFIG_FILE}" \

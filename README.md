@@ -100,7 +100,7 @@ chmod +x scripts/*.sh scripts/lib/*.sh
 ./scripts/deploy.sh obproxy-mem     # поднять proxy_mem_limited (дефолт 2G ≠ RAM хоста)
 ./scripts/deploy.sh observer-log    # снизить детальность логов observer (syslog_level)
 ./scripts/deploy.sh open-cursors    # лимит PS-хендлов (open_cursors; дефолт вендора 50 → 5930)
-./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3 (секция backup в deploy.yaml)
+./scripts/deploy.sh archive-log on  # ARCHIVELOG на S3, BINDING=Mandatory (Optional: --optional)
 ./scripts/deploy.sh backup full     # полный физический бэкап тенанта
 ./scripts/deploy.sh restore         # restore в новый standby из того же S3
 ./scripts/deploy.sh snapshot collect --label w45k06  # серверный снимок TPC-C (Phase 0.4)
@@ -440,13 +440,14 @@ SSH и подготовка серверов используют **внутре
 
 ```bash
 ./scripts/deploy.sh backup validate
-./scripts/deploy.sh archive-log on
+./scripts/deploy.sh archive-log on             # BINDING=Mandatory
+./scripts/deploy.sh archive-log on --optional  # BINDING=Optional на этот запуск
 ./scripts/deploy.sh backup full
 ./scripts/deploy.sh backup incremental
 ./scripts/deploy.sh archive-log off
 ```
 
-Ключи можно задать `OB_BACKUP_S3_ACCESS_ID` / `OB_BACKUP_S3_ACCESS_KEY`. Сначала архив (`STATUS=DOING`), потом data backup.
+Ключи можно задать `OB_BACKUP_S3_ACCESS_ID` / `OB_BACKUP_S3_ACCESS_KEY`. Сначала архив (`STATUS=DOING`), потом data backup. По умолчанию `BINDING=Mandatory`; постоянно Optional — `backup.archive.binding: Optional` в `deploy.yaml`. Создание тенанта архив не включает.
 
 Restore создаёт **новый** standby-тенант и не перезаписывает живой. Имя dest может совпадать с исходным, если тенант уже удалён. Нужен существующий пустой resource pool (`backup.restore.pool_list`).
 
