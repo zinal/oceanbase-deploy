@@ -186,7 +186,7 @@ case "${STEP}" in
   obproxy-mem    — потолок памяти ODP (proxy_mem_limited): show|apply (docs/obproxy-memory.md)
   observer-log   — детальность логов observer: show|apply (docs/observer-logging.md)
   open-cursors   — лимит PS-хендлов на сессии (open_cursors): show|apply (docs/open-cursors.md)
-  archive-log    — ARCHIVELOG on|off|show (нужен backup.s3; docs/backup-infrastructure.md)
+  archive-log    — ARCHIVELOG on|off|show (BINDING=Mandatory; --optional; нужен backup.s3)
   backup         — полный/инкрементальный бэкап: full|incremental|show
   restore        — restore из S3 в новый standby: run|activate|show|validate
   snapshot       — серверный снимок TPC-C (sql_audit/locks/plan cache/leaders): collect|list|dump-sql

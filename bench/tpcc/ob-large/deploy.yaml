@@ -260,7 +260,11 @@ backup:
     data_prefix: obbackup2/{tenant}/data
     archive_prefix: obbackup2/{tenant}/archive
   archive:
-    binding: Optional              # Optional | Mandatory
+    # Mandatory — гарантированный архив: запись ждёт выгрузку clog.
+    # Optional — запись не останавливается (возможен разрыв PITR).
+    # Разово: ./scripts/deploy.sh archive-log on --optional
+    # Создание тенанта архив не включает.
+    binding: Mandatory             # Mandatory | Optional
     piece_switch_interval: 1d      # 1d … 7d
   restore:
     dest_tenant: ""                # пустое = {tenant}_restore; не должен существовать

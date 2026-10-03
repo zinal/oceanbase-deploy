@@ -185,12 +185,13 @@ palf throttling / отказ записи» читается как **следс
 
 Архив пишет **лидер лог-стрима** на внешний dest. Это **не всегда** блокирует
 OLTP: режим задаёт `BINDING` в `LOG_ARCHIVE_DEST` (`archive-dest.tsv`, без
-LOCATION — в пути бывают ключи S3).
+LOCATION — в пути бывают ключи S3). `archive-log on` ставит Mandatory;
+Optional — `backup.archive.binding: Optional` или `archive-log on --optional`.
 
 | BINDING | Если архив отстаёт от генерации clog |
 |---|---|
-| **Optional** (дефолт) | запись тенанта **не** останавливают; clog могут recycle **до** архива → `STATUS=INTERRUPTED`, дыра PITR |
-| **Mandatory** | архив важнее бизнеса: dest/сеть не успевают → **запись в тенант может остановиться** |
+| **Optional** | запись тенанта **не** останавливают; clog могут recycle **до** архива → `STATUS=INTERRUPTED`, дыра PITR |
+| **Mandatory** (дефолт `archive-log on`) | архив важнее бизнеса: dest/сеть не успевают → **запись в тенант может остановиться** |
 
 **Признак, что архив именно тормозит транзакции (не просто «лаг для PITR»):**
 

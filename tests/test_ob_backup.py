@@ -89,6 +89,38 @@ def test_aws_requires_region() -> None:
     assert ob_backup.missing_s3_fields(cfg, {}) == []
 
 
+def test_binding_defaults_to_mandatory() -> None:
+    cfg = full_s3_cfg()
+    del cfg["backup"]["archive"]["binding"]
+    s3 = ob_backup.resolve_s3(cfg, "tpcc", {})
+    assert s3["binding"] == "Mandatory"
+    cfg = full_s3_cfg(archive={})
+    s3 = ob_backup.resolve_s3(cfg, "tpcc", {})
+    assert s3["binding"] == "Mandatory"
+    cfg = full_s3_cfg()
+    cfg["backup"]["archive"]["binding"] = "mandatory"
+    assert ob_backup.resolve_s3(cfg, "tpcc", {})["binding"] == "Mandatory"
+    cfg["backup"]["archive"]["binding"] = "Optional"
+    assert ob_backup.resolve_s3(cfg, "tpcc", {})["binding"] == "Optional"
+    forced = ob_backup.resolve_s3(cfg, "tpcc", {}, optional=True)
+    assert forced["binding"] == "Optional"
+    cfg["backup"]["archive"]["binding"] = "Mandatory"
+    assert ob_backup.resolve_s3(cfg, "tpcc", {}, optional=True)["binding"] == "Optional"
+    try:
+        cfg["backup"]["archive"]["binding"] = "best-effort"
+        ob_backup.resolve_s3(cfg, "tpcc", {})
+        raise AssertionError("ждали ошибку binding")
+    except ob_backup.BackupConfigError as exc:
+        assert "binding" in str(exc)
+    sql = ob_backup.log_archive_dest_sql(
+        "s3://ob-backups/backup/tpcc/archive?host=h",
+        "tpcc",
+        binding="Mandatory",
+        piece_switch_interval="1d",
+    )
+    assert "BINDING=Mandatory" in sql
+
+
 def test_uri_and_sql() -> None:
     cfg = full_s3_cfg()
     tenant = ob_backup.resolve_tenant(cfg)
@@ -318,6 +350,14 @@ def test_cli_flags_after_subcommand() -> None:
     args = parser.parse_args(["archive", "off", "--tenant", "app1"])
     assert args.action == "off"
     assert args.tenant == "app1"
+    assert args.optional is False
+    args = parser.parse_args(["archive", "on", "--optional", "--no-wait"])
+    assert args.action == "on"
+    assert args.optional is True
+    assert args.no_wait is True
+    args = parser.parse_args(["validate", "--optional"])
+    assert args.command == "validate"
+    assert args.optional is True
     args = parser.parse_args(
         [
             "restore",
@@ -363,12 +403,18 @@ def test_wrappers_and_deploy_sh() -> None:
     example = (ROOT / "config" / "deploy.yaml.example").read_text(encoding="utf-8")
     assert "ob_backup.py" in backup and "full|incremental" in backup
     assert "ob_backup.py" in archive and "on|off" in archive
+    assert "--optional" in archive
+    assert "BINDING=Mandatory" in archive
     assert "ob_backup.py" in restore and "run|show|validate|activate" in restore
     assert "14-backup.sh" in deploy
     assert "15-archive-log.sh" in deploy
     assert "16-restore.sh" in deploy
+    create_tenant = (ROOT / "scripts" / "08-create-tenant.sh").read_text(encoding="utf-8")
+    assert "ob_backup.py" not in create_tenant
+    assert "15-archive-log" not in create_tenant
     assert "run|activate|show|validate" in deploy
     assert "backup:" in example
+    assert "binding: Mandatory" in example
     assert "plus_archivelog:" in example
     assert "incremental игнорирует" in example
     assert "access_id:" in example
@@ -496,6 +542,7 @@ if __name__ == "__main__":
     test_env_fills_keys()
     test_partial_yaml_still_errors_before_sql()
     test_aws_requires_region()
+    test_binding_defaults_to_mandatory()
     test_uri_and_sql()
     test_plus_archivelog_cfg_ignored_for_incremental()
     test_tenant_and_forbidden()

@@ -12,7 +12,7 @@
 | Что копируется | Только **user-тенанты**. `sys` и Meta не бэкапятся |
 | Из чего состоит копия | Два независимых назначения: **data backup** + **log archive**. Для PITR нужны оба |
 | Режимы данных | Полный (`FULL`) и инкрементальный (`INCREMENTAL`); опция `PLUS ARCHIVELOG` даёт самодостаточный набор |
-| Режимы архива | `BINDING=Optional` (бизнес важнее, риск разрыва архива) и `Mandatory` (архив важнее, риск блокировки записи) |
+| Режимы архива | `BINDING=Mandatory` (дефолт `archive-log on`: архив важнее, риск блокировки записи) и `Optional` (`backup.archive.binding` или `--optional`: бизнес важнее, риск разрыва архива) |
 | Режимы восстановления | Тенант целиком или таблица; полное или быстрое; до текущего конца архива или до SCN/времени |
 | Регулярный data backup | В самом observer **нет** cron. Расписание — OCP, ob-operator, внешний cron/`obd`/`obshell` |
 | Как часто архивируются логи | Непрерывно после `ARCHIVELOG`. Выгрузка не реже чем раз в **`archive_lag_target` (по умолчанию 120 с)** на каждый лог-стрим с записью; piece режется раз в **1–7 суток** (по умолчанию 1 день) |
@@ -74,8 +74,10 @@ flowchart LR
 
 | Режим | Смысл | Инфраструктурный риск |
 |-------|--------|------------------------|
-| **Optional** (по умолчанию) | Сначала пользовательская запись. Если архив отстаёт, clog может уйти в recycle до выгрузки | Разрыв архивного потока, дыра в PITR |
+| **Optional** | Сначала пользовательская запись. Если архив отстаёт, clog может уйти в recycle до выгрузки | Разрыв архивного потока, дыра в PITR |
 | **Mandatory** | Сначала архив. Если носитель/сеть не успевают, запись в тенант может остановиться | Простой OLTP при деградации NFS/S3/NAT |
+
+Если `BINDING` в SQL не задан, OceanBase выбирает Optional. `archive-log on` в этом репозитории всегда передаёт режим явно и по умолчанию ставит **Mandatory** (гарантированная архивация). Optional — `backup.archive.binding: Optional` в `deploy.yaml` либо разовый `./scripts/deploy.sh archive-log on --optional`. Создание тенанта архив не включает: `ARCHIVELOG` остаётся отдельной командой.
 
 Для продакшена с Mandatory носитель и канал до него должны выдерживать пиковый поток clog (оценка: пиковый TPS × средний объём изменения × коэффициент записи логов, обычно 2–10, опытная 4). Для Optional достаточно «в среднем успевать», но тогда нужен запас по `archive_lag_target` и мониторинг отставания. Сама частота выгрузки — ниже, в [частоте архива](#как-часто-архивируются-логи).
 
@@ -139,14 +141,15 @@ flowchart LR
 ```bash
 # заполнить backup.s3 в config/deploy.yaml, egress observer → Object Storage
 ./scripts/deploy.sh backup validate          # только профиль, без кластера
-./scripts/deploy.sh archive-log on           # SET LOG_ARCHIVE_DEST + ARCHIVELOG, ждать DOING
+./scripts/deploy.sh archive-log on             # SET LOG_ARCHIVE_DEST BINDING=Mandatory + ARCHIVELOG
+./scripts/deploy.sh archive-log on --optional  # то же с BINDING=Optional
 ./scripts/deploy.sh backup full              # SET DATA_BACKUP_DEST + BACKUP TENANT
 ./scripts/deploy.sh backup incremental
 ./scripts/deploy.sh archive-log off          # NOARCHIVELOG; S3 не нужен
 ./scripts/deploy.sh backup show
 ```
 
-`on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` и профиль `backup.plus_archivelog` — только для `full` (`backup incremental` PLUS не добавляет). Скрипт ждёт конец job по **активным + history** views: завершённый backup исчезает из `CDB_OB_BACKUP_JOBS` и остаётся в `CDB_OB_BACKUP_JOB_HISTORY` (`COMPLETED`); restore в `CDB_OB_RESTORE_HISTORY` имеет `STATUS=SUCCESS`, не `RESTORE_SUCCESS`.
+`on` и `full`/`incremental` требуют полный `backup.s3`. `off` — только имя тенанта. `on` пишет `LOG_ARCHIVE_DEST` с `BINDING=Mandatory`, если в профиле не задан `backup.archive.binding: Optional` и нет флага `--optional` (флаг перекрывает yaml на один запуск). Перед data backup архив должен быть `STATUS=DOING` (официальный порядок). `--no-wait` не ждёт COMPLETED/DOING; `--plus-archivelog` и профиль `backup.plus_archivelog` — только для `full` (`backup incremental` PLUS не добавляет). Скрипт ждёт конец job по **активным + history** views: завершённый backup исчезает из `CDB_OB_BACKUP_JOBS` и остаётся в `CDB_OB_BACKUP_JOB_HISTORY` (`COMPLETED`); restore в `CDB_OB_RESTORE_HISTORY` имеет `STATUS=SUCCESS`, не `RESTORE_SUCCESS`. Создание тенанта (`./scripts/deploy.sh tenant`) `ARCHIVELOG` не выполняет.
 
 ### Restore из того же dest
 
@@ -350,7 +353,7 @@ Backup и очистка копий идут в очередь **`ha_low`** (н�
 | CPU / IOPS backup | Resource Manager: `SET_CONSUMER_GROUP_MAPPING('FUNCTION','HA_LOW', …)` | CPU-изоляция нужна cgroup. Restore мапится на `HA_HIGH` — **другая** группа |
 | Кто пишет backup | `zone` / `idc` / `region` в dest | Сдвиг нагрузки в IDC с запасом канала, остальные zone оставляют OLTP |
 | Когда полный backup | внешний cron / OCP | Observer сам расписания не ставит |
-| Архив vs запись | `BINDING=Optional` | Optional не душит OLTP при деградации dest, но дырявит PITR. Mandatory при узком S3 остановит запись |
+| Архив vs запись | `BINDING=Mandatory` (дефолт репозитория) | Mandatory при узком S3 остановит запись. Optional (`binding: Optional` или `--optional`) не душит OLTP, но дырявит PITR |
 
 Не разгонять `ha_low_thread_score` на тенантах ≤ 4 CPU. Если изоляция уже стоит и backup упёрся ровно в её MAX_IOPS/CPU — сначала поднять потолок группы, не поток нитей: иначе очередь растёт, а IO уже на квоте.
 
@@ -424,7 +427,7 @@ ALTER SYSTEM CHANGE EXTERNAL_STORAGE_DEST
 - [ ] С **каждого** текущего и будущего observer есть запись на dest
 - [ ] Для S3: ключи, TLS, стиль URL, `test_io_device`
 - [ ] Для NFS: 4.1, одни опции mount, autofs/fstab, порядок «NFS → observer»
-- [ ] Выбран `BINDING` исходя из того, готовы ли пожертвовать записью или PITR
+- [ ] `BINDING`: по умолчанию Mandatory (гарантированный архив); Optional — только если запись важнее непрерывного PITR
 - [ ] Задан `archive_lag_target` (дефолт 120 с; для S3 не ниже 60 с) — это RPO архива, не piece
 - [ ] Есть планировщик data backup (OCP / cron / operator), observer сам full/inc не крутит
 - [ ] Заданы `RECOVERY_WINDOW` / lifecycle, иначе хранилище не ограничено
